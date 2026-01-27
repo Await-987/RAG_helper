@@ -61,7 +61,7 @@ def preprocess(data: list, chunk_min_size: int = 400, overlap_size: int = 50) ->
             idx -= 1
         if len(new_chunk) - len(temp_chunk) < 10:
             idx += 1
-    #@qiaoyu：20260126修改兜底：外层 while 正常结束时也要返回
+    # @qiaoyu：20260126修改兜底：外层 while 正常结束时也要返回
     return new_chunks
 
 
