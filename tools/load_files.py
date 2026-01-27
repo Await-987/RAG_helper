@@ -22,8 +22,15 @@ def preprocess(data: list, chunk_min_size: int = 400, overlap_size: int = 50) ->
     while idx < len(data):
         new_chunk = ''
         while len(new_chunk) < chunk_min_size and idx < len(data):
-            chunk_type = data[idx]['type']
+            # chunk_type = data[idx]['type']
+            # chunk_key = type2key[chunk_type]
+            # @qiaoyu：20260126修改：处理未知类型报错，遇到 discarded 或其他未知类型就直接跳过，不会 KeyError
+            chunk_type = data[idx].get('type')
+            if chunk_type not in type2key:
+                idx += 1
+                continue
             chunk_key = type2key[chunk_type]
+
             if isinstance(data[idx][chunk_key], str):
                 new_chunk += data[idx][chunk_key]
             elif isinstance(data[idx][chunk_key], List):
@@ -38,7 +45,12 @@ def preprocess(data: list, chunk_min_size: int = 400, overlap_size: int = 50) ->
             return new_chunks
         temp_chunk = ''
         while len(temp_chunk) < overlap_size:
-            chunk_type = data[idx - 1]['type']
+            # chunk_type = data[idx - 1]['type']
+            # chunk_key = type2key[chunk_type]
+            # @qiaoyu：20260126修改：overlap 阶段遇到未知类型，直接停止回退
+            chunk_type = data[idx - 1].get('type')
+            if chunk_type not in type2key:
+                break
             chunk_key = type2key[chunk_type]
             if isinstance(data[idx - 1][chunk_key], str):
                 temp_chunk += data[idx - 1][chunk_key]
@@ -49,6 +61,8 @@ def preprocess(data: list, chunk_min_size: int = 400, overlap_size: int = 50) ->
             idx -= 1
         if len(new_chunk) - len(temp_chunk) < 10:
             idx += 1
+    #@qiaoyu：20260126修改兜底：外层 while 正常结束时也要返回
+    return new_chunks
 
 
 def load_and_store_file(
