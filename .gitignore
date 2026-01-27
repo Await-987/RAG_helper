@@ -89,3 +89,8 @@ qdrant_storage/
 # Backup files
 *.bak
 *.backup
+
+data/stored_files/*.pdf
+data/stored_files/mineru_output/
+smoke_out.txt
+models/

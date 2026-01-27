@@ -74,7 +74,7 @@ pip install -r requirements.txt
 
 主要依赖包括：
 - `camel-ai` - CAMEL AI框架
-- `minerU` -MinerU数据提取工具
+- `minerU` -MinerU数据提取工具（2.2.2->2.7.1）
 - `streamlit` - Web界面
 - `qdrant-client` - 向量数据库客户端
 - `python-dotenv` - 环境变量管理
