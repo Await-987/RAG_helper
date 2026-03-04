@@ -1,8 +1,16 @@
+import sys
 from loguru import logger
 from typing import List, Optional, Any, Dict
 
 from camel.toolkits.base import BaseToolkit, FunctionTool
 from tools import QdrantDB, QdrantDB_Init
+
+
+def _log_search(msg: str):
+    """同时输出到 logger 和 print，确保日志可见"""
+    logger.info(msg)
+    print(msg)
+    sys.stdout.flush()
 
 
 class DatabaseToolkit(BaseToolkit):
@@ -101,7 +109,7 @@ class DatabaseToolkit(BaseToolkit):
             logger.warning(f"Reranker predict failed, fallback to hybrid order: {e}")
             return hits
 
-        norm_scores = self._minmax_norm(scores)
+        norm_scores = DatabaseToolkit._minmax_norm(scores)
         for h, s_raw, s_norm in zip(valid_hits, scores, norm_scores):
             h["rerank_score_raw"] = s_raw
             h["score"] = float(s_norm)  # final score for sorting
@@ -114,14 +122,14 @@ class DatabaseToolkit(BaseToolkit):
     def search_database(
         self,
         query: str,
-        top_k: int = 5,
+        top_k: int = 50,
         *,
         # ---- new knobs (all optional; keep old usage compatible) ----
         use_hybrid: bool = True,
         use_rerank: bool = True,
         dynamic_topk: bool = True,
         score_threshold: Optional[float] = None,
-        max_results: int = 20,
+        max_results: int = 50,
         alpha: float = 0.75,
     ) -> str:
         """
@@ -132,17 +140,26 @@ class DatabaseToolkit(BaseToolkit):
         - dynamic_topk=True: return all chunks above threshold (capped by max_results)
           score_threshold is on normalized score (0~1). If None, an adaptive threshold is used.
         """
+        # ===== 搜索开始日志 =====
+        _log_search(f"\n{'='*60}")
+        _log_search(f"🔍 [搜索工具被调用]")
+        _log_search(f"   query: '{query[:80]}{'...' if len(query) > 80 else ''}'")
+        _log_search(f"   参数: top_k={top_k}, hybrid={use_hybrid}, rerank={use_rerank}, dynamic={dynamic_topk}, alpha={alpha}")
+        _log_search(f"{'='*60}\n")
+
         # 放在 search_database() 开头，参数校正
         if dynamic_topk:
-            # 领导演示用：保证动态 topk 有空间“变多”
-            # 你可以把 20 改成 15/30，看你想演示的幅度
-            max_results = max(int(max_results), 20)
+            # 领导演示用：保证动态 topk 有空间"变多"
+            # 你可以把 50 改成 30/100，看你想演示的幅度
+            max_results = max(int(max_results), 50)
 
         if not query or not query.strip():
+            logger.warning("⚠️ 搜索 query 为空，返回无结果")
             return "No results from the vector database."
 
         # 1) hybrid or vector-only
         if use_hybrid:
+            _log_search(f"📊 执行混合搜索 (vector + keyword BM25)...")
             hits = self.db.hybrid_search(
                 query=query,
                 top_k=top_k,
@@ -152,6 +169,7 @@ class DatabaseToolkit(BaseToolkit):
                 max_results=max_results,
             )
         else:
+            _log_search(f"📊 执行纯向量搜索...")
             hits = self.db.search(query=query, top_k=top_k)
 
         if not hits:
@@ -159,11 +177,13 @@ class DatabaseToolkit(BaseToolkit):
 
         # 2) rerank (optional)
         if use_rerank:
+            _log_search(f"🔄 执行重排序 (reranker)...")
             hits = self._rerank(query, hits)
 
             # 3) dynamic threshold cut should use final scores (after rerank)
             if dynamic_topk:
-                hits = self._apply_dynamic_cut(
+                _log_search(f"✂️ 执行动态阈值过滤 (min_results={top_k}, max_results={max_results})...")
+                hits = DatabaseToolkit._apply_dynamic_cut(
                     hits=hits,
                     min_results=int(top_k),
                     max_results=int(max_results),
@@ -171,6 +191,8 @@ class DatabaseToolkit(BaseToolkit):
                 )
             else:
                 hits = sorted(hits, key=lambda h: float(h.get("score", 0.0)), reverse=True)[: int(top_k)]
+
+        _log_search(f"✅ 搜索完成: 找到 {len(hits)} 条结果")
 
         # 4) format output
         formatted_results = []
@@ -187,7 +209,31 @@ class DatabaseToolkit(BaseToolkit):
             )
             formatted_results.append(result_str)
 
-        logger.info(f"Database Search Results (n={len(formatted_results)}): {formatted_results}")
+        # ===== 搜索结果摘要 =====
+        _log_search(f"\n{'='*60}")
+        _log_search(f"📋 [搜索结果摘要] 共 {len(formatted_results)} 条")
+        for i, hit in enumerate(hits[:5], 1):  # 打印前5条
+            payload = hit.get("payload", {}) or {}
+            source = payload.get("Original_file", "Unknown")
+            content = payload.get("Content", "") or payload.get("content", "")
+            score = float(hit.get("score", 0.0))
+
+            # 提取文件名
+            file_name = source.split("\\")[-1] if "\\" in source else source.split("/")[-1]
+
+            # 内容预览（前100字符）
+            content_clean = content.replace("\n", " ").strip()[:100]
+            if len(content) > 100:
+                content_clean += "..."
+
+            _log_search(f"   [{i}] 📄 {file_name}")
+            _log_search(f"       📝 {content_clean}")
+            _log_search(f"       🎯 置信度: {score:.4f}")
+
+        if len(hits) > 5:
+            _log_search(f"   ... 还有 {len(hits) - 5} 条结果")
+        _log_search(f"{'='*60}\n")
+
         return "\n\n".join(formatted_results)
 
     def get_tools(self) -> List[FunctionTool]:

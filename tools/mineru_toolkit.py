@@ -31,6 +31,7 @@ from mineru.backend.vlm.vlm_analyze import doc_analyze as vlm_doc_analyze
 from mineru.backend.vlm.vlm_middle_json_mkcontent import union_make as vlm_union_make
 
 # """如果您由于网络问题无法下载模型，可以设置环境变量MINERU_MODEL_SOURCE为modelscope使用免代理仓库下载模型"""
+# @qiaoyu：20260303修改：使用本地 VLM 模型（已下载到 models/mineru2.5/）
 os.environ['MINERU_MODEL_SOURCE'] = "local"
 
 os.environ['MODELSCOPE_CACHE'] = r"~/.cache/modelscope/hub/models/OpenDataLab/PDF-Extract-Kit-1./models"

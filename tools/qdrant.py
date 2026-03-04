@@ -108,7 +108,9 @@ class QdrantDB:
         records = []
         texts_to_embed = [input.text] if isinstance(input.text, str) else input.text
 
+        logger.info(f"开始生成 {len(texts_to_embed)} 个文本的嵌入向量...")
         vectors = self.embedding_instance.embed_list(list(texts_to_embed))
+        logger.info(f"嵌入向量生成完成，维度: {len(vectors[0]) if vectors else 'N/A'}")
 
         for vector, text_chunk in zip(vectors, texts_to_embed):
             payload = base_payload.copy()
@@ -501,7 +503,7 @@ class QdrantDB:
             return []
 
         if dynamic_topk:
-            return self._apply_dynamic_cut(
+            return QdrantDB._apply_dynamic_cut(
                 hits=hits,
                 min_results=int(top_k),
                 max_results=int(max_results),

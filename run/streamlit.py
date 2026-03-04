@@ -4,6 +4,15 @@ import os
 import sys
 from pathlib import Path
 from config import layout
+from loguru import logger
+
+# 配置日志输出到终端
+logger.remove()  # 移除默认handler
+logger.add(
+    sys.stdout,
+    level="INFO",
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+)
 
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
@@ -66,7 +75,9 @@ with st.sidebar:
                     results = load_multiple_files(
                         file_paths=saved_file_paths,
                         collection_name="database",
-                        dpi=200
+                        dpi=200,
+                        debug=True,  # 启用调试模式
+                        search_keyword="表27"  # 搜索"表27"相关内容
                     )
 
                     if results["success"]:
@@ -136,6 +147,7 @@ if prompt := st.chat_input("💭 请输入您的问题..."):
     
     try:
         response = st.session_state.chat_agent.step(prompt)
+        print(f"Response from chat_agent: {response}")
 
         full_response = ""
 
