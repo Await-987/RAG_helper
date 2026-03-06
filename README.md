@@ -121,3 +121,5 @@ streamlit run run/streamlit.py
 
 
 服务将在浏览器中自动打开，默认地址：`http://localhost:8501`
+
+python -c "from tools.load_files import              clear_collection; clear_collection('database')"

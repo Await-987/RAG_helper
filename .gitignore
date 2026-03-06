@@ -1,5 +1,6 @@
 .env
 
+.claude
 __pycache__/
 *.py[cod]
 *$py.class
@@ -98,3 +99,10 @@ models/
 tests/smoke_ingest_retrieve_pdfs.py
 tests/tools/smoke_test_mineru_embedding.py
 
+claude_code_env.sh
+data/content_lists
+data/exported_chunks
+new_tools
+test_export_chunks.py
+test_model_think.py
+test_qwq_response.py

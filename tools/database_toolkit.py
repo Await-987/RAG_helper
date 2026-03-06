@@ -140,6 +140,13 @@ class DatabaseToolkit(BaseToolkit):
         - dynamic_topk=True: return all chunks above threshold (capped by max_results)
           score_threshold is on normalized score (0~1). If None, an adaptive threshold is used.
         """
+        # ===== 参数默认值处理 =====
+        # 如果 LLM 传入 None，使用默认值
+        if alpha is None:
+            alpha = 0.75
+        if max_results is None:
+            max_results = 50
+
         # ===== 搜索开始日志 =====
         _log_search(f"\n{'='*60}")
         _log_search(f"🔍 [搜索工具被调用]")

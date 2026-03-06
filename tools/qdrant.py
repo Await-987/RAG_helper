@@ -94,7 +94,7 @@ class QdrantDB:
     # ----------------------
     # Ingest
     # ----------------------
-    def save2Qdrant(self, input: save2Qdrant_Input):
+    def save2Qdrant(self, input: save2Qdrant_Input, vector_text: Optional[str] = None):
         """
         Input text and store the text data along with its source information into the Qdrant database.
         """
@@ -108,8 +108,13 @@ class QdrantDB:
         records = []
         texts_to_embed = [input.text] if isinstance(input.text, str) else input.text
 
-        logger.info(f"开始生成 {len(texts_to_embed)} 个文本的嵌入向量...")
-        vectors = self.embedding_instance.embed_list(list(texts_to_embed))
+        # 新增：如果传了 vector_text 就用它算向量，否则和原来一样用 input.text
+        if vector_text is not None:
+            texts_for_vector = [vector_text] if isinstance(vector_text, str) else [vector_text]
+        else:
+            texts_for_vector = texts_to_embed
+
+        vectors = self.embedding_instance.embed_list(list(texts_for_vector))
         logger.info(f"嵌入向量生成完成，维度: {len(vectors[0]) if vectors else 'N/A'}")
 
         for vector, text_chunk in zip(vectors, texts_to_embed):
@@ -503,7 +508,7 @@ class QdrantDB:
             return []
 
         if dynamic_topk:
-            return QdrantDB._apply_dynamic_cut(
+            return self._apply_dynamic_cut(
                 hits=hits,
                 min_results=int(top_k),
                 max_results=int(max_results),
@@ -555,3 +560,28 @@ class QdrantDB:
         else:
             self.storage_instance._client.delete_collection(collection_name=name)
             logger.info(f"Collection '{name}' has been deleted.")
+
+    def delete_by_file_name(self, file_tag: str):
+        """根据入库时记录的 file_tag 删除数据库中的所有切块"""
+        from qdrant_client import models
+        client = self.storage_instance._client
+
+        logger.info(f"正在从 Qdrant 清理标签为: {file_tag} 的数据...")
+        try:
+            client.delete(
+                collection_name=self.collection_name,
+                points_selector=models.FilterSelector(
+                    filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="Original_file",
+                                match=models.MatchValue(value=file_tag),
+                            ),
+                        ]
+                    )
+                ),
+            )
+            self._lex_index = None  # 清除关键词索引缓存
+            logger.info("数据库切块清理完毕。")
+        except Exception as e:
+            logger.error(f"数据库清理失败: {e}")

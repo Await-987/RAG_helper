@@ -6,6 +6,11 @@ from typing import *
 mineru_tool = MineruComponent()
 from pathlib import Path
 
+# 获取项目根目录和图片存储路径
+project_root = Path(__file__).absolute().parent.parent
+# 图片存储在 data/stored_files/mineru_output 下
+MINERU_OUTPUT_DIR = project_root / "data" / "stored_files" / "mineru_output"
+
 def debug_data_structure(data: list, limit: int = 20, search_keyword: str = None) -> None:
     """调试：打印 data 中前 N 个 item 的结构，并搜索关键词"""
     print("\n" + "="*60)
@@ -187,10 +192,30 @@ def preprocess(data: list, chunk_min_size: int = 500, overlap_size: int = 100, d
     def extract_image_content(image_item):
         """
         提取图片的完整内容：
+        - 图片路径（img_path）- 供前端展示
         - 图片描述（image_caption）
         - 图片脚注（image_footnote）
         """
         content_parts = []
+
+        # 添加图片路径（使用完整路径供前端展示）
+        img_path = image_item.get('img_path', '')
+        if img_path:
+            # 转换为完整路径（跨平台兼容）
+            # 先将路径中的斜杠标准化，便于处理
+            normalized_path = img_path.replace("\\", "/")
+            if normalized_path.startswith("mineru_output/"):
+                # 提取相对路径部分
+                relative_path = normalized_path.replace("mineru_output/", "", 1)
+                full_path = MINERU_OUTPUT_DIR / relative_path
+            elif os.path.isabs(img_path):
+                full_path = Path(img_path)
+            else:
+                full_path = MINERU_OUTPUT_DIR / img_path
+
+            # 使用 as_posix() 获取 POSIX 风格路径（正斜杠），兼容 Markdown 和所有平台
+            full_img_path = full_path.as_posix()
+            content_parts.append(f'![图片]({full_img_path})')
 
         # 添加图片描述
         caption = image_item.get('image_caption', [])
@@ -250,6 +275,25 @@ def preprocess(data: list, chunk_min_size: int = 500, overlap_size: int = 100, d
     def extract_table_content(table_item):
         """提取表格的完整内容"""
         content_parts = []
+
+        # 添加表格图片路径（使用完整路径供前端展示）
+        img_path = table_item.get('img_path', '')
+        if img_path:
+            # 转换为完整路径（跨平台兼容）
+            # 先将路径中的斜杠标准化，便于处理
+            normalized_path = img_path.replace("\\", "/")
+            if normalized_path.startswith("mineru_output/"):
+                # 提取相对路径部分
+                relative_path = normalized_path.replace("mineru_output/", "", 1)
+                full_path = MINERU_OUTPUT_DIR / relative_path
+            elif os.path.isabs(img_path):
+                full_path = Path(img_path)
+            else:
+                full_path = MINERU_OUTPUT_DIR / img_path
+
+            # 使用 as_posix() 获取 POSIX 风格路径（正斜杠），兼容 Markdown 和所有平台
+            full_img_path = full_path.as_posix()
+            content_parts.append(f'![表格]({full_img_path})')
 
         # 添加表格标题
         caption = table_item.get('table_caption', [])
@@ -547,20 +591,25 @@ def load_and_store_file(
     print(f"Backend: {backend}, Debug: {debug}")
     print(f"{'='*60}\n")
 
+    # 获取项目根目录和文件路径
+    # load_files.py 在 tools/ 目录下，需要向上两级到达项目根目录
+    project_root = Path(__file__).absolute().parent.parent
     file_name = os.path.basename(file_path)
-    pre_path = Path(__file__).absolute().parent.parent
-    file_name = os.path.join(pre_path, "data", "stored_files", file_name)
+    file_path = project_root / "data" / "stored_files" / file_name
+
+    # 确保 stored_files 目录存在
+    (project_root / "data" / "stored_files").mkdir(parents=True, exist_ok=True)
 
     # @luxinrong：20260303修改：支持混合模式
     if backend == "both":
         # 混合模式：先运行 pipeline 获取表格，再运行 vlm 获取图表/公式
         result_pipeline = mineru_tool.run(
-            pdf_file_path=file_name,
+            pdf_file_path=str(file_path),
             parse_method="auto",
             backend="pipeline",
         )
         result_vlm = mineru_tool.run(
-            pdf_file_path=file_name,
+            pdf_file_path=str(file_path),
             parse_method="auto",
             backend="vlm-transformers",
         )
@@ -577,7 +626,7 @@ def load_and_store_file(
         recognized_text.data = combined_data
     else:
         recognized_text = mineru_tool.run(
-            pdf_file_path=file_name,
+            pdf_file_path=str(file_path),
             parse_method="auto",
             backend=backend,
         )
@@ -586,7 +635,12 @@ def load_and_store_file(
     import json
     original_filename = os.path.basename(file_path)
     file_basename = os.path.splitext(original_filename)[0]
-    content_list_path = os.path.join(pre_path, "data", "stored_files", f"{file_basename}_content_list.json")
+
+    # content_list 存储到 data/content_lists/ 目录
+    content_lists_dir = os.path.join(str(project_root), "data", "content_lists")
+    os.makedirs(content_lists_dir, exist_ok=True)
+    content_list_path = os.path.join(content_lists_dir, f"{file_basename}_content_list.json")
+
     with open(content_list_path, 'w', encoding='utf-8') as f:
         json.dump(recognized_text.data, f, ensure_ascii=False, indent=2)
     print(f"[INFO] content_list 已保存到: {content_list_path}")
@@ -598,7 +652,10 @@ def load_and_store_file(
     print(f"[DEBUG] preprocess 返回，生成了 {len(text_chunks)} 个 chunk")
 
     db = QdrantDB(input=qdrant_init)
-    file_name = file_name.split(".")[0]
+    # 使用文件完整路径去掉扩展名作为标签（与 file_manager_ui 保持一致）
+    # 使用 os.path.normpath 标准化路径，确保跨平台兼容
+    file_tag = os.path.normpath(str(file_path.parent / file_path.stem))
+    print(f"[DEBUG] file_tag = {file_tag}")
 
     # @luxinrong：20260303修改：为每个 chunk 构建带类型信息的 meta_data
     chunk_meta_list = []
@@ -622,14 +679,14 @@ def load_and_store_file(
 
     save_input = save2Qdrant_Input(
         text=text_chunks,
-        origin_file=file_name,
+        origin_file=file_tag,
         meta_data=final_meta
     )
     db.save2Qdrant(input=save_input)
 
     print(f"\n{'='*60}")
     print(f"=== load_and_store_file 处理完成 ===")
-    print(f"文件: {file_name}")
+    print(f"文件: {os.path.basename(file_path)}")
     print(f"生成 chunks 数量: {len(text_chunks)}")
     print(f"内容类型: {all_types}")
     print(f"{'='*60}\n")
