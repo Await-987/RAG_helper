@@ -296,6 +296,7 @@ def preprocess(data: list, chunk_min_size: int = 2000, overlap_size: int = 300, 
 
         return text.strip()
 
+
     def extract_table_content(table_item):
         """提取表格的完整内容
 

@@ -32,7 +32,8 @@ def get_files_without_chunks(storage_dir: Path, collection_name: str = "database
 
     for name in local_files:
         target_path = storage_dir / name
-        file_tag = str(target_path).split(".")[0]
+        # 生成 file_tag：直接使用相对路径（Docker 友好）
+        file_tag = storage_dir.as_posix() + "/" + name
 
         # 检查是否有切片
         chunk_count = db_stats.get(file_tag, 0)
@@ -174,9 +175,8 @@ def get_database_stats(collection_name: str = "database") -> Tuple[Dict[str, int
 
             for point in scroll_result:
                 tag = point.payload.get("Original_file", "未知文件")
-                # 使用 os.path.normpath 标准化路径，确保跨平台兼容
-                original_tag = tag
-                tag = os.path.normpath(tag)
+                # 数据库中存储的是 posix 格式的相对路径（正斜杠）
+                # 保持原样，不进行 normpath 转换，确保与生成 tag 时的格式一致
                 stats[tag] = stats.get(tag, 0) + 1
 
         # 调试：打印数据库中的文件标签
@@ -215,7 +215,8 @@ def get_file_info_list(storage_dir: Path) -> List[Dict]:
     # 处理本地存在的文件
     for name in local_files:
         target_path = storage_dir / name
-        file_tag = str(target_path).split(".")[0]
+        # 生成 file_tag：直接使用相对路径（Docker 友好）
+        file_tag = storage_dir.as_posix() + "/" + name
 
         chunk_count = db_stats.get(file_tag, 0)
 
@@ -233,7 +234,7 @@ def get_file_info_list(storage_dir: Path) -> List[Dict]:
     # 处理数据库残留（本地已删除但数据库还有的）
     for ghost_tag in tags_in_db:
         # 简化显示路径，只取最后一部分
-        display_name = ghost_tag.split(os.sep)[-1]
+        display_name = ghost_tag.split("/")[-1]  # 使用 / 分隔（数据库中存储的是 posix 格式）
         chunk_count = db_stats.get(ghost_tag, 0)
 
         file_info_list.append({
@@ -315,9 +316,9 @@ def get_local_files_with_db_status(storage_dir: Path) -> List[Dict]:
     # 处理本地文件
     for name in local_files:
         target_path = storage_dir / name
-        # 生成 file_tag，去掉扩展名并标准化路径
-        # 使用 resolve() 获取绝对路径，确保与数据库中的绝对路径匹配
-        file_tag = os.path.normpath(str(target_path.resolve().parent / target_path.stem))
+        # 生成 file_tag：直接使用相对路径（Docker 友好）
+        # storage_dir 本身就是相对于项目根目录的路径
+        file_tag = storage_dir.as_posix() + "/" + name
         chunk_count = db_stats.get(file_tag, 0)
 
         # 记录匹配的数据库 tag

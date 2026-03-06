@@ -217,14 +217,32 @@ def parse_and_render_content(content: str):
     if not images:
         # 没有图片，检查是否包含 HTML 标签（如思考过程的 details）
         if '<details>' in content or '<div' in content:
-            # 内容包含 HTML 标签，直接渲染 HTML
+            # 内容包含 HTML 标签，需要分离 HTML 和 markdown 部分
+            # 使用正则分离 details 部分和 markdown 部分
+            details_pattern = r'(<details>.*?</details>)'
+            parts = re.split(details_pattern, content, flags=re.DOTALL)
+
+            html_content = ""
+            for part in parts:
+                if not part:
+                    continue
+                if part.startswith('<details>'):
+                    # HTML 部分，直接使用
+                    html_content += part
+                else:
+                    # Markdown 部分，转换为 HTML
+                    if part.strip():
+                        html_content += markdown.markdown(part, extensions=['tables', 'fenced_code'])
+
             html = f"""<div class="assistant-message-container">
                     <div class="avatar assistant-avatar">🤖</div>
                     <div class="message-bubble assistant-bubble">
-                        {content}
+                        <div class="markdown-content">
+                            {html_content}
+                        </div>
                     </div>
                 </div>"""
-            st.html(html)
+            st.markdown(html, unsafe_allow_html=True)
         else:
             # 纯 Markdown 内容，使用 markdown 库渲染（支持表格）
             md_html = markdown.markdown(content, extensions=['tables', 'fenced_code'])
@@ -271,7 +289,12 @@ def parse_and_render_content(content: str):
                 html_content += md_html
             elif part_type == "image":
                 img_path = part_content
-                full_path = Path(img_path)
+                # 将相对路径转换为绝对路径（相对于项目根目录）
+                # 数据库中存储的是相对于项目根目录的路径，例如: data/stored_files/mineru_output/xxx.jpg
+                if os.path.isabs(img_path):
+                    full_path = Path(img_path)
+                else:
+                    full_path = project_root / img_path
 
                 # 检查文件是否存在
                 if full_path.exists():
