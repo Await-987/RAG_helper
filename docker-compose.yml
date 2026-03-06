@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  rag-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    
+    container_name: rag-chatbot
+    
+    ports:
+      - "8501:8501"
+    
+    volumes:
+      # 业务数据目录
+      - ./data:/app/data
+      # 用户数据目录（隐藏）
+      - ./.user:/app/.user
+      # 模型目录
+      - ./models:/app/models
+      # 环境配置
+      - ./.env:/app/.env
+    
+    environment:
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+      - PYTHONUNBUFFERED=1
+    
+    restart: unless-stopped
+    
+    # 可选：资源限制（根据你的机器配置调整）
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: '4'
+    #       memory: 8G
+    #     reservations:
+    #       cpus: '2'
+    #       memory: 4G

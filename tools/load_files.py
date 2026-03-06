@@ -11,6 +11,28 @@ project_root = Path(__file__).absolute().parent.parent
 # 图片存储在 data/stored_files/mineru_output 下
 MINERU_OUTPUT_DIR = project_root / "data" / "stored_files" / "mineru_output"
 
+
+# @shengwanying：20260306修改：路径辅助函数，确保跨平台兼容
+def get_relative_path(full_path: Path, base_dir: Path = None) -> str:
+    """
+    获取相对于项目根目录的相对路径，使用 POSIX 风格（正斜杠）
+
+    Args:
+        full_path: 完整路径
+        base_dir: 基准目录，默认为项目根目录
+
+    Returns:
+        相对路径字符串，使用正斜杠分隔
+    """
+    if base_dir is None:
+        base_dir = project_root
+    try:
+        relative = full_path.relative_to(base_dir)
+        return relative.as_posix()  # 使用正斜杠，跨平台兼容
+    except ValueError:
+        # 如果路径不在 base_dir 下，返回完整路径的 POSIX 格式
+        return str(full_path).replace("\\", "/")
+
 def debug_data_structure(data: list, limit: int = 20, search_keyword: str = None) -> None:
     """调试：打印 data 中前 N 个 item 的结构，并搜索关键词"""
     print("\n" + "="*60)
@@ -104,8 +126,8 @@ def debug_data_structure(data: list, limit: int = 20, search_keyword: str = None
         print("="*60 + "\n")
 
 
-def preprocess(data: list, chunk_min_size: int = 500, overlap_size: int = 100, debug: bool = False, search_keyword: str = None,
-                 split_tables: bool = True) -> Tuple[List[str], List[List[str]]]:
+def preprocess(data: list, chunk_min_size: int = 2000, overlap_size: int = 300, child_size: int = 400, child_overlap: int = 80, debug: bool = False, search_keyword: str = None,
+                 split_tables: bool = False) -> List[Dict]:
     # 调试模式：打印数据结构
     if debug:
         debug_data_structure(data, limit=30, search_keyword=search_keyword)
@@ -192,17 +214,18 @@ def preprocess(data: list, chunk_min_size: int = 500, overlap_size: int = 100, d
     def extract_image_content(image_item):
         """
         提取图片的完整内容：
-        - 图片路径（img_path）- 供前端展示
+        - 图片路径（img_path）- 供前端展示，使用相对路径
         - 图片描述（image_caption）
         - 图片脚注（image_footnote）
+
+        @shengwanying：20260306修改：使用相对路径，确保跨平台兼容
         """
         content_parts = []
 
-        # 添加图片路径（使用完整路径供前端展示）
+        # 添加图片路径（使用相对路径供前端展示）
         img_path = image_item.get('img_path', '')
         if img_path:
-            # 转换为完整路径（跨平台兼容）
-            # 先将路径中的斜杠标准化，便于处理
+            # 转换为完整路径
             normalized_path = img_path.replace("\\", "/")
             if normalized_path.startswith("mineru_output/"):
                 # 提取相对路径部分
@@ -213,9 +236,10 @@ def preprocess(data: list, chunk_min_size: int = 500, overlap_size: int = 100, d
             else:
                 full_path = MINERU_OUTPUT_DIR / img_path
 
-            # 使用 as_posix() 获取 POSIX 风格路径（正斜杠），兼容 Markdown 和所有平台
-            full_img_path = full_path.as_posix()
-            content_parts.append(f'![图片]({full_img_path})')
+            # @shengwanying：20260306修改：使用相对路径（相对于项目根目录）
+            # 这样可以在不同平台间迁移数据
+            relative_img_path = get_relative_path(full_path)
+            content_parts.append(f'![图片]({relative_img_path})')
 
         # 添加图片描述
         caption = image_item.get('image_caption', [])
@@ -273,14 +297,16 @@ def preprocess(data: list, chunk_min_size: int = 500, overlap_size: int = 100, d
         return text.strip()
 
     def extract_table_content(table_item):
-        """提取表格的完整内容"""
+        """提取表格的完整内容
+
+        @shengwanying：20260306修改：图片路径使用相对路径
+        """
         content_parts = []
 
-        # 添加表格图片路径（使用完整路径供前端展示）
+        # 添加表格图片路径（使用相对路径供前端展示）
         img_path = table_item.get('img_path', '')
         if img_path:
-            # 转换为完整路径（跨平台兼容）
-            # 先将路径中的斜杠标准化，便于处理
+            # 转换为完整路径
             normalized_path = img_path.replace("\\", "/")
             if normalized_path.startswith("mineru_output/"):
                 # 提取相对路径部分
@@ -291,9 +317,9 @@ def preprocess(data: list, chunk_min_size: int = 500, overlap_size: int = 100, d
             else:
                 full_path = MINERU_OUTPUT_DIR / img_path
 
-            # 使用 as_posix() 获取 POSIX 风格路径（正斜杠），兼容 Markdown 和所有平台
-            full_img_path = full_path.as_posix()
-            content_parts.append(f'![表格]({full_img_path})')
+            # @shengwanying：20260306修改：使用相对路径（相对于项目根目录）
+            relative_img_path = get_relative_path(full_path)
+            content_parts.append(f'![表格]({relative_img_path})')
 
         # 添加表格标题
         caption = table_item.get('table_caption', [])
@@ -355,8 +381,7 @@ def preprocess(data: list, chunk_min_size: int = 500, overlap_size: int = 100, d
 
         return '\n'.join(content_parts)
 
-    new_chunks = []
-    chunk_types = []  # @luxinrong：20260303修改：记录每个 chunk 包含的类型（equation, table 等）
+    new_chunks = []  # @shengwanying：20260306修改：原来存 str，现在存 Dict，每条包含 child、parent、types
 
     # 调试：跟踪 chunk 生成
     chunk_debug_info = []
@@ -368,40 +393,7 @@ def preprocess(data: list, chunk_min_size: int = 500, overlap_size: int = 100, d
         types_in_chunk = []  # @luxinrong：20260303修改：当前 chunk 的类型列表
         chunk_start_idx = idx  # 记录 chunk 起始索引
 
-        # 新增：如果当前项是表格，且 split_tables=True，则让表格独立成chunk
-        if split_tables and data[idx].get('type') == 'table':
-            chunk_type = 'table'
-            chunk_key = type2key[chunk_type]
-            if debug:
-                print(f"[DEBUG] 处理独立表格 idx={idx}/{len(data)}...")
-            content = extract_table_content(data[idx])
-            new_chunk = content + '\n'
-            types_in_chunk.append('table')
-
-            idx += 1
-            # 完成当前chunk
-            new_chunks.append(new_chunk)
-            chunk_types.append(types_in_chunk)
-
-            # 调试：记录
-            chunk_debug_info.append({
-                'chunk_num': chunk_num,
-                'start_idx': chunk_start_idx,
-                'end_idx': idx,
-                'length': len(new_chunk),
-                'types': types_in_chunk.copy(),
-                'preview': new_chunk[:100].replace('\n', ' '),
-                'is_standalone_table': True
-            })
-            chunk_num += 1
-            continue
-
         while len(new_chunk) < chunk_min_size and idx < len(data):
-            # @luxinrong 20260304修改：如果遇到表格且split_tables=True，跳出内层循环
-            if split_tables and data[idx].get('type') == 'table':
-                break  # 跳出内层循环，让表格在外层循环中独立处理
-            # chunk_type = data[idx]['type']
-            # chunk_key = type2key[chunk_type]
             # @luxinrong：20260126修改：处理未知类型报错，遇到 discarded 或其他未知类型就直接跳过，不会 KeyError
             chunk_type = data[idx].get('type')
             if chunk_type not in type2key:
@@ -440,16 +432,59 @@ def preprocess(data: list, chunk_min_size: int = 500, overlap_size: int = 100, d
 
             idx += 1 + skip_count  # 跳过已被公式消费的后续 items
 
-        # 如果chunk为空（比如因为遇到表格而break），跳过这个chunk
-        # 如果split_tables=True且当前item是表格，continue让它在外层循环中被独立处理
-        # 避免进入overlap阶段导致死循环
-        if split_tables and idx < len(data) and data[idx].get('type') == 'table':
-            continue
-
         if new_chunk.strip():
             new_chunk += '\n'
-            new_chunks.append(new_chunk)
-            chunk_types.append(types_in_chunk)
+            parent_text = new_chunk
+
+            # ↓ 新增：父chunk切子chunk (@shengwanying：20260306修改)
+            children = []
+            # 遍历父chunk中的原始items，表格单独成子chunk，其余按child_size切
+            segments = []  # list of (text, is_table)
+            temp_text = ''
+            for _item in data[chunk_start_idx:idx]:
+                _type = _item.get('type')
+                if _type == 'table':
+                    if temp_text.strip():
+                        segments.append((temp_text, False))
+                        temp_text = ''
+                    segments.append((extract_table_content(_item), True))
+                elif _type in type2key:
+                    _key = type2key[_type]
+                    if _type == 'equation':
+                        _content, _ = extract_equation_content(_item, data, 0)
+                    elif _type == 'image':
+                        _content = extract_image_content(_item)
+                    elif isinstance(_item.get(_key), str):
+                        _content = _item[_key]
+                    elif isinstance(_item.get(_key), list):
+                        _content = ','.join(_item[_key])
+                    else:
+                        _content = ''
+                    temp_text += _content
+            if temp_text.strip():
+                segments.append((temp_text, False))
+
+            # 对每个segment切子chunk
+            for seg_text, is_table in segments:
+                if is_table:
+                    # 表格整体作为一个子chunk
+                    children.append(seg_text)
+                else:
+                    # 普通文本按child_size滑动切，overlap=child_overlap
+                    start = 0
+                    while start < len(seg_text):
+                        children.append(seg_text[start:start + child_size])
+                        if start + child_size >= len(seg_text):
+                            break
+                        start += child_size - child_overlap
+
+            for child in children:
+                if child.strip():
+                    new_chunks.append({
+                        'child': child,
+                        'parent': parent_text,
+                        'types': types_in_chunk.copy()
+                    })
 
             # 调试：记录 chunk 信息
             chunk_debug_info.append({
@@ -458,61 +493,41 @@ def preprocess(data: list, chunk_min_size: int = 500, overlap_size: int = 100, d
                 'end_idx': idx,
                 'length': len(new_chunk),
                 'types': types_in_chunk.copy(),
-                'preview': new_chunk[:100].replace('\n', ' ')
+                'preview': new_chunk[:100].replace('\n', ' '),
+                'child_count': len(children)
             })
             chunk_num += 1
 
         # 检查是否已完成所有数据处理
         if idx >= len(data):
-            print(f"[DEBUG] 所有数据处理完成，共生成 {len(new_chunks)} 个 chunk，准备返回...")
+            print(f"[DEBUG] 所有数据处理完成，共生成 {len(new_chunks)} 个子chunk，准备返回...")
 
             # 调试：打印 chunk 生成摘要（在return之前）
             print("\n" + "="*60)
-            print(f"=== Chunk 生成摘要 (共 {len(new_chunks)} 个) ===")
+            print(f"=== Chunk 生成摘要 (共 {len(new_chunks)} 个子chunk) ===")
             print("="*60)
 
-            # 打印前5个chunk
-            print("\n前5个chunk:")
+            # 打印前5个父chunk
+            print("\n前5个父chunk:")
             for info in chunk_debug_info[:5]:
-                standalone = " [独立表格]" if info.get('is_standalone_table') else ""
-                print(f"  Chunk {info['chunk_num']}: items[{info['start_idx']}:{info['end_idx']}], "
-                      f"长度={info['length']}, 类型={info['types']}{standalone}")
+                print(f"  父Chunk {info['chunk_num']}: items[{info['start_idx']}:{info['end_idx']}], "
+                      f"长度={info['length']}, 类型={info['types']}, 子chunk数={info.get('child_count', 0)}")
                 print(f"    预览: {info['preview']}...")
-
-            # 查找独立表格的chunk
-            standalone_tables = [info for info in chunk_debug_info if info.get('is_standalone_table')]
-            if standalone_tables:
-                print(f"\n独立表格chunk (共{len(standalone_tables)}个):")
-                for info in standalone_tables:
-                    print(f"  Chunk {info['chunk_num']}: items[{info['start_idx']}], "
-                          f"长度={info['length']}")
-                    print(f"    预览: {info['preview']}...")
-
-            # 查找表27
-            table_27_chunks = [info for info in chunk_debug_info if '表27' in info.get('preview', '')]
-            if table_27_chunks:
-                print(f"\n包含表27的chunk:")
-                for info in table_27_chunks:
-                    print(f"  Chunk {info['chunk_num']}: items[{info['start_idx']}:{info['end_idx']}], "
-                          f"长度={info['length']}")
-                    print(f"    完整预览: {new_chunks[info['chunk_num']][:200]}...")
 
             print("="*60 + "\n")
 
-            return new_chunks, chunk_types  # @luxinrong：20260303修改：返回文本和类型
+            return new_chunks  # @shengwanying：20260306修改：返回
 
         temp_chunk = ''
         while len(temp_chunk) < overlap_size:
-            # chunk_type = data[idx - 1]['type']
-            # chunk_key = type2key[chunk_type]
             # @luxinrong：20260126修改：overlap 阶段遇到未知类型，直接停止回退
             chunk_type = data[idx - 1].get('type')
             if chunk_type not in type2key:
                 break
-            # @luxinrong：20260304修改：split_tables=True 时，overlap 阶段遇到表格应该停止回退
-            # 因为表格会被独立处理，不应该包含在 overlap 中
-            if split_tables and chunk_type == 'table':
+            # @shengwanying：20260306修改：overlap阶段遇到表格停止回退，避免下一个父chunk从表格中间开始破坏表格结构
+            if chunk_type == 'table':
                 break
+
             chunk_key = type2key[chunk_type]
 
             # 提取内容（与主逻辑保持一致）
@@ -540,38 +555,23 @@ def preprocess(data: list, chunk_min_size: int = 500, overlap_size: int = 100, d
 
     # 调试：打印 chunk 生成摘要
     print("\n" + "="*60)
-    print(f"=== Chunk 生成摘要 (共 {len(new_chunks)} 个) ===")
+    print(f"=== Chunk 生成摘要 (共 {len(new_chunks)} 个子chunk) ===")
     print("="*60)
 
-    # 打印前5个chunk
-    print("\n前5个chunk:")
+    # 打印前5个父chunk
+    print("\n前5个父chunk:")
     for info in chunk_debug_info[:5]:
-        standalone = " [独立表格]" if info.get('is_standalone_table') else ""
-        print(f"  Chunk {info['chunk_num']}: items[{info['start_idx']}:{info['end_idx']}], "
-              f"长度={info['length']}, 类型={info['types']}{standalone}")
+        print(f"  父Chunk {info['chunk_num']}: items[{info['start_idx']}:{info['end_idx']}], "
+              f"长度={info['length']}, 类型={info['types']}, 子chunk数={info.get('child_count', 0)}")
         print(f"    预览: {info['preview']}...")
-
-    # 查找独立表格的chunk
-    standalone_tables = [info for info in chunk_debug_info if info.get('is_standalone_table')]
-    if standalone_tables:
-        print(f"\n独立表格chunk (共{len(standalone_tables)}个):")
-        for info in standalone_tables:
-            print(f"  Chunk {info['chunk_num']}: items[{info['start_idx']}], "
-                  f"长度={info['length']}")
-            print(f"    预览: {info['preview']}...")
-
-    # 查找表27
-    table_27_chunks = [info for info in chunk_debug_info if '表27' in info.get('preview', '')]
-    if table_27_chunks:
-        print(f"\n包含表27的chunk:")
-        for info in table_27_chunks:
-            print(f"  Chunk {info['chunk_num']}: items[{info['start_idx']}:{info['end_idx']}], "
-                  f"长度={info['length']}")
-            print(f"    完整预览: {new_chunks[info['chunk_num']][:200]}...")
 
     print("="*60 + "\n")
 
-    return new_chunks, chunk_types  # @luxinrong：20260303修改：返回文本和类型
+    # @shengwanying：20260306修改：返回 List[Dict]，每条格式：
+    # {'child': 子chunk文本（约400字，用于向量检索，表格整体作为一个子chunk）,
+    #  'parent': 父chunk文本（约2000字，overlap300，返回给LLM作为上下文）,
+    #  'types': 该父chunk包含的内容类型列表，如['table', 'equation']}
+    return new_chunks
 
 
 def load_and_store_file(
@@ -646,48 +646,39 @@ def load_and_store_file(
     print(f"[INFO] content_list 已保存到: {content_list_path}")
 
     qdrant_init = QdrantDB_Init(collection_name=collection_name)
-    # @luxinrong：20260303修改：preprocess 返回 (文本列表, 类型列表)
+    # @shengwanying：20260306修改：preprocess 返回 List[Dict]（父子chunk）
     print("[DEBUG] 调用 preprocess...")
-    text_chunks, type_list = preprocess(data=recognized_text.data, debug=debug, search_keyword=search_keyword, split_tables=split_tables)
-    print(f"[DEBUG] preprocess 返回，生成了 {len(text_chunks)} 个 chunk")
+    chunks = preprocess(data=recognized_text.data, debug=debug, search_keyword=search_keyword, split_tables=split_tables)
+    print(f"[DEBUG] preprocess 返回，生成了 {len(chunks)} 个子chunk")
 
     db = QdrantDB(input=qdrant_init)
-    # 使用文件完整路径去掉扩展名作为标签（与 file_manager_ui 保持一致）
-    # 使用 os.path.normpath 标准化路径，确保跨平台兼容
-    file_tag = os.path.normpath(str(file_path.parent / file_path.stem))
-    print(f"[DEBUG] file_tag = {file_tag}")
+    # @shengwanying：20260306修改：使用相对路径，确保跨平台兼容
+    # 相对于项目根目录的路径，便于在不同平台间迁移数据
+    file_relative_path = (file_path.relative_to(project_root)).as_posix()
+    file_tag = file_relative_path
+    print(f"[DEBUG] file_tag (相对路径) = {file_tag}")
 
-    # @luxinrong：20260303修改：为每个 chunk 构建带类型信息的 meta_data
-    chunk_meta_list = []
-    for types in type_list:
-        chunk_meta = meta_data.copy() if meta_data else {}
-        if types:
-            chunk_meta['content_types'] = types
-        chunk_meta_list.append(chunk_meta)
-
-    # @luxinrong：20260303修改：由于 save2Qdrant 目前不支持每个 chunk 独立的 meta_data，
-    # 暂时将类型信息合并到 meta_data（影响：所有 chunk 共享类型列表）
-    # 后续如需精确到 chunk 级别的类型，需修改 qdrant.py 的 save2Qdrant 方法
-    all_types = []
-    for types in type_list:
-        all_types.extend(types)
-    all_types = list(set(all_types))  # 去重
-
+    # 收集所有类型用于 meta_data
+    all_types = list(set(t for chunk in chunks for t in chunk.get('types', [])))
     final_meta = meta_data.copy() if meta_data else {}
     if all_types:
         final_meta['content_types'] = all_types
 
-    save_input = save2Qdrant_Input(
-        text=text_chunks,
-        origin_file=file_tag,
-        meta_data=final_meta
-    )
-    db.save2Qdrant(input=save_input)
+    # @shengwanying：20260306修改：逐条存入：向量用child，Content用parent
+    for chunk in chunks:
+        chunk_meta = final_meta.copy()
+        chunk_meta['child_content'] = chunk['child']  # 把子chunk也存进payload
+        save_input = save2Qdrant_Input(
+            text=chunk['parent'],
+            origin_file=file_tag,
+            meta_data=chunk_meta
+        )
+        db.save2Qdrant(input=save_input, vector_text=chunk['child'])
 
     print(f"\n{'='*60}")
     print(f"=== load_and_store_file 处理完成 ===")
     print(f"文件: {os.path.basename(file_path)}")
-    print(f"生成 chunks 数量: {len(text_chunks)}")
+    print(f"生成子chunk数量: {len(chunks)}")
     print(f"内容类型: {all_types}")
     print(f"{'='*60}\n")
 
@@ -733,4 +724,143 @@ def clear_collection(collection_name: str = "database") -> bool:
     db.delete_or_reset_collection(collectionname=collection_name, reset=True)
     print(f"Collection '{collection_name}' 已清空")
     return True
+
+
+# ==================== 并行处理支持 ====================
+
+def _process_single_file(args):
+    """
+    多进程worker函数：处理单个PDF文件
+
+    注意：每个子进程会独立初始化mineru_tool和embedding模型
+    """
+    file_path, collection_name, dpi, meta_data, debug, search_keyword, split_tables = args
+
+    # 每个子进程需要独立创建mineru实例（避免多进程问题）
+    from tools import MineruComponent
+    mineru_tool_local = MineruComponent()
+
+    try:
+        # 获取项目根目录和文件路径
+        project_root = Path(__file__).absolute().parent.parent
+        file_name = os.path.basename(file_path)
+        file_path_full = project_root / "data" / "stored_files" / file_name
+
+        # 确保 stored_files 目录存在
+        (project_root / "data" / "stored_files").mkdir(parents=True, exist_ok=True)
+
+        # 调用mineru处理
+        recognized_text = mineru_tool_local.run(
+            pdf_file_path=str(file_path_full),
+            parse_method="auto",
+            backend="pipeline",
+        )
+
+        if recognized_text.status != "success":
+            return {"file": file_path, "success": False, "error": recognized_text.error}
+
+        # 处理数据 - @shengwanying：20260306修改：preprocess 返回 List[Dict]
+        chunks = preprocess(
+            data=recognized_text.data,
+            debug=debug,
+            search_keyword=search_keyword,
+            split_tables=split_tables
+        )
+
+        # 存入Qdrant（每个子进程独立连接）
+        from tools.qdrant import QdrantDB, QdrantDB_Init, save2Qdrant_Input
+        qdrant_init = QdrantDB_Init(collection_name=collection_name)
+        db = QdrantDB(input=qdrant_init)
+
+        # @shengwanying：20260306修改：使用相对路径，确保跨平台兼容
+        file_tag = (file_path_full.relative_to(project_root)).as_posix()
+
+        # 收集所有类型用于 meta_data
+        all_types = list(set(t for chunk in chunks for t in chunk.get('types', [])))
+        final_meta = meta_data.copy() if meta_data else {}
+        if all_types:
+            final_meta['content_types'] = all_types
+
+        # 逐条存入：向量用child，Content用parent
+        for chunk in chunks:
+            chunk_meta = final_meta.copy()
+            chunk_meta['child_content'] = chunk['child']
+            save_input = save2Qdrant_Input(
+                text=chunk['parent'],
+                origin_file=file_tag,
+                meta_data=chunk_meta
+            )
+            db.save2Qdrant(input=save_input, vector_text=chunk['child'])
+
+        return {"file": file_path, "success": True}
+
+    except Exception as e:
+        return {"file": file_path, "success": False, "error": str(e)}
+
+
+def load_multiple_files_parallel(
+    file_paths: list[str],
+    collection_name: str,
+    dpi: int = 150,
+    meta_data: Optional[dict] = None,
+    debug: bool = False,
+    search_keyword: str = None,
+    split_tables: bool = True,
+    num_workers: Optional[int] = None,
+) -> dict:
+    """
+    并行处理多个PDF文件（多进程版本）
+
+    Args:
+        file_paths: PDF文件路径列表
+        collection_name: Qdrant collection名称
+        dpi: MinerU处理DPI
+        meta_data: 元数据
+        debug: 调试模式
+        search_keyword: 搜索关键词
+        split_tables: 表格独立成chunk
+        num_workers: 进程数，默认为CPU核心数
+
+    Returns:
+        {"success": [...], "failed": [...]}
+    """
+    import multiprocessing
+    from tqdm import tqdm
+
+    if num_workers is None:
+        num_workers = multiprocessing.cpu_count()
+        # 限制最大进程数，避免资源耗尽
+        num_workers = min(num_workers, 8)
+
+    print(f"\n{'='*60}")
+    print(f"并行处理模式：{num_workers} 个进程")
+    print(f"文件数量：{len(file_paths)}")
+    print(f"{'='*60}\n")
+
+    # 准备参数
+    tasks = [
+        (fp, collection_name, dpi, meta_data, debug, search_keyword, split_tables)
+        for fp in file_paths
+    ]
+
+    results = {"success": [], "failed": []}
+
+    # 使用进程池
+    with multiprocessing.Pool(processes=num_workers) as pool:
+        # 使用imap_unordered获取实时进度
+        with tqdm(total=len(file_paths), desc="处理进度", unit="文件") as pbar:
+            for result in pool.imap_unordered(_process_single_file, tasks):
+                if result["success"]:
+                    results["success"].append(result["file"])
+                else:
+                    results["failed"].append(result["file"])
+                    error_msg = result.get("error", "未知错误")
+                    pbar.write(f"❌ 失败: {os.path.basename(result['file'])} - {error_msg}")
+                pbar.update(1)
+
+    print(f"\n{'='*60}")
+    print(f"处理完成！成功: {len(results['success'])}, 失败: {len(results['failed'])}")
+    print(f"{'='*60}\n")
+
+    return results
 

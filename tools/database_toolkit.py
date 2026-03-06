@@ -81,6 +81,8 @@ class DatabaseToolkit(BaseToolkit):
         """
         Rerank by CrossEncoder if available.
         We normalize rerank scores to 0~1 and overwrite hit['score'] for final sorting.
+
+        @shengwanying：20260306修改：rerank用子chunk，精度更高
         """
         reranker = self._get_reranker()
         if reranker is None or not hits:
@@ -90,7 +92,8 @@ class DatabaseToolkit(BaseToolkit):
         valid_hits = []
         for h in hits:
             payload = h.get("payload", {}) or {}
-            content = payload.get("Content") or payload.get("content") or ""
+            # 优先使用 child_content（子chunk），fallback 到 Content
+            content = payload.get("child_content") or payload.get("Content") or payload.get("content") or ""
             if not isinstance(content, str):
                 content = str(content)
             content = content.strip()
@@ -117,7 +120,18 @@ class DatabaseToolkit(BaseToolkit):
         # keep non-valid hits at the end
         rest = [h for h in hits if h not in valid_hits]
         out = sorted(valid_hits, key=lambda x: float(x.get("score", 0.0)), reverse=True) + rest
-        return out
+
+        # @shengwanying：20260306修改：父子chunk架构去重
+        # 同一个父chunk可能被多个子chunk命中，这里按Content去重，只保留分数最高的那条
+        seen_content = set()
+        deduped = []
+        for h in out:
+            payload = h.get("payload", {}) or {}
+            content = payload.get("Content", "") or payload.get("content", "")
+            if content not in seen_content:
+                seen_content.add(content)
+                deduped.append(h)
+        return deduped
 
     def search_database(
         self,

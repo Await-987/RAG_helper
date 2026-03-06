@@ -47,6 +47,9 @@ env/
 # Streamlit
 .streamlit/secrets.toml
 
+# User Data (sensitive information)
+.user/
+
 # data/storages/
 data/storages/*
 #  .gitkeep

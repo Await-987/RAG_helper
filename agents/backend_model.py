@@ -12,7 +12,7 @@ load_dotenv()
 def backend_model():
     api_key = os.getenv('OPENAI_API_KEY')
     url = os.getenv('url')
-    model_name = "qwq32b"
+    model_name = os.getenv('MODEL_NAME', 'qwq32b')
 
     return ModelFactory.create(
         model_platform=ModelPlatformType.OPENAI_COMPATIBLE_MODEL,
@@ -27,7 +27,7 @@ def backend_model():
 def stream_model():
     api_key = os.getenv('OPENAI_API_KEY')
     url = os.getenv('url')
-    model_name = "qwq32b"
+    model_name = os.getenv('MODEL_NAME', 'qwq32b')
     return ModelFactory.create(
         model_platform=ModelPlatformType.OPENAI_COMPATIBLE_MODEL,
         model_type=model_name,
@@ -70,11 +70,23 @@ def backend_embedding_model():
         BASE_DIR = Path(__file__).resolve().parent.parent
         path = os.path.join(BASE_DIR, path)
         print(f"Loading embedding model from: {path}")
-        print("  (首次加载需要 10-60 秒，请耐心等待...)")
+
+        # 自动检测并使用 CUDA（如果可用）
+        device = os.getenv('EMBEDDING_DEVICE', None)  # 允许通过环境变量指定
+        if device is None:
+            # 自动检测：优先使用 CUDA
+            import torch
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        print(f"  使用设备: {device}")
+        if device == 'cpu':
+            print("  (首次加载需要 10-60 秒，请耐心等待...)")
+        else:
+            print("  (GPU 加速模式)")
 
         _embedding_model_cache = SentenceTransformerEncoder(
             model_name=str(path),
-            device='cpu',
+            device=device,
             trust_remote_code=True,
         )
 
@@ -105,7 +117,15 @@ def backend_reranker_model():
             BASE_DIR = Path(__file__).resolve().parent.parent
             full_path = os.path.join(BASE_DIR, reranker_path)
             print(f"Loading reranker model from: {full_path}")
-            _reranker_model_cache = CrossEncoder(full_path)
+
+            # 自动检测并使用 CUDA（如果可用）
+            device = os.getenv('RERANKER_DEVICE', None)
+            if device is None:
+                import torch
+                device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+            print(f"  使用设备: {device}")
+            _reranker_model_cache = CrossEncoder(full_path, device=device)
             return _reranker_model_cache
     except Exception as e:
         print(f"Failed to load reranker: {e}")

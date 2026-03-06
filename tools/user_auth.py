@@ -10,8 +10,8 @@ from loguru import logger
 from datetime import datetime, timedelta
 
 
-# 用户数据文件路径
-USERS_FILE = Path(__file__).parent.parent / "data" / "users.json"
+# 用户数据文件路径（放在隐藏目录 .user 中，更安全）
+USERS_FILE = Path(__file__).parent.parent / ".user" / "users.json"
 DATA_DIR = USERS_FILE.parent
 
 

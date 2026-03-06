@@ -20,7 +20,7 @@ logger.add(
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from tools import load_multiple_files
+from tools import load_multiple_files, load_multiple_files_parallel
 from tools import file_manager_ui
 from tools import user_auth
 from tools.user_auth import UserRole
@@ -54,6 +54,8 @@ def init_session_state():
         st.session_state.uploaded_files_list = []
     if "page" not in st.session_state:
         st.session_state.page = "login"  # login, chat, admin
+    if "file_management_page" not in st.session_state:
+        st.session_state.file_management_page = 0  # 当前页码（从0开始）
 
 
 st.set_page_config(
@@ -124,6 +126,80 @@ def render_message(role: str, content: str):
         parse_and_render_content(content)
 
 
+def build_message_html(reasoning: str, response: str, reasoning_complete: bool, response_complete: bool) -> str:
+    """
+    构建统一的消息 HTML（思考过程 + 回答）
+    """
+    # 转换回答为 HTML
+    response_html = markdown.markdown(response or '', extensions=['tables', 'fenced_code'])
+
+    # 构建思考过程部分
+    reasoning_html = ""
+    if reasoning:
+        # 思考过程完成后折叠，进行中时展开
+        open_attr = "" if reasoning_complete else "open"
+        reasoning_html = f'''<details {open_attr}>
+            <summary>💭 思考过程</summary>
+            <div class="reasoning-content" style="white-space: pre-wrap; color: #666; margin-bottom: 10px;">{safe_html(reasoning)}</div>
+        </details>
+        <hr style="margin: 10px 0; border: none; border-top: 1px solid #e0e0e0;">'''
+
+    # 状态提示
+    status_indicator = ""
+    if not reasoning_complete and not response:
+        status_indicator = '<span class="loading-dots">正在思考<span>.</span><span>.</span><span>.</span></span>'
+    elif reasoning_complete and not response:
+        status_indicator = '<span class="loading-dots">正在生成回答<span>.</span><span>.</span><span>.</span></span>'
+
+    # 组装完整 HTML
+    return f'''<div class="assistant-message-container">
+            <div class="avatar assistant-avatar">🤖</div>
+            <div class="message-bubble assistant-bubble">
+                {status_indicator}
+                {reasoning_html}
+                <div class="markdown-content">
+                    {response_html}
+                </div>
+            </div>
+        </div>'''
+
+
+def is_tool_content(text: str) -> bool:
+    """
+    检测内容是否为工具调用相关（需要过滤）
+    包括：
+    - 工具调用代码块
+    - 工具返回结果
+    - JSON 格式的工具数据
+    """
+    if not text:
+        return True
+
+    text = text.strip()
+
+    # 检测工具调用相关标记
+    tool_indicators = [
+        'tool_calls',
+        'Tool"',
+        '"function"',
+        '"arguments"',
+        'search_database',
+        '<|',  # CAMEL 工具调用格式
+        'tool_use',
+        'ToolReturn'
+    ]
+
+    for indicator in tool_indicators:
+        if indicator in text:
+            return True
+
+    # 检测是否为纯代码块（可能包含工具调用）
+    if text.strip().startswith('```') and 'def ' in text:
+        return True
+
+    return False
+
+
 def parse_and_render_content(content: str):
     """
     解析内容中的图片链接并渲染
@@ -139,19 +215,29 @@ def parse_and_render_content(content: str):
     images = re.findall(img_pattern, content)
 
     if not images:
-        # 没有图片，使用 markdown 库渲染（支持表格）
-        # 使用 markdown 库把 markdown 转换成 HTML
-        md_html = markdown.markdown(content, extensions=['tables', 'fenced_code'])
-        st.markdown(f"""
-            <div class="assistant-message-container">
-                <div class="avatar assistant-avatar">🤖</div>
-                <div class="message-bubble assistant-bubble">
-                    <div class="markdown-content">
-                        {md_html}
+        # 没有图片，检查是否包含 HTML 标签（如思考过程的 details）
+        if '<details>' in content or '<div' in content:
+            # 内容包含 HTML 标签，直接渲染 HTML
+            html = f"""<div class="assistant-message-container">
+                    <div class="avatar assistant-avatar">🤖</div>
+                    <div class="message-bubble assistant-bubble">
+                        {content}
+                    </div>
+                </div>"""
+            st.html(html)
+        else:
+            # 纯 Markdown 内容，使用 markdown 库渲染（支持表格）
+            md_html = markdown.markdown(content, extensions=['tables', 'fenced_code'])
+            st.markdown(f"""
+                <div class="assistant-message-container">
+                    <div class="avatar assistant-avatar">🤖</div>
+                    <div class="message-bubble assistant-bubble">
+                        <div class="markdown-content">
+                            {md_html}
+                        </div>
                     </div>
                 </div>
-            </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
     else:
         # 分离文本和图片，构建完整的 HTML
         parts = []
@@ -472,15 +558,31 @@ with st.sidebar:
     page = st.radio(
         "📍 导航",
         ["💬 聊天", "📊 文件管理"],
-        label_visibility="collapsed"
+        label_visibility="collapsed",
+        key="nav_radio"
     )
+
+    # 检测导航菜单变化，清除特殊页面状态
+    if "last_nav_page" in st.session_state and st.session_state.last_nav_page != page:
+        # 导航菜单改变了，清除特殊页面状态（用户管理/修改密码）
+        if st.session_state.page in ["user_management", "change_password"]:
+            st.session_state.page = None
+            st.rerun()
+    st.session_state.last_nav_page = page
 
     # 管理员专用功能
     if st.session_state.user_role == UserRole.ADMIN:
         st.markdown("---")
         st.markdown("**🔧 管理员功能**")
-        if st.button("👥 用户管理", use_container_width=True):
-            st.session_state.page = "user_management"
+        # 用户管理按钮 - 可切换：点击打开，再次点击关闭
+        user_mgmt_btn_label = "👥 用户管理 (收起)" if st.session_state.page == "user_management" else "👥 用户管理"
+        if st.button(user_mgmt_btn_label, use_container_width=True):
+            if st.session_state.page == "user_management":
+                # 关闭用户管理，返回聊天
+                st.session_state.page = None
+            else:
+                # 打开用户管理
+                st.session_state.page = "user_management"
             st.rerun()
         if st.button("🔑 修改密码", use_container_width=True):
             st.session_state.page = "change_password"
@@ -539,13 +641,29 @@ with st.sidebar:
                                 progress_bar.progress((idx + 1) / len(uploaded_files))
 
                             try:
-                                results = load_multiple_files(
-                                    file_paths=saved_file_paths,
-                                    collection_name="database",
-                                    dpi=200,
-                                    debug=True,  # 启用调试模式
-                                    search_keyword="表27"  # 搜索"表27"相关内容
-                                )
+                                # 根据文件数量选择处理方式
+                                # 单个或少量文件：串行处理（更快启动，实时反馈）
+                                # 大量文件：并行处理（显著加速）
+                                use_parallel = len(saved_file_paths) > 5
+
+                                if use_parallel:
+                                    st.info(f"🚀 使用并行模式处理 {len(saved_file_paths)} 个文件...")
+                                    results = load_multiple_files_parallel(
+                                        file_paths=saved_file_paths,
+                                        collection_name="database",
+                                        dpi=200,
+                                        debug=False,  # 并行模式关闭调试
+                                        split_tables=True,
+                                        num_workers=None,  # 自动检测CPU核心数
+                                    )
+                                else:
+                                    results = load_multiple_files(
+                                        file_paths=saved_file_paths,
+                                        collection_name="database",
+                                        dpi=200,
+                                        debug=True,
+                                        search_keyword="表27"
+                                    )
 
                                 if results["success"]:
                                     st.success(f"✅ 成功导入 {len(results['success'])} 个文件！")
@@ -694,6 +812,16 @@ with st.sidebar:
     # 应用筛选和排序
     filtered_list = file_info_list.copy()
 
+    # 检测筛选条件变化，重置页码
+    filter_state_key = "last_filter_state"
+    current_filter_state = (filter_type, sort_by, sort_order, search_query)
+    last_filter_state = st.session_state.get(filter_state_key, None)
+
+    if last_filter_state != current_filter_state:
+        # 筛选条件变化了，重置到第一页
+        st.session_state.file_management_page = 0
+    st.session_state[filter_state_key] = current_filter_state
+
     # 类型筛选
     if filter_type == "已建库":
         filtered_list = [f for f in filtered_list if f["type"] == "imported"]
@@ -712,22 +840,42 @@ with st.sidebar:
     else:  # 切片数
         filtered_list.sort(key=lambda x: x["chunk_count"], reverse=(sort_order == "降序"))
 
-    # 显示筛选结果
+    # ========== 分页逻辑 ==========
+    PAGE_SIZE = 10
+    total_pages = max(1, (len(filtered_list) + PAGE_SIZE - 1) // PAGE_SIZE)
+
+    # 确保当前页码有效
+    if st.session_state.file_management_page >= total_pages:
+        st.session_state.file_management_page = total_pages - 1
+    if st.session_state.file_management_page < 0:
+        st.session_state.file_management_page = 0
+
+    current_page = st.session_state.file_management_page
+    start_idx = current_page * PAGE_SIZE
+    end_idx = start_idx + PAGE_SIZE
+    paginated_list = filtered_list[start_idx:end_idx]
+
+    # 显示筛选结果和分页信息
     if filter_type != "全部" or search_query:
         st.caption(f"📋 筛选结果: {len(filtered_list)} 个文件")
+    st.caption(f"📄 第 {current_page + 1}/{total_pages} 页，共 {len(filtered_list)} 个文件")
 
     # ========== 批量操作（仅管理员可见） ==========
     is_admin = st.session_state.user_role == UserRole.ADMIN
 
-    if filtered_list and is_admin:
+    if paginated_list and is_admin:
         # 全选按钮
-        batch_col1, batch_col2, batch_col3 = st.columns(3)
+        batch_col1, batch_col2, batch_col3, batch_col4, batch_col5 = st.columns(5)
         with batch_col1:
-            select_all = st.checkbox("📌 全选当前列表", key="select_all_checkbox")
+            select_all = st.checkbox("📌 全选当前页", key="select_all_checkbox")
 
         with batch_col2:
             if st.button("🗑️ 批量删除选中", key="batch_delete_btn", type="primary"):
-                selected_count = sum(1 for i in range(len(filtered_list)) if st.session_state.get(f"selected_{i}", False))
+                # 检查当前页选中数量
+                selected_count = 0
+                for page_idx, info in enumerate(paginated_list):
+                    if st.session_state.get(f"selected_page_{current_page}_{page_idx}", False):
+                        selected_count += 1
                 if selected_count > 0:
                     st.session_state["batch_delete_confirm"] = True
                     st.rerun()
@@ -736,11 +884,52 @@ with st.sidebar:
 
         with batch_col3:
             # 显示选中数量
-            selected_count = sum(1 for i in range(len(filtered_list)) if st.session_state.get(f"selected_{i}", False))
+            selected_count = sum(1 for page_idx in range(len(paginated_list)) if st.session_state.get(f"selected_page_{current_page}_{page_idx}", False))
             st.caption(f"已选: {selected_count} 个")
 
-        # 处理全选/取消全选
-        # 使用一个标志来避免重复设置
+        # 分页控制
+        with batch_col4:
+            if st.button("⬅️ 上一页", disabled=(current_page == 0), key="prev_page"):
+                st.session_state.file_management_page = current_page - 1
+                st.rerun()
+
+        with batch_col5:
+            if st.button("下一页 ➡️", disabled=(current_page >= total_pages - 1), key="next_page"):
+                st.session_state.file_management_page = current_page + 1
+                st.rerun()
+
+        # ========== 导入操作按钮 ==========
+        st.markdown("---")
+        import_col1, import_col2, import_col3 = st.columns(3)
+
+        with import_col1:
+            # 批量导入选中的未建库文件
+            if st.button("📥 批量导入选中", key="batch_import_selected_btn"):
+                selected_not_imported = []
+                for page_idx, info in enumerate(paginated_list):
+                    if st.session_state.get(f"selected_page_{current_page}_{page_idx}", False):
+                        if info["type"] == "not_imported" and info["path"]:
+                            selected_not_imported.append(str(info["path"]))
+                if selected_not_imported:
+                    st.session_state["batch_import_confirm"] = selected_not_imported
+                    st.rerun()
+                else:
+                    st.warning("⚠️ 请先选择要导入的未建库文件")
+
+        with import_col2:
+            # 一键导入所有未建库文件
+            not_imported_count = sum(1 for f in filtered_list if f["type"] == "not_imported")
+            if st.button(f"⚡ 一键全部导入 ({not_imported_count}个)", key="import_all_btn", disabled=(not_imported_count == 0)):
+                all_not_imported = [str(f["path"]) for f in filtered_list if f["type"] == "not_imported" and f["path"]]
+                if all_not_imported:
+                    st.session_state["import_all_confirm"] = all_not_imported
+                    st.rerun()
+
+        with import_col3:
+            # 显示未建库文件数量
+            st.caption(f"📋 未建库: {not_imported_count} 个")
+
+        # 处理全选/取消全选（仅当前页）
         select_all_key = "select_all_last_state"
         current_select_all = st.session_state.get("select_all_checkbox", False)
         last_select_all = st.session_state.get(select_all_key, None)
@@ -748,11 +937,11 @@ with st.sidebar:
         # 只有当全选状态发生变化时才更新
         if last_select_all is not None and current_select_all != last_select_all:
             if current_select_all:
-                for i in range(len(filtered_list)):
-                    st.session_state[f"selected_{i}"] = True
+                for page_idx in range(len(paginated_list)):
+                    st.session_state[f"selected_page_{current_page}_{page_idx}"] = True
             else:
-                for i in range(len(filtered_list)):
-                    st.session_state.pop(f"selected_{i}", None)
+                for page_idx in range(len(paginated_list)):
+                    st.session_state[f"selected_page_{current_page}_{page_idx}"] = False
 
         # 保存当前状态
         st.session_state[select_all_key] = current_select_all
@@ -765,8 +954,9 @@ with st.sidebar:
         selected_files = []
         imported_count = 0
         ghost_count = 0
-        for i, info in enumerate(filtered_list):
-            if st.session_state.get(f"selected_{i}", False):
+        # 只检查当前页选中的文件
+        for page_idx, info in enumerate(paginated_list):
+            if st.session_state.get(f"selected_page_{current_page}_{page_idx}", False):
                 selected_files.append(info["name"])
                 if info["type"] == "imported":
                     imported_count += 1
@@ -796,10 +986,10 @@ with st.sidebar:
                     local_success = 0
                     local_fail = 0
 
-                    # 先收集所有要删除的文件信息
+                    # 先收集所有要删除的文件信息（当前页）
                     to_delete = []
-                    for i, info in enumerate(filtered_list):
-                        if st.session_state.get(f"selected_{i}", False):
+                    for page_idx, info in enumerate(paginated_list):
+                        if st.session_state.get(f"selected_page_{current_page}_{page_idx}", False):
                             to_delete.append(info)
                             if info["type"] == "imported":
                                 imported_count += 1
@@ -829,7 +1019,7 @@ with st.sidebar:
                     # 清除选择状态
                     st.session_state.pop("batch_delete_confirm", None)
                     for key in list(st.session_state.keys()):
-                        if key.startswith("selected_"):
+                        if key.startswith("selected_page_"):
                             del st.session_state[key]
 
                     # 显示结果
@@ -857,10 +1047,103 @@ with st.sidebar:
                 st.session_state.pop("batch_delete_confirm", None)
                 st.rerun()
 
+    # ========== 批量导入选中确认对话框（仅管理员可见） ==========
+    if is_admin and st.session_state.get("batch_import_confirm"):
+        files_to_import = st.session_state.get("batch_import_confirm", [])
+        st.markdown("---")
+        st.success(f"### 📥 确认批量导入")
+        st.write(f"将导入以下 **{len(files_to_import)}** 个未建库文件：")
+        for file_path in files_to_import:
+            file_name = os.path.basename(file_path)
+            st.write(f" - `{file_name}`")
+
+        col_confirm, col_cancel = st.columns(2)
+        with col_confirm:
+            if st.button("✅ 确认导入", key="batch_import_yes", type="primary"):
+                with st.spinner(f"⏳ 正在导入 {len(files_to_import)} 个文件，请稍候..."):
+                    try:
+                        results = file_manager_ui.batch_import_files(
+                            file_paths=files_to_import,
+                            collection_name="database",
+                            dpi=200,
+                            debug=True
+                        )
+
+                        # 显示结果
+                        if results["success_count"] > 0:
+                            st.success(f"✅ 成功导入 {results['success_count']} 个文件！")
+                        if results["failed_count"] > 0:
+                            st.error(f"❌ 导入失败 {results['failed_count']} 个文件")
+                            with st.expander("查看失败文件"):
+                                for file_path, error in results["failed"]:
+                                    file_name = os.path.basename(file_path)
+                                    st.write(f" - `{file_name}`: {error}")
+
+                    except Exception as e:
+                        logger.error(f"批量导入异常: {e}")
+                        st.error(f"❌ 批量导入失败: {str(e)}")
+                    finally:
+                        st.session_state.pop("batch_import_confirm", None)
+                        st.rerun()
+
+        with col_cancel:
+            if st.button("❌ 取消", key="batch_import_no"):
+                st.session_state.pop("batch_import_confirm", None)
+                st.rerun()
+
+    # ========== 一键全部导入确认对话框（仅管理员可见） ==========
+    if is_admin and st.session_state.get("import_all_confirm"):
+        files_to_import = st.session_state.get("import_all_confirm", [])
+        st.markdown("---")
+        st.success(f"### ⚡ 确认全部导入")
+        st.write(f"将导入所有 **{len(files_to_import)}** 个未建库文件：")
+        st.caption(f"（仅显示前 10 个文件）")
+        for file_path in files_to_import[:10]:
+            file_name = os.path.basename(file_path)
+            st.write(f" - `{file_name}`")
+        if len(files_to_import) > 10:
+            st.write(f" - ... 还有 {len(files_to_import) - 10} 个文件")
+
+        st.warning(f"⚠️ 这可能需要一些时间，请耐心等待...")
+
+        col_confirm, col_cancel = st.columns(2)
+        with col_confirm:
+            if st.button("✅ 确认全部导入", key="import_all_yes", type="primary"):
+                with st.spinner(f"⏳ 正在导入 {len(files_to_import)} 个文件，请稍候..."):
+                    try:
+                        results = file_manager_ui.batch_import_files(
+                            file_paths=files_to_import,
+                            collection_name="database",
+                            dpi=200,
+                            debug=True
+                        )
+
+                        # 显示结果
+                        if results["success_count"] > 0:
+                            st.success(f"✅ 成功导入 {results['success_count']} 个文件！")
+                        if results["failed_count"] > 0:
+                            st.error(f"❌ 导入失败 {results['failed_count']} 个文件")
+                            with st.expander("查看失败文件"):
+                                for file_path, error in results["failed"]:
+                                    file_name = os.path.basename(file_path)
+                                    st.write(f" - `{file_name}`: {error}")
+
+                    except Exception as e:
+                        logger.error(f"全部导入异常: {e}")
+                        st.error(f"❌ 全部导入失败: {str(e)}")
+                    finally:
+                        st.session_state.pop("import_all_confirm", None)
+                        st.rerun()
+
+        with col_cancel:
+            if st.button("❌ 取消", key="import_all_no"):
+                st.session_state.pop("import_all_confirm", None)
+                st.rerun()
+
     # ========== 文件列表 ==========
     st.markdown("**📁 文件列表：**")
 
-    if filtered_list:
+    if paginated_list:
         # 表头（根据角色显示不同列）
         is_admin = st.session_state.user_role == UserRole.ADMIN
 
@@ -889,8 +1172,8 @@ with st.sidebar:
 
         st.markdown("---")
 
-        # 文件列表
-        for i, info in enumerate(filtered_list):
+        # 文件列表（当前页）
+        for page_idx, info in enumerate(paginated_list):
             with st.container():
                 if is_admin:
                     col_select, col_name, col_chunks, col_type, col_action = st.columns([0.5, 3, 2, 2, 1])
@@ -900,10 +1183,10 @@ with st.sidebar:
                 # 复选框（仅管理员可见）
                 if is_admin:
                     with col_select:
-                        # 复选框 - key 必须与后续检查代码一致（selected_{i}）
+                        # 复选框 - 使用新的 key 格式
                         st.checkbox(
                             "select",
-                            key=f"selected_{i}",
+                            key=f"selected_page_{current_page}_{page_idx}",
                             label_visibility="collapsed"
                         )
 
@@ -935,10 +1218,10 @@ with st.sidebar:
                 if is_admin:
                     with col_action:
                         # 单个删除按钮
-                        button_key = f"single_delete_{i}"
+                        button_key = f"single_delete_page_{current_page}_{page_idx}"
                         help_text = "删除此文件（本地+数据库）" if info["type"] != "ghost" else "删除此文件（仅数据库记录）"
                         if st.button("🗑️", key=button_key, help=help_text):
-                            st.session_state[f"single_delete_confirm_{i}"] = True
+                            st.session_state[f"single_delete_confirm_page_{current_page}_{page_idx}"] = True
                             st.rerun()
                 else:
                     # 普通用户看到的状态信息
@@ -951,7 +1234,7 @@ with st.sidebar:
                             st.caption("⚠️ 未建库")
 
                 # 单个删除确认对话框（仅管理员可见）
-                if is_admin and st.session_state.get(f"single_delete_confirm_{i}", False):
+                if is_admin and st.session_state.get(f"single_delete_confirm_page_{current_page}_{page_idx}", False):
                     with st.container():
                         # 根据文件类型显示不同的确认信息
                         if info["type"] == "imported":
@@ -964,7 +1247,7 @@ with st.sidebar:
                         st.info(confirm_msg)
                         col_yes, col_no = st.columns(2)
                         with col_yes:
-                            if st.button("✅ 确认", key=f"single_yes_{i}", type="primary"):
+                            if st.button("✅ 确认", key=f"single_yes_page_{current_page}_{page_idx}", type="primary"):
                                 try:
                                     # 根据类型执行不同的删除操作
                                     db_deleted = True
@@ -992,13 +1275,13 @@ with st.sidebar:
                                     else:
                                         st.error(f"❌ 删除失败")
 
-                                    del st.session_state[f"single_delete_confirm_{i}"]
+                                    del st.session_state[f"single_delete_confirm_page_{current_page}_{page_idx}"]
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"❌ 删除失败: {str(e)}")
                         with col_no:
-                            if st.button("❌ 取消", key=f"single_no_{i}"):
-                                del st.session_state[f"single_delete_confirm_{i}"]
+                            if st.button("❌ 取消", key=f"single_no_page_{current_page}_{page_idx}"):
+                                del st.session_state[f"single_delete_confirm_page_{current_page}_{page_idx}"]
                                 st.rerun()
     else:
         st.info("📭 没有找到匹配的文件")
@@ -1041,45 +1324,66 @@ if prompt := st.chat_input("💭 请输入您的问题..."):
     # 创建助手消息容器
     assistant_container = st.empty()
 
-    # 显示加载状态
-    assistant_container.markdown(f"""
-        <div class="assistant-message-container">
-            <div class="avatar assistant-avatar">🤖</div>
-            <div class="message-bubble assistant-bubble">
-                <div class="loading-dots">正在思考<span>.</span><span>.</span><span>.</span></div>
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
-
     try:
         response = st.session_state.chat_agent.step(prompt)
         print(f"Response from chat_agent: {response}")
 
-        full_response = ""
-        has_shown_content = False  # 标记是否已显示内容
+        # 流式处理响应 - 统一气泡显示思考过程和回答
+        full_reasoning = ""  # 存储完整的思考过程
+        full_response = ""   # 存储完整的回答
 
-        # 流式处理响应
+        # 状态追踪
+        reasoning_complete = False  # 思考过程是否完成
+        response_complete = False   # 回答是否完成
+
+        # 创建统一的显示容器
+        unified_container = st.empty()
+
+        # 首先显示初始状态（正在思考）
+        initial_html = build_message_html("", "", reasoning_complete=False, response_complete=False)
+        unified_container.html(initial_html)
+
         for chunk_response in response:
             if hasattr(chunk_response, 'msgs') and len(chunk_response.msgs) > 0:
                 message = chunk_response.msgs[0]
+
+                # 处理思考过程（过滤工具调用阶段的内容）
+                if hasattr(message, 'reasoning_content') and message.reasoning_content:
+                    reasoning_text = message.reasoning_content
+
+                    # 过滤工具调用相关内容
+                    # 如果包含工具调用标记，跳过
+                    if reasoning_text and not is_tool_content(reasoning_text):
+                        if reasoning_text.startswith(full_reasoning):
+                            full_reasoning = reasoning_text
+                        else:
+                            full_reasoning += reasoning_text
+
+                # 处理回答内容
                 content_text = message.content
                 if content_text:
-                    if content_text.startswith(full_response):
-                        full_response = content_text
-                    else:
-                        full_response += content_text
+                    # 过滤工具调用阶段的内容
+                    if not is_tool_content(content_text):
+                        if content_text.startswith(full_response):
+                            full_response = content_text
+                        else:
+                            full_response += content_text
 
-                    # 只有当有实际内容（不只是符号）时才更新UI
-                    # 在工具调用期间，content可能为空或只有符号，保持"正在思考"
-                    if full_response and len(full_response.strip()) > 0 and not has_shown_content:
-                        has_shown_content = True
-                        # 第一次有内容时，更新UI - 使用带气泡的渲染
-                        render_streaming_content(full_response, assistant_container)
-                    elif has_shown_content and full_response:
-                        # 已经显示过内容，继续更新
-                        render_streaming_content(full_response, assistant_container)
+                # 构建显示内容
+                display_html = build_message_html(full_reasoning, full_response, reasoning_complete, response_complete)
+                unified_container.html(display_html)
 
-        # 如果没有流式内容，尝试获取完整响应
+        # 流式结束后的最终状态
+        reasoning_complete = True
+        response_complete = True
+
+        # 确保获取完整内容
+        if not full_reasoning:
+            if hasattr(response, 'msg') and hasattr(response.msg, 'reasoning_content'):
+                full_reasoning = response.msg.reasoning_content or ""
+            elif hasattr(response, 'msgs') and len(response.msgs) > 0:
+                full_reasoning = response.msgs[-1].reasoning_content or ""
+
         if not full_response:
             if hasattr(response, 'msg') and hasattr(response.msg, 'content'):
                 full_response = response.msg.content
@@ -1088,9 +1392,18 @@ if prompt := st.chat_input("💭 请输入您的问题..."):
             else:
                 full_response = "抱歉，我无法生成回复。"
 
+        # 最终渲染（思考过程折叠）
+        final_html = build_message_html(full_reasoning, full_response, reasoning_complete=True, response_complete=True)
+        unified_container.html(final_html)
+
+        # 存储消息到历史（包含思考过程和回答）
+        final_message_content = full_response
+        if full_reasoning:
+            final_message_content = f"<details>\n<summary>💭 思考过程</summary>\n\n{full_reasoning}\n\n</details>\n\n---\n\n{full_response}"
+
         st.session_state.messages.append({
             "role": "assistant",
-            "content": full_response
+            "content": final_message_content
         })
 
         st.rerun()

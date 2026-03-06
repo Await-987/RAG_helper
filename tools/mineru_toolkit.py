@@ -2,7 +2,7 @@
 import os
 from pathlib import Path
 absolute_path = Path(__file__).absolute().parent.parent
-mineru_path = os.path.join(absolute_path, "config/mineru.json")
+mineru_path = str(absolute_path / "config" / "mineru.json")
 
 os.environ["MINERU_TOOLS_CONFIG_JSON"] = mineru_path
 print("mineru:", mineru_path)
@@ -34,7 +34,9 @@ from mineru.backend.vlm.vlm_middle_json_mkcontent import union_make as vlm_union
 # @qiaoyu：20260303修改：使用本地 VLM 模型（已下载到 models/mineru2.5/）
 os.environ['MINERU_MODEL_SOURCE'] = "local"
 
-os.environ['MODELSCOPE_CACHE'] = r"~/.cache/modelscope/hub/models/OpenDataLab/PDF-Extract-Kit-1./models"
+# 跨平台兼容：使用 Path.home() 代替 ~
+cache_dir = Path.home() / ".cache" / "modelscope" / "hub" / "models" / "OpenDataLab" / "PDF-Extract-Kit-1." / "models"
+os.environ['MODELSCOPE_CACHE'] = str(cache_dir)
 # 添加这行来使用本地缓存
 os.environ['MODELSCOPE_USE_CACHE'] = "1"
 

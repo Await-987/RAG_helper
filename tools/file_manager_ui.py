@@ -82,15 +82,16 @@ def import_file_to_database(file_path: str, collection_name: str = "database",
 
 
 def batch_import_files(file_paths: List[str], collection_name: str = "database",
-                        dpi: int = 200, debug: bool = False) -> Dict:
+                        dpi: int = 200, debug: bool = False, num_workers: Optional[int] = None) -> Dict:
     """
-    批量导入文件到数据库
+    批量导入文件到数据库（串行版本，避免 PDFium 线程安全问题）
 
     Args:
         file_paths: 文件路径列表
         collection_name: 集合名称
         dpi: MinerU 处理 DPI
         debug: 是否启用调试模式
+        num_workers: 保留参数但暂不使用（PDFium 不是线程安全的）
 
     Returns:
         {
@@ -109,23 +110,37 @@ def batch_import_files(file_paths: List[str], collection_name: str = "database",
         "failed_count": 0
     }
 
-    for file_path in file_paths:
-        success, msg, chunks = import_file_to_database(
-            file_path=file_path,
-            collection_name=collection_name,
-            dpi=dpi,
-            debug=debug
-        )
+    if not file_paths:
+        return results
 
-        if success:
-            results["success"].append(file_path)
-            results["success_count"] += 1
-            logger.info(f"✅ 成功导入: {file_path}")
-        else:
-            results["failed"].append((file_path, msg))
+    logger.info(f"开始串行导入 {len(file_paths)} 个文件（PDFium 不支持多线程）")
+
+    # 串行处理每个文件（PDFium 不是线程安全的）
+    for i, file_path in enumerate(file_paths, 1):
+        try:
+            logger.info(f"[{i}/{len(file_paths)}] 正在导入: {os.path.basename(file_path)}")
+            success, msg, chunks = import_file_to_database(
+                file_path=file_path,
+                collection_name=collection_name,
+                dpi=dpi,
+                debug=debug
+            )
+
+            if success:
+                results["success"].append(file_path)
+                results["success_count"] += 1
+                logger.info(f"✅ [{i}/{len(file_paths)}] 成功导入: {os.path.basename(file_path)}")
+            else:
+                results["failed"].append((file_path, msg))
+                results["failed_count"] += 1
+                logger.error(f"❌ [{i}/{len(file_paths)}] 导入失败: {os.path.basename(file_path)} - {msg}")
+
+        except Exception as e:
+            results["failed"].append((file_path, str(e)))
             results["failed_count"] += 1
-            logger.error(f"❌ 导入失败: {file_path} - {msg}")
+            logger.error(f"❌ [{i}/{len(file_paths)}] 导入异常: {os.path.basename(file_path)} - {e}")
 
+    logger.info(f"批量导入完成：成功 {results['success_count']} 个，失败 {results['failed_count']} 个")
     return results
 
 

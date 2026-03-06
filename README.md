@@ -19,7 +19,8 @@ run/
 │   │   └── mineru_output/                # MinerU 输出（表格/图片）
 │   ├── content_lists/                    # 文档内容列表缓存
 │   ├── exported_chunks/                  # 导出的切片数据
-│   ├── storages/                         # 旧版存储目录
+│   └── storages/                         # Qdrant 向量数据库存储
+├── .user/                               # 用户数据目录（隐藏）
 │   └── users.json                        # 用户认证数据
 │
 ├── docs/                                # 文档目录
@@ -104,19 +105,45 @@ pip install -r requirements.txt
 
 ### 3. 配置环境变量
 
-创建 `.env` 文件并填写 API 配置：
+创建 `.env` 文件并填写配置：
 
 ```env
 # OpenAI 兼容 API 配置（用于主对话模型）
 OPENAI_API_KEY=your-api-key-here
 url=https://your-api-endpoint/v1
 
-# Qwen API 配置（用于 Embedding 和 OCR）
-QWEN_API_KEY=your-qwen-api-key-here
-url_qwen=https://dashscope.aliyuncs.com/compatible-mode/v1
+# 模型名称（可选，默认 qwq32b）
+MODEL_NAME=qwq32b
+
+# 本地模型路径（相对于项目根目录）
+conan_path=models/bge-base-zh-v1.5
+reranker_path=models/bge-reranker-base
 ```
 
-### 4. 启动服务
+### 4. 下载模型
+
+本项目需要以下本地模型（总大小约 23GB）：
+
+#### 方式一：从 NAS 下载（推荐）
+
+| 项 | 内容 |
+|---|---|
+| 下载链接 | https://ug.link/nas-miaohan-sh1/filemgr/share-download/?id=780cb3acf9154a0c9ad7ec099dfd161d |
+| 访问密码 | **pdXF** |
+
+下载后解压，将 `models/` 文件夹放到项目根目录下。
+
+#### 模型清单
+
+| 模型目录 | 大小 | 用途 |
+|---------|------|------|
+| `bge-base-zh-v1.5/` | 391 MB | Embedding 模型（文本向量化） |
+| `bge-reranker-base/` | 6.3 GB | 重排序模型（优化检索结果） |
+| `mineru/` | 16 GB | MinerU PDF 解析依赖 |
+
+> **注意**：首次加载模型需要 10-60 秒，请耐心等待。
+
+### 5. 启动服务
 
 ```bash
 streamlit run run/streamlit.py
@@ -124,13 +151,133 @@ streamlit run run/streamlit.py
 
 服务将在浏览器中自动打开，默认地址：`http://localhost:8501`
 
-### 5. Docker 部署
+### 6. Docker 部署
 
-本项目提供 Dockerfile 支持离线部署：
+本项目提供完整的 Docker 部署方案，支持数据持久化和卷挂载。
+
+#### 6.1 项目结构（Docker）
+
+```
+├── Dockerfile              # 镜像构建文件
+├── docker-compose.yml      # Docker Compose 编排配置
+├── .dockerignore          # 构建忽略文件
+│
+├── data/                  # 业务数据（挂载到容器外）
+│   ├── storages/          # Qdrant 向量数据库
+│   ├── stored_files/      # 上传的文件
+│   ├── content_lists/     # 文件列表缓存
+│   └── exported_chunks/   # 导出的切块
+├── .user/                 # 用户数据（挂载到容器外，隐藏目录）
+├── models/                # 本地模型（挂载到容器外）
+│   ├── bge-base-zh-v1.5/  # Embedding 模型
+│   └── bge-reranker-base/ # Reranker 模型
+└── .env                   # 环境配置（挂载到容器外）
+```
+
+#### 6.2 使用 Docker Compose（推荐）
+
+**CPU 版本：**
 
 ```bash
-docker build -t rag-assistant .
-docker run -p 8501:8501 rag-assistant
+# 构建镜像
+docker-compose build
+
+# 启动服务（后台运行）
+docker-compose up -d
+
+# 查看日志
+docker-compose logs -f
+
+# 停止服务
+docker-compose down
+```
+
+**GPU 版本（需要 NVIDIA GPU + nvidia-docker）：**
+
+```bash
+# 构建镜像
+docker-compose -f docker-compose.gpu.yml build
+
+# 启动服务
+docker-compose -f docker-compose.gpu.yml up -d
+
+# 查看日志
+docker-compose -f docker-compose.gpu.yml logs -f
+
+# 停止服务
+docker-compose -f docker-compose.gpu.yml down
+```
+
+> **GPU 加速说明**：GPU 版本可将 embedding 和 reranker 速度提升 **10-20 倍**，适合大规模建库场景。
+
+#### 6.3 GPU 支持配置
+
+本项目支持 CUDA 加速，可用于 embedding 和 reranker 模型：
+
+**环境变量配置（.env）：**
+
+```env
+# 设备配置（可选，默认自动检测）
+EMBEDDING_DEVICE=cuda   # embedding 模型: cuda/cpu/auto
+RERANKER_DEVICE=cuda     # reranker 模型: cuda/cpu/auto
+```
+
+**性能对比：**
+
+| 操作 | CPU | GPU (CUDA) | 加速比 |
+|------|-----|------------|--------|
+| 单文本 embedding | 500ms | 50ms | 10x |
+| 1000 条文本 | ~8 分钟 | ~50 秒 | 10x |
+| 1375 个 PDF 建库 | ~2-3 小时 | ~10-20 分钟 | 10x+ |
+
+**前提条件：**
+
+- NVIDIA GPU（支持 CUDA 11.8+）
+- 安装 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+- 验证：`docker run --rm --gpus all nvidia/cuda:12.3.1-base-ubuntu22.04 nvidia-smi`
+
+#### 6.4 Volume 挂载说明
+
+| 宿主机路径 | 容器内路径 | 说明 |
+|-----------|-----------|------|
+| `./data` | `/app/data` | 业务数据目录 |
+| `./.user` | `/app/.user` | 用户认证数据 |
+| `./models` | `/app/models` | 本地 ML 模型 |
+| `./.env` | `/app/.env` | 环境变量配置 |
+
+> **注意**：数据和模型存储在容器外部，容器删除后数据不会丢失。
+
+#### 6.5 访问应用
+
+启动后浏览器访问：`http://localhost:8501`
+
+#### 6.6 使用 Docker 直接构建
+
+```bash
+# 构建镜像
+docker build -t rag-chatbot .
+
+# 运行容器
+docker run -d \
+  -p 8501:8501 \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/.user:/app/.user \
+  -v $(pwd)/models:/app/models \
+  --env-file .env \
+  --name rag-chatbot \
+  rag-chatbot
+```
+
+#### 6.7 数据迁移（如果有旧数据）
+
+如果你有旧版本的 `data/users.json`，需要迁移到新位置：
+
+```bash
+# 创建 .user 目录
+mkdir -p .user
+
+# 迁移用户数据
+mv data/users.json .user/users.json
 ```
 
 ## 功能特色
