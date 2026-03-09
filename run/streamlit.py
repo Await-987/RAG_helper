@@ -8,6 +8,7 @@ from config import layout
 from loguru import logger
 import markdown
 import html as html_module
+import atexit
 
 # 配置日志输出到终端
 logger.remove()  # 移除默认handler
@@ -25,6 +26,36 @@ from tools import file_manager_ui
 from tools import user_auth
 from tools.user_auth import UserRole
 from agents import chat_agent_factory
+
+
+# ==================== 表格摘要模型生命周期管理 ====================
+def init_table_summary_model():
+    """初始化表格摘要小模型"""
+    try:
+        from agents.backend_model import init_table_summary_model
+        success = init_table_summary_model()
+        if success:
+            logger.info("✅ 表格摘要模型初始化成功")
+        else:
+            logger.warning("⚠️ 表格摘要模型初始化失败，将使用原始表格内容")
+        return success
+    except Exception as e:
+        logger.warning(f"⚠️ 表格摘要模型初始化异常: {e}")
+        return False
+
+
+def cleanup_table_summary_model():
+    """清理表格摘要模型"""
+    try:
+        from agents.backend_model import cleanup_table_summary_model
+        cleanup_table_summary_model()
+        logger.info("✅ 表格摘要模型已释放")
+    except Exception as e:
+        logger.warning(f"⚠️ 表格摘要模型清理异常: {e}")
+
+
+# 注册退出时的清理函数
+atexit.register(cleanup_table_summary_model)
 
 # ========== 辅助函数：处理 checkbox 状态变化 ==========
 def handle_checkbox_change(file_idx: int):
@@ -56,6 +87,11 @@ def init_session_state():
         st.session_state.page = "login"  # login, chat, admin
     if "file_management_page" not in st.session_state:
         st.session_state.file_management_page = 0  # 当前页码（从0开始）
+
+    # 初始化表格摘要模型（只执行一次）
+    if "table_summary_model_initialized" not in st.session_state:
+        st.session_state.table_summary_model_initialized = True
+        init_table_summary_model()
 
 
 st.set_page_config(

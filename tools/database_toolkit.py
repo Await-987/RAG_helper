@@ -145,6 +145,7 @@ class DatabaseToolkit(BaseToolkit):
         score_threshold: Optional[float] = None,
         max_results: int = 50,
         alpha: float = 0.75,
+        restore_table_context: bool = False,  # 是否恢复表格上下文
     ) -> str:
         """
         Hybrid retrieval within local database.
@@ -153,6 +154,7 @@ class DatabaseToolkit(BaseToolkit):
         - use_rerank=True: optional cross-encoder rerank (if env `reranker_path` set)
         - dynamic_topk=True: return all chunks above threshold (capped by max_results)
           score_threshold is on normalized score (0~1). If None, an adaptive threshold is used.
+        - restore_table_context=True: 检索到表格时，合并上下文返回
         """
         # ===== 参数默认值处理 =====
         # 如果 LLM 传入 None，使用默认值
@@ -222,6 +224,15 @@ class DatabaseToolkit(BaseToolkit):
             source = payload.get("Original_file", "Unknown Source")
             content = payload.get("Content", "") or payload.get("content", "")
             score = float(hit.get("score", 0.0))
+
+            # 表格上下文恢复（可选）
+            if restore_table_context and payload.get("is_table"):
+                context_before = payload.get("context_before", "")
+                context_after = payload.get("context_after", "")
+                if context_before or context_after:
+                    # 合并上下文
+                    content = f"{context_before}\n{content}\n{context_after}".strip()
+                    _log_search(f"   📊 表格上下文已恢复 (前{len(context_before)}字 + 后{len(context_after)}字)")
 
             result_str = (
                 f"File: {source}\n"
