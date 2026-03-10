@@ -10,7 +10,6 @@ import markdown
 import html as html_module
 import atexit
 import base64
-import base64
 
 # 配置日志输出到终端
 logger.remove()  # 移除默认handler
@@ -845,11 +844,14 @@ with st.sidebar:
 
             # 一键建库按钮
             if st.button(f"🚀 一键建库 ({len(not_imported_files)} 个文件)", type="primary", key="batch_import_btn"):
-                st.session_state["batch_import_confirm"] = True
+                st.session_state["batch_import_confirm"] = [str(f["path"]) for f in not_imported_files if f.get("path")]
                 st.rerun()
 
             # 建库确认对话框
-            if st.session_state.get("batch_import_confirm", False):
+            batch_import_confirm = st.session_state.get("batch_import_confirm", [])
+            if isinstance(batch_import_confirm, bool):
+                batch_import_confirm = []
+            if batch_import_confirm:
                 st.info(f"### 📦 即将导入 {len(not_imported_files)} 个文件到数据库")
                 st.write("**注意：此过程可能需要较长时间，请耐心等待。**")
 
@@ -1196,8 +1198,12 @@ with st.sidebar:
                     st.rerun()
 
         # ========== 批量导入选中确认对话框（仅管理员可见） ==========
-        if is_admin and st.session_state.get("batch_import_confirm"):
-            files_to_import = st.session_state.get("batch_import_confirm", [])
+        # @shengwanying：20260310修改：增加类型检查，防止布尔值导致 len() 报错
+        files_to_import = st.session_state.get("batch_import_confirm", [])
+        if isinstance(files_to_import, bool):
+            files_to_import = []
+
+        if is_admin and files_to_import:
             st.markdown("---")
             st.success(f"### 📥 确认批量导入")
             st.write(f"将导入以下 **{len(files_to_import)}** 个未建库文件：")
@@ -1207,7 +1213,7 @@ with st.sidebar:
 
             col_confirm, col_cancel = st.columns(2)
             with col_confirm:
-                if st.button("✅ 确认导入", key="batch_import_yes", type="primary"):
+                if st.button("✅ 确认导入", key="batch_import_confirm_yes", type="primary"):
                     with st.spinner(f"⏳ 正在导入 {len(files_to_import)} 个文件，请稍候..."):
                         try:
                             results = file_manager_ui.batch_import_files(
@@ -1235,7 +1241,7 @@ with st.sidebar:
                             st.rerun()
 
             with col_cancel:
-                if st.button("❌ 取消", key="batch_import_no"):
+                if st.button("❌ 取消", key="batch_import_confirm_no"):
                     st.session_state.pop("batch_import_confirm", None)
                     st.rerun()
 
