@@ -68,11 +68,9 @@ class QdrantDB:
             raise Exception(f"QdrantStorage initialization failed: {e}")
 
         # ---------- keyword index cache ----------
+        # 缓存永久有效，直到脚本退出
         self._lex_index: Optional[Dict[str, Any]] = None
         self._lex_index_point_count: Optional[int] = None
-        self._lex_index_built_at: float = 0.0
-        # TTL: avoid rebuilding too often even if count() flaky; can override via env
-        self._lex_index_ttl_sec: int = int(os.getenv("LEX_INDEX_TTL_SEC", "60"))
 
     def close(self):
         """close qdrant client"""
@@ -255,25 +253,24 @@ class QdrantDB:
 
     def _maybe_build_lex_index(self, force: bool = False):
         """
-        Build / refresh lexical inverted index if:
+        Build lexical inverted index if:
         - force=True
         - index is missing
-        - point count changed
-        - TTL expired
+        - point count changed (有新数据入库)
+
+        缓存永久有效，直到脚本退出
         """
-        now = time.time()
+        # 如果索引已存在且不强制重建
         if not force and self._lex_index is not None:
-            # TTL guard
-            if (now - self._lex_index_built_at) < self._lex_index_ttl_sec:
-                # if count unchanged, keep
-                current_cnt = self._get_collection_point_count()
-                if current_cnt is None or current_cnt == self._lex_index_point_count:
-                    return
+            # 检查数据量是否变化
+            current_cnt = self._get_collection_point_count()
+            if current_cnt is None or current_cnt == self._lex_index_point_count:
+                return  # 缓存有效，直接返回
 
         current_cnt = self._get_collection_point_count()
         if not force and self._lex_index is not None and current_cnt is not None:
-            if self._lex_index_point_count == current_cnt and (now - self._lex_index_built_at) < self._lex_index_ttl_sec:
-                return
+            if self._lex_index_point_count == current_cnt:
+                return  # 数据量未变化，不需要重建
 
         logger.info(f"Building lexical index for collection='{self.collection_name}' ...")
         points = self._scroll_points()
@@ -316,7 +313,6 @@ class QdrantDB:
             "N": int(len(doc_ids)),
         }
         self._lex_index_point_count = current_cnt
-        self._lex_index_built_at = now
 
         logger.info(
             f"Lexical index ready: docs={len(doc_ids)}, avgdl={avgdl:.2f}, tokens={len(inv)}"

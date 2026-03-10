@@ -160,6 +160,8 @@ def import_file_to_database(file_path: str, collection_name: str = "database",
         )
 
         if result:
+            # 入库成功后清除缓存，下次访问时重新统计
+            clear_database_stats_cache()
             return True, "文件导入成功", 0  # TODO: 返回实际切片数
         else:
             return False, "文件导入失败", 0
@@ -238,23 +240,18 @@ def get_database_stats(collection_name: str = "database", use_cache: bool = True
 
     Args:
         collection_name: 集合名称
-        use_cache: 是否使用缓存（对于大数据量建议使用）
+        use_cache: 是否使用缓存（缓存永久有效，直到脚本退出）
 
     Returns:
         (stats_dict, total_chunks)
         - stats_dict: {file_tag: chunk_count, ...}
         - total_chunks: 总切片数
     """
-    # 使用模块级缓存
-    global _db_stats_cache, _db_stats_time, _db_stats_collection
-    import time
-
-    cache_ttl = 60  # 缓存 60 秒
-    current_time = time.time()
+    # 使用模块级缓存（永久有效，直到脚本退出）
+    global _db_stats_cache, _db_stats_collection
 
     if use_cache and _db_stats_cache is not None:
-        if (_db_stats_collection == collection_name and
-            current_time - _db_stats_time < cache_ttl):
+        if _db_stats_collection == collection_name:
             return _db_stats_cache
 
     try:
@@ -298,9 +295,8 @@ def get_database_stats(collection_name: str = "database", use_cache: bool = True
                 if offset is None:
                     break
 
-        # 缓存结果
+        # 缓存结果（永久有效，直到脚本退出）
         _db_stats_cache = (stats, total_chunks)
-        _db_stats_time = current_time
         _db_stats_collection = collection_name
 
         return stats, total_chunks
@@ -309,10 +305,17 @@ def get_database_stats(collection_name: str = "database", use_cache: bool = True
         return {}, 0
 
 
-# 缓存变量
+# 缓存变量（永久有效，直到脚本退出）
 _db_stats_cache = None
-_db_stats_time = 0
 _db_stats_collection = None
+
+
+def clear_database_stats_cache():
+    """清除数据库统计缓存（入库/删除文件后调用）"""
+    global _db_stats_cache, _db_stats_collection
+    _db_stats_cache = None
+    _db_stats_collection = None
+    logger.info("数据库统计缓存已清除")
 
 
 def get_file_info_list(storage_dir: Path) -> List[Dict]:
@@ -400,6 +403,9 @@ def delete_file_by_tag(file_tag: str, collection_name: str = "database", delete_
             deleted_count, deleted_files = delete_images_by_document_prefix(document_name)
             if deleted_count > 0:
                 logger.info(f"已删除文档 '{document_name}' 关联的 {deleted_count} 个图片文件")
+
+        # 删除后清除缓存，下次访问时重新统计
+        clear_database_stats_cache()
 
         return True
     except Exception as e:
