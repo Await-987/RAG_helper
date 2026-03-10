@@ -9,6 +9,8 @@ from loguru import logger
 import markdown
 import html as html_module
 import atexit
+import base64
+import base64
 
 # 配置日志输出到终端
 logger.remove()  # 移除默认handler
@@ -654,19 +656,29 @@ with st.sidebar:
                 # 打开用户管理
                 st.session_state.page = "user_management"
             st.rerun()
-        if st.button("🔑 修改密码", use_container_width=True):
-            st.session_state.page = "change_password"
+         # 修改密码按钮 - 可切换：点击打开，再次点击关闭
+        change_pwd_btn_label = "🔑 修改密码 (收起)" if st.session_state.page == "change_password" else "🔑 修改密码"
+        if st.button(change_pwd_btn_label, use_container_width=True):
+            if st.session_state.page == "change_password":
+                st.session_state.page = None
+            else:
+                st.session_state.page = "change_password"
             st.rerun()
     else:
         st.markdown("---")
-        if st.button("🔑 修改密码", use_container_width=True):
-            st.session_state.page = "change_password"
+        # 修改密码按钮 - 可切换：点击打开，再次点击关闭
+        change_pwd_btn_label = "🔑 修改密码 (收起)" if st.session_state.page == "change_password" else "🔑 修改密码"
+        if st.button(change_pwd_btn_label, use_container_width=True):
+            if st.session_state.page == "change_password":
+                st.session_state.page = None
+            else:
+                st.session_state.page = "change_password"
             st.rerun()
 
     st.markdown("---")
 
     # ========== 根据页面显示不同内容 ==========
-    if page == "📊 文件管理" or st.session_state.page == "user_management" or st.session_state.page == "change_password":
+    if page == "📊 文件管理":
         # 显示文件管理或用户管理界面
         if st.session_state.page == "user_management" and st.session_state.user_role == UserRole.ADMIN:
             # 用户管理页面（管理员专用）
@@ -758,671 +770,675 @@ with st.sidebar:
             st.markdown("---")
             st.markdown("### 📊 文件管理")
 
-    # 刷新和批量操作按钮
-    col_refresh, col_batch = st.columns(2)
-    with col_refresh:
-        if st.button("🔄 刷新", key="refresh_files", use_container_width=True):
-            # 清除选择状态
-            for key in list(st.session_state.keys()):
-                if key.startswith("selected_"):
-                    del st.session_state[key]
-            st.rerun()
+        # 刷新和批量操作按钮
+        col_refresh, col_batch = st.columns(2)
+        with col_refresh:
+            if st.button("🔄 刷新", key="refresh_files", use_container_width=True):
+                # 清除选择状态
+                for key in list(st.session_state.keys()):
+                    if key.startswith("selected_"):
+                        del st.session_state[key]
+                st.rerun()
 
-    # 获取文件信息（显示所有本地文件及其数据库状态）
-    file_info_list, total_chunks = file_manager_ui.get_local_files_with_db_status(STORAGE_DIR)
+        # 获取文件信息（显示所有本地文件及其数据库状态）
+        file_info_list, total_chunks = file_manager_ui.get_local_files_with_db_status(STORAGE_DIR)
 
-    # 统计信息
-    imported_files = [f for f in file_info_list if f["type"] == "imported"]
-    not_imported_files = [f for f in file_info_list if f["type"] == "not_imported"]
-    ghost_files = [f for f in file_info_list if f["type"] == "ghost"]
+        # 统计信息
+        imported_files = [f for f in file_info_list if f["type"] == "imported"]
+        not_imported_files = [f for f in file_info_list if f["type"] == "not_imported"]
+        ghost_files = [f for f in file_info_list if f["type"] == "ghost"]
 
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("本地文件", f"{len(imported_files) + len(not_imported_files)} 个")
-    with col2:
-        st.metric("已建库", f"{len(imported_files)} 个")
-    with col3:
-        st.metric("未建库", f"{len(not_imported_files)} 个")
-    with col4:
-        st.metric("残留数据", f"{len(ghost_files)} 个")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("本地文件", f"{len(imported_files) + len(not_imported_files)} 个")
+        with col2:
+            st.metric("已建库", f"{len(imported_files)} 个")
+        with col3:
+            st.metric("未建库", f"{len(not_imported_files)} 个")
+        with col4:
+            st.metric("残留数据", f"{len(ghost_files)} 个")
 
-    # 未建库文件提示（仅管理员可见）
-    is_admin = st.session_state.user_role == UserRole.ADMIN
-    if is_admin and not_imported_files:
-        st.warning(f"📦 检测到 {len(not_imported_files)} 个文件尚未建库")
+        # 未建库文件提示（仅管理员可见）
+        is_admin = st.session_state.user_role == UserRole.ADMIN
+        if is_admin and not_imported_files:
+            st.warning(f"📦 检测到 {len(not_imported_files)} 个文件尚未建库")
 
-    # 残留数据提示（仅管理员可见）
-    if is_admin and ghost_files:
-        st.warning(f"👻 检测到 {len(ghost_files)} 个残留数据（本地文件已删除，仅数据库有记录）")
+        # 残留数据提示（仅管理员可见）
+        if is_admin and ghost_files:
+            st.warning(f"👻 检测到 {len(ghost_files)} 个残留数据（本地文件已删除，仅数据库有记录）")
 
-        # 展开/收起未建库文件列表
-        with st.expander("📋 查看未建库文件", expanded=False):
-            for file_info in not_imported_files:
-                size_mb = file_info["path"].stat().st_size / (1024 * 1024)
-                st.markdown(f"- 📄 `{file_info['name']}` ({size_mb:.2f} MB)")
+            # 展开/收起未建库文件列表
+            with st.expander("📋 查看未建库文件", expanded=False):
+                for file_info in not_imported_files:
+                    size_mb = file_info["path"].stat().st_size / (1024 * 1024)
+                    st.markdown(f"- 📄 `{file_info['name']}` ({size_mb:.2f} MB)")
 
-        # 大量文件警告
-        if len(not_imported_files) > 100:
-            st.warning(f"⚠️ **检测到大量文件 ({len(not_imported_files)} 个)**")
-            st.info(f"""
-**建议使用命令行批量导入，避免前端超时：**
+            # 大量文件警告
+            if len(not_imported_files) > 100:
+                st.warning(f"⚠️ **检测到大量文件 ({len(not_imported_files)} 个)**")
+                st.info(f"""
+    **建议使用命令行批量导入，避免前端超时：**
 
-```bash
-# 激活虚拟环境
-source .venv/bin/activate
+    ```bash
+    # 激活虚拟环境
+    source .venv/bin/activate
 
-# 后台运行批量导入
-nohup python scripts/batch_import.py > import.log 2>&1 &
+    # 后台运行批量导入
+    nohup python scripts/batch_import.py > import.log 2>&1 &
 
-# 查看进度
-tail -f import.log
-```
+    # 查看进度
+    tail -f import.log
+    ```
 
-预计耗时：**{len(not_imported_files) * 10 / 3600:.1f} - {len(not_imported_files) * 30 / 3600:.1f} 小时**
-""")
-            # 提供分批导入选项
-            batch_size = st.number_input(
-                "每批处理文件数",
-                min_value=10,
-                max_value=500,
-                value=100,
-                step=50,
-                key="batch_size_input"
-            )
-            st.caption(f"将分 {((len(not_imported_files) - 1) // batch_size) + 1} 批处理")
+    预计耗时：**{len(not_imported_files) * 10 / 3600:.1f} - {len(not_imported_files) * 30 / 3600:.1f} 小时**
+    """)
+                # 提供分批导入选项
+                batch_size = st.number_input(
+                    "每批处理文件数",
+                    min_value=10,
+                    max_value=500,
+                    value=100,
+                    step=50,
+                    key="batch_size_input"
+                )
+                st.caption(f"将分 {((len(not_imported_files) - 1) // batch_size) + 1} 批处理")
 
-        # 一键建库按钮
-        if st.button(f"🚀 一键建库 ({len(not_imported_files)} 个文件)", type="primary", key="batch_import_btn"):
-            st.session_state["batch_import_confirm"] = True
-            st.rerun()
+            # 一键建库按钮
+            if st.button(f"🚀 一键建库 ({len(not_imported_files)} 个文件)", type="primary", key="batch_import_btn"):
+                st.session_state["batch_import_confirm"] = True
+                st.rerun()
 
-        # 建库确认对话框
-        if st.session_state.get("batch_import_confirm", False):
-            st.info(f"### 📦 即将导入 {len(not_imported_files)} 个文件到数据库")
-            st.write("**注意：此过程可能需要较长时间，请耐心等待。**")
+            # 建库确认对话框
+            if st.session_state.get("batch_import_confirm", False):
+                st.info(f"### 📦 即将导入 {len(not_imported_files)} 个文件到数据库")
+                st.write("**注意：此过程可能需要较长时间，请耐心等待。**")
 
-            # 显示前 20 个文件
-            display_files = not_imported_files[:20]
-            for file_info in display_files:
-                st.write(f"- `{file_info['name']}`")
-            if len(not_imported_files) > 20:
-                st.write(f"- ... 还有 {len(not_imported_files) - 20} 个文件")
+                # 显示前 20 个文件
+                display_files = not_imported_files[:20]
+                for file_info in display_files:
+                    st.write(f"- `{file_info['name']}`")
+                if len(not_imported_files) > 20:
+                    st.write(f"- ... 还有 {len(not_imported_files) - 20} 个文件")
 
-            col_yes, col_no = st.columns(2)
-            with col_yes:
-                if st.button("✅ 开始导入", key="batch_import_yes", type="primary"):
-                    # 清除确认状态
-                    del st.session_state["batch_import_confirm"]
+                col_yes, col_no = st.columns(2)
+                with col_yes:
+                    if st.button("✅ 开始导入", key="batch_import_yes", type="primary"):
+                        # 清除确认状态
+                        del st.session_state["batch_import_confirm"]
 
-                    file_paths = [str(f["path"]) for f in not_imported_files]
-                    total_files = len(file_paths)
+                        file_paths = [str(f["path"]) for f in not_imported_files]
+                        total_files = len(file_paths)
 
-                    # 使用 st.status 显示实时进度
-                    with st.status("正在导入文件...", expanded=True) as status:
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
+                        # 使用 st.status 显示实时进度
+                        with st.status("正在导入文件...", expanded=True) as status:
+                            progress_bar = st.progress(0)
+                            status_text = st.empty()
 
-                        success_count = 0
-                        failed_count = 0
-                        failed_files = []
+                            success_count = 0
+                            failed_count = 0
+                            failed_files = []
 
-                        for i, file_path in enumerate(file_paths):
-                            try:
-                                # 更新进度
-                                progress = (i + 1) / total_files
-                                progress_bar.progress(progress)
-                                status_text.write(f"处理中 ({i+1}/{total_files}): `{os.path.basename(file_path)}`")
+                            for i, file_path in enumerate(file_paths):
+                                try:
+                                    # 更新进度
+                                    progress = (i + 1) / total_files
+                                    progress_bar.progress(progress)
+                                    status_text.write(f"处理中 ({i+1}/{total_files}): `{os.path.basename(file_path)}`")
 
-                                # 导入单个文件
-                                from tools.file_manager_ui import import_file_to_database
-                                success, msg, _ = import_file_to_database(
-                                    file_path=file_path,
-                                    collection_name="database",
-                                    dpi=200,
-                                    debug=False
-                                )
+                                    # 导入单个文件
+                                    from tools.file_manager_ui import import_file_to_database
+                                    success, msg, _ = import_file_to_database(
+                                        file_path=file_path,
+                                        collection_name="database",
+                                        dpi=200,
+                                        debug=False
+                                    )
 
-                                if success:
-                                    success_count += 1
-                                else:
+                                    if success:
+                                        success_count += 1
+                                    else:
+                                        failed_count += 1
+                                        failed_files.append((file_path, msg))
+
+                                except Exception as e:
                                     failed_count += 1
-                                    failed_files.append((file_path, msg))
+                                    failed_files.append((file_path, str(e)))
 
-                            except Exception as e:
-                                failed_count += 1
-                                failed_files.append((file_path, str(e)))
-
-                        # 完成
-                        status.update(
-                            label=f"导入完成！成功: {success_count}, 失败: {failed_count}",
-                            state="complete"
-                        )
-
-                    # 显示结果
-                    if success_count > 0:
-                        st.success(f"✅ 成功导入 {success_count} 个文件")
-                    if failed_count > 0:
-                        st.error(f"❌ 导入失败 {failed_count} 个文件")
-                        with st.expander("查看失败详情"):
-                            for file_path, error_msg in failed_files:
-                                st.write(f"- `{os.path.basename(file_path)}`: {error_msg}")
-
-                    st.rerun()
-
-            with col_no:
-                if st.button("❌ 取消", key="batch_import_no"):
-                    del st.session_state["batch_import_confirm"]
-                    st.rerun()
-
-    # ========== 搜索和筛选 ==========
-    st.markdown("**🔍 搜索与筛选：**")
-
-    # 搜索框
-    search_query = st.text_input(
-        "🔎 搜索文件名",
-        placeholder="输入文件名关键词...",
-        key="file_search_input"
-    ).strip().lower()
-
-    # 类型筛选
-    filter_col1, filter_col2, filter_col3 = st.columns(3)
-    with filter_col1:
-        filter_type = st.selectbox(
-            "文件类型",
-            ["全部", "已建库", "未建库", "残留数据"],
-            key="filter_type_select"
-        )
-    with filter_col2:
-        sort_by = st.selectbox(
-            "排序方式",
-            ["文件名", "切片数"],
-            key="sort_by_select"
-        )
-    with filter_col3:
-        sort_order = st.selectbox(
-            "排序顺序",
-            ["升序", "降序"],
-            key="sort_order_select"
-        )
-
-    # 应用筛选和排序
-    filtered_list = file_info_list.copy()
-
-    # 检测筛选条件变化，重置页码
-    filter_state_key = "last_filter_state"
-    current_filter_state = (filter_type, sort_by, sort_order, search_query)
-    last_filter_state = st.session_state.get(filter_state_key, None)
-
-    if last_filter_state != current_filter_state:
-        # 筛选条件变化了，重置到第一页
-        st.session_state.file_management_page = 0
-    st.session_state[filter_state_key] = current_filter_state
-
-    # 类型筛选
-    if filter_type == "已建库":
-        filtered_list = [f for f in filtered_list if f["type"] == "imported"]
-    elif filter_type == "未建库":
-        filtered_list = [f for f in filtered_list if f["type"] == "not_imported"]
-    elif filter_type == "残留数据":
-        filtered_list = [f for f in filtered_list if f["type"] == "ghost"]
-
-    # 搜索过滤
-    if search_query:
-        filtered_list = [f for f in filtered_list if search_query in f["name"].lower()]
-
-    # 排序
-    if sort_by == "文件名":
-        filtered_list.sort(key=lambda x: x["name"], reverse=(sort_order == "降序"))
-    else:  # 切片数
-        filtered_list.sort(key=lambda x: x["chunk_count"], reverse=(sort_order == "降序"))
-
-    # ========== 分页逻辑 ==========
-    PAGE_SIZE = 10
-    total_pages = max(1, (len(filtered_list) + PAGE_SIZE - 1) // PAGE_SIZE)
-
-    # 确保当前页码有效
-    if st.session_state.file_management_page >= total_pages:
-        st.session_state.file_management_page = total_pages - 1
-    if st.session_state.file_management_page < 0:
-        st.session_state.file_management_page = 0
-
-    current_page = st.session_state.file_management_page
-    start_idx = current_page * PAGE_SIZE
-    end_idx = start_idx + PAGE_SIZE
-    paginated_list = filtered_list[start_idx:end_idx]
-
-    # 显示筛选结果和分页信息
-    if filter_type != "全部" or search_query:
-        st.caption(f"📋 筛选结果: {len(filtered_list)} 个文件")
-    st.caption(f"📄 第 {current_page + 1}/{total_pages} 页，共 {len(filtered_list)} 个文件")
-
-    # ========== 批量操作（仅管理员可见） ==========
-    is_admin = st.session_state.user_role == UserRole.ADMIN
-
-    if paginated_list and is_admin:
-        # 全选按钮
-        batch_col1, batch_col2, batch_col3, batch_col4, batch_col5 = st.columns(5)
-        with batch_col1:
-            select_all = st.checkbox("📌 全选当前页", key="select_all_checkbox")
-
-        with batch_col2:
-            if st.button("🗑️ 批量删除选中", key="batch_delete_btn", type="primary"):
-                # 检查当前页选中数量
-                selected_count = 0
-                for page_idx, info in enumerate(paginated_list):
-                    if st.session_state.get(f"selected_page_{current_page}_{page_idx}", False):
-                        selected_count += 1
-                if selected_count > 0:
-                    st.session_state["batch_delete_confirm"] = True
-                    st.rerun()
-                else:
-                    st.warning("⚠️ 请先选择要删除的文件")
-
-        with batch_col3:
-            # 显示选中数量
-            selected_count = sum(1 for page_idx in range(len(paginated_list)) if st.session_state.get(f"selected_page_{current_page}_{page_idx}", False))
-            st.caption(f"已选: {selected_count} 个")
-
-        # 分页控制
-        with batch_col4:
-            if st.button("⬅️ 上一页", disabled=(current_page == 0), key="prev_page"):
-                st.session_state.file_management_page = current_page - 1
-                st.rerun()
-
-        with batch_col5:
-            if st.button("下一页 ➡️", disabled=(current_page >= total_pages - 1), key="next_page"):
-                st.session_state.file_management_page = current_page + 1
-                st.rerun()
-
-        # ========== 导入操作按钮 ==========
-        st.markdown("---")
-        import_col1, import_col2, import_col3 = st.columns(3)
-
-        with import_col1:
-            # 批量导入选中的未建库文件
-            if st.button("📥 批量导入选中", key="batch_import_selected_btn"):
-                selected_not_imported = []
-                for page_idx, info in enumerate(paginated_list):
-                    if st.session_state.get(f"selected_page_{current_page}_{page_idx}", False):
-                        if info["type"] == "not_imported" and info["path"]:
-                            selected_not_imported.append(str(info["path"]))
-                if selected_not_imported:
-                    st.session_state["batch_import_confirm"] = selected_not_imported
-                    st.rerun()
-                else:
-                    st.warning("⚠️ 请先选择要导入的未建库文件")
-
-        with import_col2:
-            # 一键导入所有未建库文件
-            not_imported_count = sum(1 for f in filtered_list if f["type"] == "not_imported")
-            if st.button(f"⚡ 一键全部导入 ({not_imported_count}个)", key="import_all_btn", disabled=(not_imported_count == 0)):
-                all_not_imported = [str(f["path"]) for f in filtered_list if f["type"] == "not_imported" and f["path"]]
-                if all_not_imported:
-                    st.session_state["import_all_confirm"] = all_not_imported
-                    st.rerun()
-
-        with import_col3:
-            # 显示未建库文件数量
-            st.caption(f"📋 未建库: {not_imported_count} 个")
-
-        # 处理全选/取消全选（仅当前页）
-        select_all_key = "select_all_last_state"
-        current_select_all = st.session_state.get("select_all_checkbox", False)
-        last_select_all = st.session_state.get(select_all_key, None)
-
-        # 只有当全选状态发生变化时才更新
-        if last_select_all is not None and current_select_all != last_select_all:
-            if current_select_all:
-                for page_idx in range(len(paginated_list)):
-                    st.session_state[f"selected_page_{current_page}_{page_idx}"] = True
-            else:
-                for page_idx in range(len(paginated_list)):
-                    st.session_state[f"selected_page_{current_page}_{page_idx}"] = False
-
-        # 保存当前状态
-        st.session_state[select_all_key] = current_select_all
-
-    # ========== 批量删除确认对话框（仅管理员可见） ==========
-    if is_admin and st.session_state.get("batch_delete_confirm", False):
-        st.markdown("---")
-        st.error(f"### ⚠️ 确认批量删除")
-
-        selected_files = []
-        imported_count = 0
-        ghost_count = 0
-        # 只检查当前页选中的文件
-        for page_idx, info in enumerate(paginated_list):
-            if st.session_state.get(f"selected_page_{current_page}_{page_idx}", False):
-                selected_files.append(info["name"])
-                if info["type"] == "imported":
-                    imported_count += 1
-                elif info["type"] == "ghost":
-                    ghost_count += 1
-
-        st.write(f"将删除以下 **{len(selected_files)}** 个文件：")
-        if imported_count > 0 or ghost_count > 0:
-            desc = []
-            if imported_count > 0:
-                desc.append(f"{imported_count} 个已建库文件（同时删除本地+数据库）")
-            if ghost_count > 0:
-                desc.append(f"{ghost_count} 个残留数据（仅删除数据库记录）")
-            st.caption(f"说明：{', '.join(desc)}")
-        for name in selected_files:
-            st.write(f" - `{name}`")
-
-        col_confirm, col_cancel = st.columns(2)
-        with col_confirm:
-            if st.button("✅ 确认批量删除", key="batch_delete_yes", type="primary"):
-                try:
-                    imported_count = 0
-                    not_imported_count = 0
-                    ghost_count = 0
-                    db_success = 0
-                    db_fail = 0
-                    local_success = 0
-                    local_fail = 0
-
-                    # 先收集所有要删除的文件信息（当前页）
-                    to_delete = []
-                    for page_idx, info in enumerate(paginated_list):
-                        if st.session_state.get(f"selected_page_{current_page}_{page_idx}", False):
-                            to_delete.append(info)
-                            if info["type"] == "imported":
-                                imported_count += 1
-                            elif info["type"] == "ghost":
-                                ghost_count += 1
-                            else:  # not_imported
-                                not_imported_count += 1
-
-                    # 第一步：删除数据库切片（已建库 + 残留数据）
-                    for info in to_delete:
-                        if info["type"] in ["imported", "ghost"]:
-                            if file_manager_ui.delete_file_by_tag(info["tag"]):
-                                db_success += 1
-                            else:
-                                db_fail += 1
-                                logger.error(f"删除数据库切片失败: {info['tag']}")
-
-                    # 第二步：删除本地文件（已建库 + 未建库）
-                    for info in to_delete:
-                        if info["path"]:  # imported 和 not_imported 有本地文件
-                            if file_manager_ui.delete_local_file(info["path"]):
-                                local_success += 1
-                            else:
-                                local_fail += 1
-                                logger.error(f"删除本地文件失败: {info['path']}")
-
-                    # 清除选择状态
-                    st.session_state.pop("batch_delete_confirm", None)
-                    for key in list(st.session_state.keys()):
-                        if key.startswith("selected_page_"):
-                            del st.session_state[key]
-
-                    # 显示结果
-                    if db_fail == 0 and local_fail == 0:
-                        parts = []
-                        if local_success > 0:
-                            parts.append(f"本地文件 {local_success} 个")
-                        if db_success > 0:
-                            parts.append(f"数据库记录 {db_success} 个")
-                        msg = "✅ 成功删除：" + "、".join(parts)
-                        st.success(msg)
-                    else:
-                        msg = f"⚠️ 删除完成：本地文件成功 {local_success} 个，失败 {local_fail} 个"
-                        if db_fail > 0:
-                            msg += f"；数据库记录成功 {db_success} 个，失败 {db_fail} 个"
-                        st.warning(msg)
-
-                    st.rerun()
-                except Exception as e:
-                    logger.error(f"批量删除异常: {e}")
-                    st.error(f"❌ 批量删除失败: {str(e)}")
-
-        with col_cancel:
-            if st.button("❌ 取消", key="batch_delete_no"):
-                st.session_state.pop("batch_delete_confirm", None)
-                st.rerun()
-
-    # ========== 批量导入选中确认对话框（仅管理员可见） ==========
-    if is_admin and st.session_state.get("batch_import_confirm"):
-        files_to_import = st.session_state.get("batch_import_confirm", [])
-        st.markdown("---")
-        st.success(f"### 📥 确认批量导入")
-        st.write(f"将导入以下 **{len(files_to_import)}** 个未建库文件：")
-        for file_path in files_to_import:
-            file_name = os.path.basename(file_path)
-            st.write(f" - `{file_name}`")
-
-        col_confirm, col_cancel = st.columns(2)
-        with col_confirm:
-            if st.button("✅ 确认导入", key="batch_import_yes", type="primary"):
-                with st.spinner(f"⏳ 正在导入 {len(files_to_import)} 个文件，请稍候..."):
-                    try:
-                        results = file_manager_ui.batch_import_files(
-                            file_paths=files_to_import,
-                            collection_name="database",
-                            dpi=200,
-                            debug=True
-                        )
+                            # 完成
+                            status.update(
+                                label=f"导入完成！成功: {success_count}, 失败: {failed_count}",
+                                state="complete"
+                            )
 
                         # 显示结果
-                        if results["success_count"] > 0:
-                            st.success(f"✅ 成功导入 {results['success_count']} 个文件！")
-                        if results["failed_count"] > 0:
-                            st.error(f"❌ 导入失败 {results['failed_count']} 个文件")
-                            with st.expander("查看失败文件"):
-                                for file_path, error in results["failed"]:
-                                    file_name = os.path.basename(file_path)
-                                    st.write(f" - `{file_name}`: {error}")
+                        if success_count > 0:
+                            st.success(f"✅ 成功导入 {success_count} 个文件")
+                        if failed_count > 0:
+                            st.error(f"❌ 导入失败 {failed_count} 个文件")
+                            with st.expander("查看失败详情"):
+                                for file_path, error_msg in failed_files:
+                                    st.write(f"- `{os.path.basename(file_path)}`: {error_msg}")
 
-                    except Exception as e:
-                        logger.error(f"批量导入异常: {e}")
-                        st.error(f"❌ 批量导入失败: {str(e)}")
-                    finally:
-                        st.session_state.pop("batch_import_confirm", None)
                         st.rerun()
 
-        with col_cancel:
-            if st.button("❌ 取消", key="batch_import_no"):
-                st.session_state.pop("batch_import_confirm", None)
-                st.rerun()
-
-    # ========== 一键全部导入确认对话框（仅管理员可见） ==========
-    if is_admin and st.session_state.get("import_all_confirm"):
-        files_to_import = st.session_state.get("import_all_confirm", [])
-        st.markdown("---")
-        st.success(f"### ⚡ 确认全部导入")
-        st.write(f"将导入所有 **{len(files_to_import)}** 个未建库文件：")
-        st.caption(f"（仅显示前 10 个文件）")
-        for file_path in files_to_import[:10]:
-            file_name = os.path.basename(file_path)
-            st.write(f" - `{file_name}`")
-        if len(files_to_import) > 10:
-            st.write(f" - ... 还有 {len(files_to_import) - 10} 个文件")
-
-        st.warning(f"⚠️ 这可能需要一些时间，请耐心等待...")
-
-        col_confirm, col_cancel = st.columns(2)
-        with col_confirm:
-            if st.button("✅ 确认全部导入", key="import_all_yes", type="primary"):
-                with st.spinner(f"⏳ 正在导入 {len(files_to_import)} 个文件，请稍候..."):
-                    try:
-                        results = file_manager_ui.batch_import_files(
-                            file_paths=files_to_import,
-                            collection_name="database",
-                            dpi=200,
-                            debug=True
-                        )
-
-                        # 显示结果
-                        if results["success_count"] > 0:
-                            st.success(f"✅ 成功导入 {results['success_count']} 个文件！")
-                        if results["failed_count"] > 0:
-                            st.error(f"❌ 导入失败 {results['failed_count']} 个文件")
-                            with st.expander("查看失败文件"):
-                                for file_path, error in results["failed"]:
-                                    file_name = os.path.basename(file_path)
-                                    st.write(f" - `{file_name}`: {error}")
-
-                    except Exception as e:
-                        logger.error(f"全部导入异常: {e}")
-                        st.error(f"❌ 全部导入失败: {str(e)}")
-                    finally:
-                        st.session_state.pop("import_all_confirm", None)
+                with col_no:
+                    if st.button("❌ 取消", key="batch_import_no"):
+                        del st.session_state["batch_import_confirm"]
                         st.rerun()
 
-        with col_cancel:
-            if st.button("❌ 取消", key="import_all_no"):
-                st.session_state.pop("import_all_confirm", None)
-                st.rerun()
+        # ========== 搜索和筛选 ==========
+        st.markdown("**🔍 搜索与筛选：**")
 
-    # ========== 文件列表 ==========
-    st.markdown("**📁 文件列表：**")
+        # 搜索框
+        search_query = st.text_input(
+            "🔎 搜索文件名",
+            placeholder="输入文件名关键词...",
+            key="file_search_input"
+        ).strip().lower()
 
-    if paginated_list:
-        # 表头（根据角色显示不同列）
+        # 类型筛选
+        filter_col1, filter_col2, filter_col3 = st.columns(3)
+        with filter_col1:
+            filter_type = st.selectbox(
+                "文件类型",
+                ["全部", "已建库", "未建库", "残留数据"],
+                key="filter_type_select"
+            )
+        with filter_col2:
+            sort_by = st.selectbox(
+                "排序方式",
+                ["文件名", "切片数"],
+                key="sort_by_select"
+            )
+        with filter_col3:
+            sort_order = st.selectbox(
+                "排序顺序",
+                ["升序", "降序"],
+                key="sort_order_select"
+            )
+
+        # 应用筛选和排序
+        filtered_list = file_info_list.copy()
+
+        # 检测筛选条件变化，重置页码
+        filter_state_key = "last_filter_state"
+        current_filter_state = (filter_type, sort_by, sort_order, search_query)
+        last_filter_state = st.session_state.get(filter_state_key, None)
+
+        if last_filter_state != current_filter_state:
+            # 筛选条件变化了，重置到第一页
+            st.session_state.file_management_page = 0
+        st.session_state[filter_state_key] = current_filter_state
+
+        # 类型筛选
+        if filter_type == "已建库":
+            filtered_list = [f for f in filtered_list if f["type"] == "imported"]
+        elif filter_type == "未建库":
+            filtered_list = [f for f in filtered_list if f["type"] == "not_imported"]
+        elif filter_type == "残留数据":
+            filtered_list = [f for f in filtered_list if f["type"] == "ghost"]
+
+        # 搜索过滤
+        if search_query:
+            filtered_list = [f for f in filtered_list if search_query in f["name"].lower()]
+
+        # 排序
+        if sort_by == "文件名":
+            filtered_list.sort(key=lambda x: x["name"], reverse=(sort_order == "降序"))
+        else:  # 切片数
+            filtered_list.sort(key=lambda x: x["chunk_count"], reverse=(sort_order == "降序"))
+
+        # ========== 分页逻辑 ==========
+        PAGE_SIZE = 10
+        total_pages = max(1, (len(filtered_list) + PAGE_SIZE - 1) // PAGE_SIZE)
+
+        # 确保当前页码有效
+        if st.session_state.file_management_page >= total_pages:
+            st.session_state.file_management_page = total_pages - 1
+        if st.session_state.file_management_page < 0:
+            st.session_state.file_management_page = 0
+
+        current_page = st.session_state.file_management_page
+        start_idx = current_page * PAGE_SIZE
+        end_idx = start_idx + PAGE_SIZE
+        paginated_list = filtered_list[start_idx:end_idx]
+
+        # 显示筛选结果和分页信息
+        if filter_type != "全部" or search_query:
+            st.caption(f"📋 筛选结果: {len(filtered_list)} 个文件")
+        st.caption(f"📄 第 {current_page + 1}/{total_pages} 页，共 {len(filtered_list)} 个文件")
+
+        # ========== 批量操作（仅管理员可见） ==========
         is_admin = st.session_state.user_role == UserRole.ADMIN
 
-        if is_admin:
-            header_col1, header_col2, header_col3, header_col4, header_col5 = st.columns([0.5, 3, 2, 2, 1])
-            with header_col1:
-                st.markdown("**选择**")
-            with header_col2:
-                st.markdown("**文件名**")
-            with header_col3:
-                st.markdown("**切片数**")
-            with header_col4:
-                st.markdown("**类型**")
-            with header_col5:
-                st.markdown("**操作**")
-        else:
-            header_col1, header_col2, header_col3, header_col4 = st.columns([3, 2, 2, 2])
-            with header_col1:
-                st.markdown("**文件名**")
-            with header_col2:
-                st.markdown("**切片数**")
-            with header_col3:
-                st.markdown("**类型**")
-            with header_col4:
-                st.markdown("**状态**")
+        if paginated_list and is_admin:
+            # 全选按钮
+            batch_col1, batch_col2, batch_col3, batch_col4, batch_col5 = st.columns(5)
+            with batch_col1:
+                select_all = st.checkbox("📌 全选当前页", key="select_all_checkbox")
 
-        st.markdown("---")
+            with batch_col2:
+                if st.button("🗑️ 批量删除选中", key="batch_delete_btn", type="primary"):
+                    # 检查当前页选中数量
+                    selected_count = 0
+                    for page_idx, info in enumerate(paginated_list):
+                        if st.session_state.get(f"selected_page_{current_page}_{page_idx}", False):
+                            selected_count += 1
+                    if selected_count > 0:
+                        st.session_state["batch_delete_confirm"] = True
+                        st.rerun()
+                    else:
+                        st.warning("⚠️ 请先选择要删除的文件")
 
-        # 文件列表（当前页）
-        for page_idx, info in enumerate(paginated_list):
-            with st.container():
-                if is_admin:
-                    col_select, col_name, col_chunks, col_type, col_action = st.columns([0.5, 3, 2, 2, 1])
+            with batch_col3:
+                # 显示选中数量
+                selected_count = sum(1 for page_idx in range(len(paginated_list)) if st.session_state.get(f"selected_page_{current_page}_{page_idx}", False))
+                st.caption(f"已选: {selected_count} 个")
+
+            # 分页控制
+            with batch_col4:
+                if st.button("⬅️ 上一页", disabled=(current_page == 0), key="prev_page"):
+                    st.session_state.file_management_page = current_page - 1
+                    st.rerun()
+
+            with batch_col5:
+                if st.button("下一页 ➡️", disabled=(current_page >= total_pages - 1), key="next_page"):
+                    st.session_state.file_management_page = current_page + 1
+                    st.rerun()
+
+            # ========== 导入操作按钮 ==========
+            st.markdown("---")
+            import_col1, import_col2, import_col3 = st.columns(3)
+
+            with import_col1:
+                # 批量导入选中的未建库文件
+                if st.button("📥 批量导入选中", key="batch_import_selected_btn"):
+                    selected_not_imported = []
+                    for page_idx, info in enumerate(paginated_list):
+                        if st.session_state.get(f"selected_page_{current_page}_{page_idx}", False):
+                            if info["type"] == "not_imported" and info["path"]:
+                                selected_not_imported.append(str(info["path"]))
+                    if selected_not_imported:
+                        st.session_state["batch_import_confirm"] = selected_not_imported
+                        st.rerun()
+                    else:
+                        st.warning("⚠️ 请先选择要导入的未建库文件")
+
+            with import_col2:
+                # 一键导入所有未建库文件
+                not_imported_count = sum(1 for f in filtered_list if f["type"] == "not_imported")
+                if st.button(f"⚡ 一键全部导入 ({not_imported_count}个)", key="import_all_btn", disabled=(not_imported_count == 0)):
+                    all_not_imported = [str(f["path"]) for f in filtered_list if f["type"] == "not_imported" and f["path"]]
+                    if all_not_imported:
+                        st.session_state["import_all_confirm"] = all_not_imported
+                        st.rerun()
+
+            with import_col3:
+                # 显示未建库文件数量
+                st.caption(f"📋 未建库: {not_imported_count} 个")
+
+            # 处理全选/取消全选（仅当前页）
+            select_all_key = "select_all_last_state"
+            current_select_all = st.session_state.get("select_all_checkbox", False)
+            last_select_all = st.session_state.get(select_all_key, None)
+
+            # 只有当全选状态发生变化时才更新
+            if last_select_all is not None and current_select_all != last_select_all:
+                if current_select_all:
+                    for page_idx in range(len(paginated_list)):
+                        st.session_state[f"selected_page_{current_page}_{page_idx}"] = True
                 else:
-                    col_name, col_chunks, col_type, col_status = st.columns([3, 2, 2, 2])
+                    for page_idx in range(len(paginated_list)):
+                        st.session_state[f"selected_page_{current_page}_{page_idx}"] = False
 
-                # 复选框（仅管理员可见）
-                if is_admin:
-                    with col_select:
-                        # 复选框 - 使用新的 key 格式
-                        st.checkbox(
-                            "select",
-                            key=f"selected_page_{current_page}_{page_idx}",
-                            label_visibility="collapsed"
-                        )
+            # 保存当前状态
+            st.session_state[select_all_key] = current_select_all
 
-                # 文件名
-                with col_name:
-                    # 文件名
-                    if info["type"] == "ghost":
-                        st.markdown(f"👻 `{info['name']}`")
-                    else:
-                        st.markdown(f"📄 `{info['name']}`")
+        # ========== 批量删除确认对话框（仅管理员可见） ==========
+        if is_admin and st.session_state.get("batch_delete_confirm", False):
+            st.markdown("---")
+            st.error(f"### ⚠️ 确认批量删除")
 
-                with col_chunks:
-                    # 切片数
-                    if info["chunk_count"] > 0:
-                        st.caption(f"📊 {info['chunk_count']} 个")
-                    else:
-                        st.caption("📊 0 个")
-
-                with col_type:
-                    # 类型标记
+            selected_files = []
+            imported_count = 0
+            ghost_count = 0
+            # 只检查当前页选中的文件
+            for page_idx, info in enumerate(paginated_list):
+                if st.session_state.get(f"selected_page_{current_page}_{page_idx}", False):
+                    selected_files.append(info["name"])
                     if info["type"] == "imported":
-                        st.markdown('<span style="color:green">已建库</span>', unsafe_allow_html=True)
+                        imported_count += 1
                     elif info["type"] == "ghost":
-                        st.markdown('<span style="color:red">残留数据</span>', unsafe_allow_html=True)
-                    else:
-                        st.markdown('<span style="color:orange">未建库</span>', unsafe_allow_html=True)
+                        ghost_count += 1
 
-                # 操作列（仅管理员可见）
-                if is_admin:
-                    with col_action:
-                        # 单个删除按钮
-                        button_key = f"single_delete_page_{current_page}_{page_idx}"
-                        help_text = "删除此文件（本地+数据库）" if info["type"] != "ghost" else "删除此文件（仅数据库记录）"
-                        if st.button("🗑️", key=button_key, help=help_text):
-                            st.session_state[f"single_delete_confirm_page_{current_page}_{page_idx}"] = True
-                            st.rerun()
-                else:
-                    # 普通用户看到的状态信息
-                    with col_status:
-                        if info["type"] == "imported":
-                            st.caption("✅ 可用")
-                        elif info["type"] == "ghost":
-                            st.caption("⚠️ 仅数据库")
+            st.write(f"将删除以下 **{len(selected_files)}** 个文件：")
+            if imported_count > 0 or ghost_count > 0:
+                desc = []
+                if imported_count > 0:
+                    desc.append(f"{imported_count} 个已建库文件（同时删除本地+数据库）")
+                if ghost_count > 0:
+                    desc.append(f"{ghost_count} 个残留数据（仅删除数据库记录）")
+                st.caption(f"说明：{', '.join(desc)}")
+            for name in selected_files:
+                st.write(f" - `{name}`")
+
+            col_confirm, col_cancel = st.columns(2)
+            with col_confirm:
+                if st.button("✅ 确认批量删除", key="batch_delete_yes", type="primary"):
+                    try:
+                        imported_count = 0
+                        not_imported_count = 0
+                        ghost_count = 0
+                        db_success = 0
+                        db_fail = 0
+                        local_success = 0
+                        local_fail = 0
+
+                        # 先收集所有要删除的文件信息（当前页）
+                        to_delete = []
+                        for page_idx, info in enumerate(paginated_list):
+                            if st.session_state.get(f"selected_page_{current_page}_{page_idx}", False):
+                                to_delete.append(info)
+                                if info["type"] == "imported":
+                                    imported_count += 1
+                                elif info["type"] == "ghost":
+                                    ghost_count += 1
+                                else:  # not_imported
+                                    not_imported_count += 1
+
+                        # 第一步：删除数据库切片（已建库 + 残留数据）
+                        for info in to_delete:
+                            if info["type"] in ["imported", "ghost"]:
+                                if file_manager_ui.delete_file_by_tag(info["tag"]):
+                                    db_success += 1
+                                else:
+                                    db_fail += 1
+                                    logger.error(f"删除数据库切片失败: {info['tag']}")
+
+                        # 第二步：删除本地文件（已建库 + 未建库）
+                        for info in to_delete:
+                            if info["path"]:  # imported 和 not_imported 有本地文件
+                                if file_manager_ui.delete_local_file(info["path"]):
+                                    local_success += 1
+                                else:
+                                    local_fail += 1
+                                    logger.error(f"删除本地文件失败: {info['path']}")
+
+                        # 清除选择状态
+                        st.session_state.pop("batch_delete_confirm", None)
+                        for key in list(st.session_state.keys()):
+                            if key.startswith("selected_page_"):
+                                del st.session_state[key]
+
+                        # 显示结果
+                        if db_fail == 0 and local_fail == 0:
+                            parts = []
+                            if local_success > 0:
+                                parts.append(f"本地文件 {local_success} 个")
+                            if db_success > 0:
+                                parts.append(f"数据库记录 {db_success} 个")
+                            msg = "✅ 成功删除：" + "、".join(parts)
+                            st.success(msg)
                         else:
-                            st.caption("⚠️ 未建库")
+                            msg = f"⚠️ 删除完成：本地文件成功 {local_success} 个，失败 {local_fail} 个"
+                            if db_fail > 0:
+                                msg += f"；数据库记录成功 {db_success} 个，失败 {db_fail} 个"
+                            st.warning(msg)
 
-                # 单个删除确认对话框（仅管理员可见）
-                if is_admin and st.session_state.get(f"single_delete_confirm_page_{current_page}_{page_idx}", False):
-                    with st.container():
-                        # 根据文件类型显示不同的确认信息
+                        st.rerun()
+                    except Exception as e:
+                        logger.error(f"批量删除异常: {e}")
+                        st.error(f"❌ 批量删除失败: {str(e)}")
+
+            with col_cancel:
+                if st.button("❌ 取消", key="batch_delete_no"):
+                    st.session_state.pop("batch_delete_confirm", None)
+                    st.rerun()
+
+        # ========== 批量导入选中确认对话框（仅管理员可见） ==========
+        if is_admin and st.session_state.get("batch_import_confirm"):
+            files_to_import = st.session_state.get("batch_import_confirm", [])
+            st.markdown("---")
+            st.success(f"### 📥 确认批量导入")
+            st.write(f"将导入以下 **{len(files_to_import)}** 个未建库文件：")
+            for file_path in files_to_import:
+                file_name = os.path.basename(file_path)
+                st.write(f" - `{file_name}`")
+
+            col_confirm, col_cancel = st.columns(2)
+            with col_confirm:
+                if st.button("✅ 确认导入", key="batch_import_yes", type="primary"):
+                    with st.spinner(f"⏳ 正在导入 {len(files_to_import)} 个文件，请稍候..."):
+                        try:
+                            results = file_manager_ui.batch_import_files(
+                                file_paths=files_to_import,
+                                collection_name="database",
+                                dpi=200,
+                                debug=True
+                            )
+
+                            # 显示结果
+                            if results["success_count"] > 0:
+                                st.success(f"✅ 成功导入 {results['success_count']} 个文件！")
+                            if results["failed_count"] > 0:
+                                st.error(f"❌ 导入失败 {results['failed_count']} 个文件")
+                                with st.expander("查看失败文件"):
+                                    for file_path, error in results["failed"]:
+                                        file_name = os.path.basename(file_path)
+                                        st.write(f" - `{file_name}`: {error}")
+
+                        except Exception as e:
+                            logger.error(f"批量导入异常: {e}")
+                            st.error(f"❌ 批量导入失败: {str(e)}")
+                        finally:
+                            st.session_state.pop("batch_import_confirm", None)
+                            st.rerun()
+
+            with col_cancel:
+                if st.button("❌ 取消", key="batch_import_no"):
+                    st.session_state.pop("batch_import_confirm", None)
+                    st.rerun()
+
+        # ========== 一键全部导入确认对话框（仅管理员可见） ==========
+        if is_admin and st.session_state.get("import_all_confirm"):
+            files_to_import = st.session_state.get("import_all_confirm", [])
+            st.markdown("---")
+            st.success(f"### ⚡ 确认全部导入")
+            st.write(f"将导入所有 **{len(files_to_import)}** 个未建库文件：")
+            st.caption(f"（仅显示前 10 个文件）")
+            for file_path in files_to_import[:10]:
+                file_name = os.path.basename(file_path)
+                st.write(f" - `{file_name}`")
+            if len(files_to_import) > 10:
+                st.write(f" - ... 还有 {len(files_to_import) - 10} 个文件")
+
+            st.warning(f"⚠️ 这可能需要一些时间，请耐心等待...")
+
+            col_confirm, col_cancel = st.columns(2)
+            with col_confirm:
+                if st.button("✅ 确认全部导入", key="import_all_yes", type="primary"):
+                    with st.spinner(f"⏳ 正在导入 {len(files_to_import)} 个文件，请稍候..."):
+                        try:
+                            results = file_manager_ui.batch_import_files(
+                                file_paths=files_to_import,
+                                collection_name="database",
+                                dpi=200,
+                                debug=True
+                            )
+
+                            # 显示结果
+                            if results["success_count"] > 0:
+                                st.success(f"✅ 成功导入 {results['success_count']} 个文件！")
+                            if results["failed_count"] > 0:
+                                st.error(f"❌ 导入失败 {results['failed_count']} 个文件")
+                                with st.expander("查看失败文件"):
+                                    for file_path, error in results["failed"]:
+                                        file_name = os.path.basename(file_path)
+                                        st.write(f" - `{file_name}`: {error}")
+
+                        except Exception as e:
+                            logger.error(f"全部导入异常: {e}")
+                            st.error(f"❌ 全部导入失败: {str(e)}")
+                        finally:
+                            st.session_state.pop("import_all_confirm", None)
+                            st.rerun()
+
+            with col_cancel:
+                if st.button("❌ 取消", key="import_all_no"):
+                    st.session_state.pop("import_all_confirm", None)
+                    st.rerun()
+
+        # ========== 文件列表 ==========
+        st.markdown("**📁 文件列表：**")
+
+        if paginated_list:
+            # 表头（根据角色显示不同列）
+            is_admin = st.session_state.user_role == UserRole.ADMIN
+
+            if is_admin:
+                header_col1, header_col2, header_col3, header_col4, header_col5 = st.columns([0.5, 3, 2, 2, 1])
+                with header_col1:
+                    st.markdown("**选择**")
+                with header_col2:
+                    st.markdown("**文件名**")
+                with header_col3:
+                    st.markdown("**切片数**")
+                with header_col4:
+                    st.markdown("**类型**")
+                with header_col5:
+                    st.markdown("**操作**")
+            else:
+                header_col1, header_col2, header_col3, header_col4 = st.columns([3, 2, 2, 2])
+                with header_col1:
+                    st.markdown("**文件名**")
+                with header_col2:
+                    st.markdown("**切片数**")
+                with header_col3:
+                    st.markdown("**类型**")
+                with header_col4:
+                    st.markdown("**状态**")
+
+            st.markdown("---")
+
+            # 文件列表（当前页）
+            for page_idx, info in enumerate(paginated_list):
+                with st.container():
+                    if is_admin:
+                        col_select, col_name, col_chunks, col_type, col_action = st.columns([0.5, 3, 2, 2, 1])
+                    else:
+                        col_name, col_chunks, col_type, col_status = st.columns([3, 2, 2, 2])
+
+                    # 复选框（仅管理员可见）
+                    if is_admin:
+                        with col_select:
+                            # 复选框 - 使用新的 key 格式
+                            st.checkbox(
+                                "select",
+                                key=f"selected_page_{current_page}_{page_idx}",
+                                label_visibility="collapsed"
+                            )
+
+                    # 文件名 - 改为按钮样式，点击后在主页面中间展开 PDF 预览（侧边栏空间有限）
+                    with col_name:
+                        icon = "👻" if info["type"] == "ghost" else "📄"
+                        if st.button(f"{icon} {info['name']}", key=f"view_{current_page}_{page_idx}", help="点击预览文件"):
+                            if info["type"] != "ghost":
+                                # toggle：再次点击同一文件则关闭预览
+                                if st.session_state.get("preview_file_name") == info["name"]:
+                                    del st.session_state["preview_file_name"]
+                                else:
+                                    st.session_state["preview_file_name"] = info["name"]
+                                st.rerun()
+
+                    with col_chunks:
+                        # 切片数
+                        if info["chunk_count"] > 0:
+                            st.caption(f"📊 {info['chunk_count']} 个")
+                        else:
+                            st.caption("📊 0 个")
+
+                    with col_type:
+                        # 类型标记
                         if info["type"] == "imported":
-                            confirm_msg = f"⚠️ 确认删除 **{info['name']}**？（将同时删除本地文件和数据库记录）"
+                            st.markdown('<span style="color:green">已建库</span>', unsafe_allow_html=True)
                         elif info["type"] == "ghost":
-                            confirm_msg = f"⚠️ 确认删除 **{info['name']}**？（仅删除数据库记录，本地文件不存在）"
-                        else:  # not_imported
-                            confirm_msg = f"⚠️ 确认删除 **{info['name']}**？（仅删除本地文件，数据库无记录）"
+                            st.markdown('<span style="color:red">残留数据</span>', unsafe_allow_html=True)
+                        else:
+                            st.markdown('<span style="color:orange">未建库</span>', unsafe_allow_html=True)
 
-                        st.info(confirm_msg)
-                        col_yes, col_no = st.columns(2)
-                        with col_yes:
-                            if st.button("✅ 确认", key=f"single_yes_page_{current_page}_{page_idx}", type="primary"):
-                                try:
-                                    # 根据类型执行不同的删除操作
-                                    db_deleted = True
-                                    local_deleted = True
+                    # 操作列（仅管理员可见）
+                    if is_admin:
+                        with col_action:
+                            # 单个删除按钮
+                            button_key = f"single_delete_page_{current_page}_{page_idx}"
+                            help_text = "删除此文件（本地+数据库）" if info["type"] != "ghost" else "删除此文件（仅数据库记录）"
+                            if st.button("🗑️", key=button_key, help=help_text):
+                                st.session_state[f"single_delete_confirm_page_{current_page}_{page_idx}"] = True
+                                st.rerun()
+                    else:
+                        # 普通用户看到的状态信息
+                        with col_status:
+                            if info["type"] == "imported":
+                                st.caption("✅ 可用")
+                            elif info["type"] == "ghost":
+                                st.caption("⚠️ 仅数据库")
+                            else:
+                                st.caption("⚠️ 未建库")
 
-                                    if info["type"] == "imported":
-                                        # 已建库：删除本地文件 + 数据库记录
-                                        db_deleted = file_manager_ui.delete_file_by_tag(info["tag"])
-                                        local_deleted = file_manager_ui.delete_local_file(info["path"])
-                                    elif info["type"] == "ghost":
-                                        # 残留数据：只删除数据库记录
-                                        db_deleted = file_manager_ui.delete_file_by_tag(info["tag"])
-                                        local_deleted = True  # 本地没有文件，跳过
-                                    else:  # not_imported
-                                        # 未建库：只删除本地文件
-                                        local_deleted = file_manager_ui.delete_local_file(info["path"])
-                                        db_deleted = True  # 数据库没有记录，跳过
+                    # 单个删除确认对话框（仅管理员可见）
+                    if is_admin and st.session_state.get(f"single_delete_confirm_page_{current_page}_{page_idx}", False):
+                        with st.container():
+                            # 根据文件类型显示不同的确认信息
+                            if info["type"] == "imported":
+                                confirm_msg = f"⚠️ 确认删除 **{info['name']}**？（将同时删除本地文件和数据库记录）"
+                            elif info["type"] == "ghost":
+                                confirm_msg = f"⚠️ 确认删除 **{info['name']}**？（仅删除数据库记录，本地文件不存在）"
+                            else:  # not_imported
+                                confirm_msg = f"⚠️ 确认删除 **{info['name']}**？（仅删除本地文件，数据库无记录）"
 
-                                    if db_deleted and local_deleted:
-                                        st.success(f"✅ 已删除 {info['name']}")
-                                    elif db_deleted and not local_deleted:
-                                        st.warning(f"⚠️ 数据库记录已删除，但本地文件删除失败")
-                                    elif not db_deleted and local_deleted:
-                                        st.warning(f"⚠️ 本地文件已删除，但数据库记录删除失败")
-                                    else:
-                                        st.error(f"❌ 删除失败")
+                            st.info(confirm_msg)
+                            col_yes, col_no = st.columns(2)
+                            with col_yes:
+                                if st.button("✅ 确认", key=f"single_yes_page_{current_page}_{page_idx}", type="primary"):
+                                    try:
+                                        # 根据类型执行不同的删除操作
+                                        db_deleted = True
+                                        local_deleted = True
 
+                                        if info["type"] == "imported":
+                                            # 已建库：删除本地文件 + 数据库记录
+                                            db_deleted = file_manager_ui.delete_file_by_tag(info["tag"])
+                                            local_deleted = file_manager_ui.delete_local_file(info["path"])
+                                        elif info["type"] == "ghost":
+                                            # 残留数据：只删除数据库记录
+                                            db_deleted = file_manager_ui.delete_file_by_tag(info["tag"])
+                                            local_deleted = True  # 本地没有文件，跳过
+                                        else:  # not_imported
+                                            # 未建库：只删除本地文件
+                                            local_deleted = file_manager_ui.delete_local_file(info["path"])
+                                            db_deleted = True  # 数据库没有记录，跳过
+
+                                        if db_deleted and local_deleted:
+                                            st.success(f"✅ 已删除 {info['name']}")
+                                        elif db_deleted and not local_deleted:
+                                            st.warning(f"⚠️ 数据库记录已删除，但本地文件删除失败")
+                                        elif not db_deleted and local_deleted:
+                                            st.warning(f"⚠️ 本地文件已删除，但数据库记录删除失败")
+                                        else:
+                                            st.error(f"❌ 删除失败")
+
+                                        del st.session_state[f"single_delete_confirm_page_{current_page}_{page_idx}"]
+                                        st.rerun()
+                                    except Exception as e:
+                                        st.error(f"❌ 删除失败: {str(e)}")
+                            with col_no:
+                                if st.button("❌ 取消", key=f"single_no_page_{current_page}_{page_idx}"):
                                     del st.session_state[f"single_delete_confirm_page_{current_page}_{page_idx}"]
                                     st.rerun()
-                                except Exception as e:
-                                    st.error(f"❌ 删除失败: {str(e)}")
-                        with col_no:
-                            if st.button("❌ 取消", key=f"single_no_page_{current_page}_{page_idx}"):
-                                del st.session_state[f"single_delete_confirm_page_{current_page}_{page_idx}"]
-                                st.rerun()
-    else:
-        st.info("📭 没有找到匹配的文件")
+        else:
+            st.info("📭 没有找到匹配的文件")
 
-    st.markdown("---")
+        st.markdown("---")
 
     # ========== 原有的已导入文件列表（移除，不再需要） ==========
 
@@ -1434,6 +1450,26 @@ if st.session_state.page == "user_management" and st.session_state.user_role == 
 elif st.session_state.page == "change_password":
     # 修改密码页面
     render_change_password()
+
+# ========== 文件预览区域（主页面中间，避免侧边栏空间局促） ==========
+if st.session_state.get("preview_file_name"):
+    preview_name = st.session_state["preview_file_name"]
+    file_path = STORAGE_DIR / preview_name
+    col_title, col_close = st.columns([5, 1])
+    col_title.markdown(f"### 📖 预览：{preview_name}")
+    if col_close.button("✖️ 关闭预览", key="main_close_preview"):
+        del st.session_state["preview_file_name"]
+        st.rerun()
+    if file_path.exists():
+        with open(file_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+        st.markdown(
+            f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="800" type="application/pdf"></iframe>',
+            unsafe_allow_html=True
+        )
+    else:
+        st.error("❌ 文件路径失效，请刷新列表。")
+    st.markdown("---")
 
 # 聊天功能（所有页面都显示）
 st.title("💬 智能设计助手")
