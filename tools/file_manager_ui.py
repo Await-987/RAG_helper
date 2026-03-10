@@ -7,6 +7,93 @@ from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from loguru import logger
 
+# 获取项目根目录（与 load_files.py 保持一致）
+PROJECT_ROOT = Path(__file__).absolute().parent.parent
+# 图片存储目录
+MINERU_OUTPUT_DIR = PROJECT_ROOT / "data" / "stored_files" / "mineru_output"
+
+
+def delete_images_by_document_prefix(document_name: str, output_dir: Path = None) -> Tuple[int, List[str]]:
+    """
+    删除指定文档关联的所有图片文件
+
+    根据文档名前缀查找并删除图片（格式：文档名_数字.jpg）
+
+    Args:
+        document_name: 文档名称（不含扩展名）
+        output_dir: 图片输出目录，默认为 MINERU_OUTPUT_DIR
+
+    Returns:
+        (删除数量, 删除的文件名列表)
+    """
+    if output_dir is None:
+        output_dir = MINERU_OUTPUT_DIR
+
+    if not output_dir.exists():
+        logger.info(f"图片目录不存在: {output_dir}")
+        return 0, []
+
+    # 查找以 "文档名_" 开头的图片文件
+    prefix = f"{document_name}_"
+    deleted_count = 0
+    deleted_files = []
+
+    for f in list(output_dir.iterdir()):
+        if f.is_file() and f.name.startswith(prefix):
+            # 检查是否是图片文件
+            if f.suffix.lower() in ('.jpg', '.jpeg', '.png', '.gif', '.bmp'):
+                try:
+                    f.unlink()  # 删除文件
+                    deleted_files.append(f.name)
+                    deleted_count += 1
+                    logger.debug(f"已删除图片: {f.name}")
+                except Exception as e:
+                    logger.error(f"删除图片失败: {f.name}, 错误: {e}")
+
+    if deleted_count > 0:
+        logger.info(f"文档 '{document_name}' 关联图片已删除: {deleted_count} 个")
+
+    return deleted_count, deleted_files
+
+
+def get_document_name_from_tag(file_tag: str) -> str:
+    """
+    从 file_tag 中提取文档名（不含扩展名）
+
+    Args:
+        file_tag: 文件标签，如 "data/stored_files/document.pdf" 或 "document.pdf"
+
+    Returns:
+        文档名（不含路径和扩展名），如 "document"
+    """
+    # 获取文件名（不含路径）
+    filename = os.path.basename(file_tag)
+    # 去除扩展名
+    document_name = os.path.splitext(filename)[0]
+    return document_name
+
+
+def _get_file_tag(file_path: Path) -> str:
+    """
+    生成文件标签（相对路径），与 load_files.py 保持一致
+
+    Args:
+        file_path: 文件路径（可以是绝对路径或相对路径）
+
+    Returns:
+        相对于项目根目录的路径（POSIX 格式，正斜杠）
+    """
+    # 如果已经是相对路径，直接返回 POSIX 格式
+    if not file_path.is_absolute():
+        return file_path.as_posix()
+
+    # 如果是绝对路径，转换为相对路径
+    try:
+        return file_path.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        # 如果不在 PROJECT_ROOT 下，返回原路径的 POSIX 格式
+        return file_path.as_posix()
+
 
 def get_files_without_chunks(storage_dir: Path, collection_name: str = "database") -> List[Dict]:
     """
@@ -32,8 +119,8 @@ def get_files_without_chunks(storage_dir: Path, collection_name: str = "database
 
     for name in local_files:
         target_path = storage_dir / name
-        # 生成 file_tag：直接使用相对路径（Docker 友好）
-        file_tag = storage_dir.as_posix() + "/" + name
+        # 生成 file_tag：使用相对路径（与 load_files.py 一致）
+        file_tag = _get_file_tag(target_path)
 
         # 检查是否有切片
         chunk_count = db_stats.get(file_tag, 0)
@@ -145,46 +232,87 @@ def batch_import_files(file_paths: List[str], collection_name: str = "database",
     return results
 
 
-def get_database_stats(collection_name: str = "database") -> Tuple[Dict[str, int], int]:
+def get_database_stats(collection_name: str = "database", use_cache: bool = True) -> Tuple[Dict[str, int], int]:
     """
     获取数据库统计信息
+
+    Args:
+        collection_name: 集合名称
+        use_cache: 是否使用缓存（对于大数据量建议使用）
 
     Returns:
         (stats_dict, total_chunks)
         - stats_dict: {file_tag: chunk_count, ...}
         - total_chunks: 总切片数
     """
+    # 使用模块级缓存
+    global _db_stats_cache, _db_stats_time, _db_stats_collection
+    import time
+
+    cache_ttl = 60  # 缓存 60 秒
+    current_time = time.time()
+
+    if use_cache and _db_stats_cache is not None:
+        if (_db_stats_collection == collection_name and
+            current_time - _db_stats_time < cache_ttl):
+            return _db_stats_cache
+
     try:
         from tools.qdrant import QdrantDB, QdrantDB_Init
         db = QdrantDB(input=QdrantDB_Init(collection_name=collection_name))
         client = db.storage_instance._client
 
-        # 获取数据库点数
+        # 获取数据库点数（快速操作）
         count_result = client.count(collection_name=collection_name)
         total_chunks = count_result.count
 
-        # 获取所有点的 payload 以统计各文件分布
+        # 获取点的 payload 以统计各文件分布
+        # 对于大数据量，使用分页 scroll
         stats = {}
         if total_chunks > 0:
-            scroll_result = client.scroll(
-                collection_name=collection_name,
-                limit=10000,
-                with_payload=True,
-                with_vectors=False
-            )[0]
+            batch_size = 1000
+            offset = None
+            total_scrolled = 0
+            max_scroll = 100000  # 最多扫描 10 万条，避免太慢
 
-            for point in scroll_result:
-                tag = point.payload.get("Original_file", "未知文件")
-                # 数据库中存储的是 posix 格式的相对路径（正斜杠）
-                # 保持原样，不进行 normpath 转换，确保与生成 tag 时的格式一致
-                stats[tag] = stats.get(tag, 0) + 1
+            while total_scrolled < max_scroll:
+                scroll_result = client.scroll(
+                    collection_name=collection_name,
+                    limit=batch_size,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False
+                )
+                points = scroll_result[0]
+                offset = scroll_result[1]
 
-        # 调试：打印数据库中的文件标签
-        # logger.info(f"数据库中的文件标签 (前5个): {list(stats.keys())[:5]}")
+                if not points:
+                    break
+
+                for point in points:
+                    tag = point.payload.get("Original_file", "未知文件")
+                    stats[tag] = stats.get(tag, 0) + 1
+
+                total_scrolled += len(points)
+
+                if offset is None:
+                    break
+
+        # 缓存结果
+        _db_stats_cache = (stats, total_chunks)
+        _db_stats_time = current_time
+        _db_stats_collection = collection_name
+
         return stats, total_chunks
     except Exception as e:
         logger.error(f"获取数据库统计失败: {e}")
         return {}, 0
+
+
+# 缓存变量
+_db_stats_cache = None
+_db_stats_time = 0
+_db_stats_collection = None
 
 
 def get_file_info_list(storage_dir: Path) -> List[Dict]:
@@ -215,8 +343,8 @@ def get_file_info_list(storage_dir: Path) -> List[Dict]:
     # 处理本地存在的文件
     for name in local_files:
         target_path = storage_dir / name
-        # 生成 file_tag：直接使用相对路径（Docker 友好）
-        file_tag = storage_dir.as_posix() + "/" + name
+        # 生成 file_tag：使用相对路径（与 load_files.py 一致）
+        file_tag = _get_file_tag(target_path)
 
         chunk_count = db_stats.get(file_tag, 0)
 
@@ -248,9 +376,14 @@ def get_file_info_list(storage_dir: Path) -> List[Dict]:
     return file_info_list, total_chunks
 
 
-def delete_file_by_tag(file_tag: str, collection_name: str = "database") -> bool:
+def delete_file_by_tag(file_tag: str, collection_name: str = "database", delete_images: bool = True) -> bool:
     """
-    根据文件标签删除数据库中的切片
+    根据文件标签删除数据库中的切片，并可选删除关联图片
+
+    Args:
+        file_tag: 文件标签（相对路径）
+        collection_name: 集合名称
+        delete_images: 是否同时删除关联的图片文件
 
     Returns:
         是否删除成功
@@ -258,30 +391,115 @@ def delete_file_by_tag(file_tag: str, collection_name: str = "database") -> bool
     try:
         from tools.qdrant import QdrantDB, QdrantDB_Init
         db = QdrantDB(input=QdrantDB_Init(collection_name=collection_name))
-        # 使用 os.path.normpath 标准化路径，确保跨平台兼容
-        file_tag = os.path.normpath(file_tag)
+        # 不使用 normpath，保持 POSIX 格式（正斜杠）与数据库存储格式一致
         db.delete_by_file_name(file_tag)
+
+        # 删除关联的图片文件
+        if delete_images:
+            document_name = get_document_name_from_tag(file_tag)
+            deleted_count, deleted_files = delete_images_by_document_prefix(document_name)
+            if deleted_count > 0:
+                logger.info(f"已删除文档 '{document_name}' 关联的 {deleted_count} 个图片文件")
+
         return True
     except Exception as e:
         logger.error(f"删除数据库切片失败: {e}")
         return False
 
 
-def delete_local_file(file_path: Path) -> bool:
+def delete_local_file(file_path: Path, delete_images: bool = False) -> bool:
     """
     删除本地文件
+
+    Args:
+        file_path: 文件路径
+        delete_images: 是否同时删除关联的图片文件
 
     Returns:
         是否删除成功
     """
     try:
         if file_path and file_path.exists():
+            # 可选删除关联图片
+            if delete_images:
+                document_name = os.path.splitext(file_path.name)[0]
+                deleted_count, _ = delete_images_by_document_prefix(document_name)
+                if deleted_count > 0:
+                    logger.info(f"已删除文档 '{document_name}' 关联的 {deleted_count} 个图片文件")
+
+            # 删除本地文件
             os.remove(file_path)
             return True
         return False
     except Exception as e:
         logger.error(f"删除本地文件失败: {e}")
         return False
+
+
+def delete_file_completely(
+    file_tag: str,
+    file_path: Path = None,
+    collection_name: str = "database",
+    delete_local: bool = True,
+    delete_images: bool = True
+) -> Dict:
+    """
+    完整删除文件：数据库记录 + 本地文件 + 关联图片
+
+    Args:
+        file_tag: 文件标签（相对路径）
+        file_path: 本地文件路径（可选）
+        collection_name: 集合名称
+        delete_local: 是否删除本地文件
+        delete_images: 是否删除关联图片
+
+    Returns:
+        {
+            "success": bool,
+            "db_deleted": bool,
+            "local_deleted": bool,
+            "images_deleted_count": int,
+            "error": str or None
+        }
+    """
+    result = {
+        "success": False,
+        "db_deleted": False,
+        "local_deleted": False,
+        "images_deleted_count": 0,
+        "error": None
+    }
+
+    try:
+        # 1. 删除数据库记录
+        if delete_file_by_tag(file_tag, collection_name, delete_images=False):
+            result["db_deleted"] = True
+            logger.info(f"数据库切片已删除: {file_tag}")
+        else:
+            result["error"] = "数据库删除失败"
+            return result
+
+        # 2. 删除关联图片
+        if delete_images:
+            document_name = get_document_name_from_tag(file_tag)
+            deleted_count, _ = delete_images_by_document_prefix(document_name)
+            result["images_deleted_count"] = deleted_count
+            if deleted_count > 0:
+                logger.info(f"关联图片已删除: {deleted_count} 个")
+
+        # 3. 删除本地文件
+        if delete_local and file_path:
+            if delete_local_file(file_path, delete_images=False):  # 图片已删除，不重复删除
+                result["local_deleted"] = True
+                logger.info(f"本地文件已删除: {file_path}")
+
+        result["success"] = True
+        return result
+
+    except Exception as e:
+        result["error"] = str(e)
+        logger.error(f"完整删除文件失败: {e}")
+        return result
 
 
 def get_local_files_with_db_status(storage_dir: Path) -> List[Dict]:
@@ -316,9 +534,8 @@ def get_local_files_with_db_status(storage_dir: Path) -> List[Dict]:
     # 处理本地文件
     for name in local_files:
         target_path = storage_dir / name
-        # 生成 file_tag：直接使用相对路径（Docker 友好）
-        # storage_dir 本身就是相对于项目根目录的路径
-        file_tag = storage_dir.as_posix() + "/" + name
+        # 生成 file_tag：使用相对路径（与 load_files.py 一致）
+        file_tag = _get_file_tag(target_path)
         chunk_count = db_stats.get(file_tag, 0)
 
         # 记录匹配的数据库 tag

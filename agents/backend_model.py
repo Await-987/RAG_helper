@@ -76,23 +76,29 @@ def cleanup_table_summary_model():
     """清理表格摘要模型，释放显存"""
     global _table_summary_model_cache, _table_summary_tokenizer_cache
 
-    if _table_summary_model_cache is not None:
-        import torch
-        import gc
+    # 如果模型已经被清理，直接返回
+    if _table_summary_model_cache is None:
+        return
 
+    import torch
+    import gc
+
+    try:
         # 移动到 CPU 再删除（避免显存残留）
         _table_summary_model_cache = _table_summary_model_cache.to('cpu')
         del _table_summary_model_cache
-        _table_summary_model_cache = None
+    except Exception:
+        pass
 
-        _table_summary_tokenizer_cache = None
+    _table_summary_model_cache = None
+    _table_summary_tokenizer_cache = None
 
-        # 清理 CUDA 缓存
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        gc.collect()
+    # 清理 CUDA 缓存
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
 
-        print("[INFO] 表格摘要模型已释放")
+    print("[INFO] 表格摘要模型已释放")
 
 
 def get_table_summary_model():

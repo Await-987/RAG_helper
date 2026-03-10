@@ -1,5 +1,51 @@
 layout = """
+<!-- MathJax 3.x 支持 LaTeX 公式渲染 -->
+<script>
+window.MathJax = {
+  tex: {
+    inlineMath: [['$', '$'], ['\\(', '\\)']],
+    displayMath: [['$$', '$$'], ['\\[', '\\]']],
+    processEscapes: true,
+    processEnvironments: true
+  },
+  options: {
+    skipHtmlTags: ['noscript', 'style', 'textarea', 'pre', 'code'],
+    ignoreHtmlClass: 'tex2jax_ignore'
+  },
+  startup: {
+    ready: function() {
+      MathJax.startup.defaultReady();
+      MathJax.startup.promise.then(function() {
+        console.log('MathJax initial typeset complete');
+      });
+      // 监听 DOM 变化，自动渲染新添加的公式
+      if (typeof MutationObserver !== 'undefined') {
+        var observer = new MutationObserver(function(mutations) {
+          var needsTypeset = false;
+          mutations.forEach(function(mutation) {
+            if (mutation.addedNodes.length) {
+              needsTypeset = true;
+            }
+          });
+          if (needsTypeset) {
+            MathJax.typesetPromise().catch(function(err) {
+              console.log('MathJax typeset failed: ' + err.message);
+            });
+          }
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+      }
+    }
+  }
+};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" async></script>
+
 <style>
+    /* MathJax 公式样式 */
+    .MathJax, mjx-container { font-size: 1.1em !important; }
+    mjx-container { overflow-x: auto; overflow-y: hidden; }
+
     /* 隐藏Streamlit默认的聊天样式 */
     .stChatMessage {
         background-color: transparent !important;

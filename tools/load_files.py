@@ -1,9 +1,12 @@
 # @ wangpei
 import os
 import hashlib
+import shutil
 from tools import MineruComponent
 from tools.qdrant import QdrantDB, QdrantDB_Init, save2Qdrant_Input
 from typing import *
+from loguru import logger
+
 mineru_tool = MineruComponent()
 from pathlib import Path
 
@@ -11,6 +14,123 @@ from pathlib import Path
 project_root = Path(__file__).absolute().parent.parent
 # 图片存储在 data/stored_files/mineru_output 下
 MINERU_OUTPUT_DIR = project_root / "data" / "stored_files" / "mineru_output"
+
+
+# ==================== 图片重命名相关函数 ====================
+
+def rename_images_for_document(
+    content_list: list,
+    document_name: str,
+    output_dir: Path = None
+) -> tuple[list, dict]:
+    """
+    重命名图片文件，使其与文档关联
+
+    将 MinerU 生成的哈希命名图片重命名为 "文档名_数字.jpg" 格式
+    这样删除文档时可以根据前缀批量删除图片
+
+    Args:
+        content_list: MinerU 输出的内容列表
+        document_name: 文档名称（不含扩展名）
+        output_dir: 图片输出目录，默认为 MINERU_OUTPUT_DIR
+
+    Returns:
+        (重命名后的 content_list, 图片重命名映射 dict)
+        - 重命名映射: {旧图片名: 新图片名}
+    """
+    if output_dir is None:
+        output_dir = MINERU_OUTPUT_DIR
+
+    # 确保输出目录存在
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # 收集所有需要重命名的图片
+    image_rename_map = {}  # {旧名: 新名}
+    image_counter = {}  # {基础名: 计数器}
+
+    for item in content_list:
+        if item.get('type') in ('image', 'table'):
+            img_path = item.get('img_path', '')
+            if not img_path:
+                continue
+
+            # 提取图片文件名（可能包含 mineru_output/ 前缀）
+            old_img_name = os.path.basename(img_path)
+            if not old_img_name:
+                continue
+
+            # 检查图片文件是否存在
+            old_img_full_path = output_dir / old_img_name
+            if not old_img_full_path.exists():
+                logger.warning(f"图片文件不存在: {old_img_full_path}")
+                continue
+
+            # 生成新的图片名：文档名_数字.扩展名
+            ext = os.path.splitext(old_img_name)[1] or '.jpg'
+            base_name = document_name
+
+            # 获取或初始化计数器
+            if base_name not in image_counter:
+                image_counter[base_name] = 0
+            image_counter[base_name] += 1
+            new_index = image_counter[base_name]
+
+            # 生成新文件名
+            new_img_name = f"{base_name}_{new_index}{ext}"
+            new_img_full_path = output_dir / new_img_name
+
+            # 重命名文件
+            try:
+                shutil.move(str(old_img_full_path), str(new_img_full_path))
+                logger.debug(f"图片重命名: {old_img_name} -> {new_img_name}")
+
+                # 记录映射关系
+                image_rename_map[old_img_name] = new_img_name
+
+                # 更新 content_list 中的路径
+                # 保持相对路径格式：mineru_output/新文件名
+                if img_path.startswith('mineru_output/'):
+                    item['img_path'] = f"mineru_output/{new_img_name}"
+                else:
+                    item['img_path'] = f"mineru_output/{new_img_name}"
+
+            except Exception as e:
+                logger.error(f"图片重命名失败: {old_img_name} -> {new_img_name}, 错误: {e}")
+
+    logger.info(f"图片重命名完成: 共 {len(image_rename_map)} 个文件")
+
+    return content_list, image_rename_map
+
+
+def get_document_images(document_name: str, output_dir: Path = None) -> list:
+    """
+    获取指定文档关联的所有图片文件路径
+
+    Args:
+        document_name: 文档名称（不含扩展名）
+        output_dir: 图片输出目录
+
+    Returns:
+        图片文件路径列表
+    """
+    if output_dir is None:
+        output_dir = MINERU_OUTPUT_DIR
+
+    if not output_dir.exists():
+        return []
+
+    # 查找以 "文档名_" 开头的图片文件
+    prefix = f"{document_name}_"
+    images = []
+
+    for f in output_dir.iterdir():
+        if f.is_file() and f.name.startswith(prefix):
+            # 检查是否是图片文件
+            if f.suffix.lower() in ('.jpg', '.jpeg', '.png', '.gif', '.bmp'):
+                images.append(str(f))
+
+    return images
+
 
 # ==================== 表格摘要缓存 ====================
 # 缓存表格摘要，避免重复调用 LLM
@@ -878,6 +998,17 @@ def load_and_store_file(
         json.dump(recognized_text.data, f, ensure_ascii=False, indent=2)
     print(f"[INFO] content_list 已保存到: {content_list_path}")
 
+    # ==================== 图片重命名：绑定文档 ====================
+    # 将图片从哈希命名改为 "文档名_数字.jpg" 格式
+    # 这样删除文档时可以根据前缀批量删除图片
+    print(f"[INFO] 开始图片重命名，绑定文档: {file_basename}")
+    recognized_text.data, image_rename_map = rename_images_for_document(
+        content_list=recognized_text.data,
+        document_name=file_basename,
+        output_dir=MINERU_OUTPUT_DIR
+    )
+    print(f"[INFO] 图片重命名完成，共 {len(image_rename_map)} 个图片")
+
     qdrant_init = QdrantDB_Init(collection_name=collection_name)
     # @shengwanying：20260306修改：preprocess 返回 List[Dict]（父子chunk）
     print("[DEBUG] 调用 preprocess...")
@@ -1015,6 +1146,15 @@ def _process_single_file(args):
 
         if recognized_text.status != "success":
             return {"file": file_path, "success": False, "error": recognized_text.error}
+
+        # ==================== 图片重命名：绑定文档 ====================
+        # 将图片从哈希命名改为 "文档名_数字.jpg" 格式
+        file_basename = os.path.splitext(file_name)[0]
+        recognized_text.data, image_rename_map = rename_images_for_document(
+            content_list=recognized_text.data,
+            document_name=file_basename,
+            output_dir=MINERU_OUTPUT_DIR
+        )
 
         # 处理数据 - @shengwanying：20260306修改：preprocess 返回 List[Dict]
         chunks = preprocess(

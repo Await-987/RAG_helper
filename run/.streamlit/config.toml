@@ -7,4 +7,8 @@ font="sans serif"
 
 [server]
 headless = true
+# 增加超时时间（秒），支持长时间运行的任务
+maxUploadSize = 500
+# 脚本运行超时（默认是 0，表示无限制）
+runOnSaveTimeout = 0
 

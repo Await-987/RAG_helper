@@ -54,8 +54,8 @@ def cleanup_table_summary_model():
         logger.warning(f"⚠️ 表格摘要模型清理异常: {e}")
 
 
-# 注册退出时的清理函数
-atexit.register(cleanup_table_summary_model)
+# 注意：不在此处注册 atexit，而是在 init_session_state 中注册
+# 避免 Streamlit 每次重新运行脚本时重复注册
 
 # ========== 辅助函数：处理 checkbox 状态变化 ==========
 def handle_checkbox_change(file_idx: int):
@@ -92,6 +92,8 @@ def init_session_state():
     if "table_summary_model_initialized" not in st.session_state:
         st.session_state.table_summary_model_initialized = True
         init_table_summary_model()
+        # 只注册一次 atexit 清理函数
+        atexit.register(cleanup_table_summary_model)
 
 
 st.set_page_config(
@@ -129,8 +131,13 @@ def render_streaming_content(content: str, container):
     流式渲染内容（支持表格，但不处理图片）
     用于流式更新时的快速渲染
     """
-    # 使用 markdown 库渲染（支持表格）
-    md_html = markdown.markdown(content, extensions=['tables', 'fenced_code'])
+    # 使用 markdown 库渲染（支持表格和数学公式）
+    # 使用 markdown-katex 扩展保留公式格式，由 MathJax 渲染
+    md_html = markdown.markdown(content, extensions=[
+        'tables',
+        'fenced_code',
+        'markdown_katex'
+    ])
     container.markdown(f"""
         <div class="assistant-message-container">
             <div class="avatar assistant-avatar">🤖</div>
@@ -167,7 +174,7 @@ def build_message_html(reasoning: str, response: str, reasoning_complete: bool, 
     构建统一的消息 HTML（思考过程 + 回答）
     """
     # 转换回答为 HTML
-    response_html = markdown.markdown(response or '', extensions=['tables', 'fenced_code'])
+    response_html = markdown.markdown(response or '', extensions=['tables', 'fenced_code', 'markdown_katex'])
 
     # 构建思考过程部分
     reasoning_html = ""
@@ -268,7 +275,7 @@ def parse_and_render_content(content: str):
                 else:
                     # Markdown 部分，转换为 HTML
                     if part.strip():
-                        html_content += markdown.markdown(part, extensions=['tables', 'fenced_code'])
+                        html_content += markdown.markdown(part, extensions=['tables', 'fenced_code', 'markdown_katex'])
 
             html = f"""<div class="assistant-message-container">
                     <div class="avatar assistant-avatar">🤖</div>
@@ -281,7 +288,11 @@ def parse_and_render_content(content: str):
             st.markdown(html, unsafe_allow_html=True)
         else:
             # 纯 Markdown 内容，使用 markdown 库渲染（支持表格）
-            md_html = markdown.markdown(content, extensions=['tables', 'fenced_code'])
+            md_html = markdown.markdown(content, extensions=[
+                'tables',
+                'fenced_code',
+                'markdown_katex'
+            ])
             st.markdown(f"""
                 <div class="assistant-message-container">
                     <div class="avatar assistant-avatar">🤖</div>
@@ -321,7 +332,7 @@ def parse_and_render_content(content: str):
         for part_type, part_content in parts:
             if part_type == "text":
                 # 使用 markdown 库渲染文本（支持表格）
-                md_html = markdown.markdown(part_content, extensions=['tables', 'fenced_code'])
+                md_html = markdown.markdown(part_content, extensions=['tables', 'fenced_code', 'markdown_katex'])
                 html_content += md_html
             elif part_type == "image":
                 img_path = part_content
@@ -790,6 +801,36 @@ with st.sidebar:
                 size_mb = file_info["path"].stat().st_size / (1024 * 1024)
                 st.markdown(f"- 📄 `{file_info['name']}` ({size_mb:.2f} MB)")
 
+        # 大量文件警告
+        if len(not_imported_files) > 100:
+            st.warning(f"⚠️ **检测到大量文件 ({len(not_imported_files)} 个)**")
+            st.info(f"""
+**建议使用命令行批量导入，避免前端超时：**
+
+```bash
+# 激活虚拟环境
+source .venv/bin/activate
+
+# 后台运行批量导入
+nohup python scripts/batch_import.py > import.log 2>&1 &
+
+# 查看进度
+tail -f import.log
+```
+
+预计耗时：**{len(not_imported_files) * 10 / 3600:.1f} - {len(not_imported_files) * 30 / 3600:.1f} 小时**
+""")
+            # 提供分批导入选项
+            batch_size = st.number_input(
+                "每批处理文件数",
+                min_value=10,
+                max_value=500,
+                value=100,
+                step=50,
+                key="batch_size_input"
+            )
+            st.caption(f"将分 {((len(not_imported_files) - 1) // batch_size) + 1} 批处理")
+
         # 一键建库按钮
         if st.button(f"🚀 一键建库 ({len(not_imported_files)} 个文件)", type="primary", key="batch_import_btn"):
             st.session_state["batch_import_confirm"] = True
@@ -800,8 +841,12 @@ with st.sidebar:
             st.info(f"### 📦 即将导入 {len(not_imported_files)} 个文件到数据库")
             st.write("**注意：此过程可能需要较长时间，请耐心等待。**")
 
-            file_list = "\n".join([f"- `{f['name']}`" for f in not_imported_files])
-            st.write(file_list)
+            # 显示前 20 个文件
+            display_files = not_imported_files[:20]
+            for file_info in display_files:
+                st.write(f"- `{file_info['name']}`")
+            if len(not_imported_files) > 20:
+                st.write(f"- ... 还有 {len(not_imported_files) - 20} 个文件")
 
             col_yes, col_no = st.columns(2)
             with col_yes:
@@ -809,25 +854,57 @@ with st.sidebar:
                     # 清除确认状态
                     del st.session_state["batch_import_confirm"]
 
-                    # 显示进度
-                    progress_container = st.empty()
-                    with progress_container:
-                        with st.spinner(f"⏳ 正在处理 {len(not_imported_files)} 个文件，请稍候..."):
-                            file_paths = [str(f["path"]) for f in not_imported_files]
-                            results = file_manager_ui.batch_import_files(
-                                file_paths=file_paths,
-                                collection_name="database",
-                                dpi=200,
-                                debug=True
-                            )
+                    file_paths = [str(f["path"]) for f in not_imported_files]
+                    total_files = len(file_paths)
+
+                    # 使用 st.status 显示实时进度
+                    with st.status("正在导入文件...", expanded=True) as status:
+                        progress_bar = st.progress(0)
+                        status_text = st.empty()
+
+                        success_count = 0
+                        failed_count = 0
+                        failed_files = []
+
+                        for i, file_path in enumerate(file_paths):
+                            try:
+                                # 更新进度
+                                progress = (i + 1) / total_files
+                                progress_bar.progress(progress)
+                                status_text.write(f"处理中 ({i+1}/{total_files}): `{os.path.basename(file_path)}`")
+
+                                # 导入单个文件
+                                from tools.file_manager_ui import import_file_to_database
+                                success, msg, _ = import_file_to_database(
+                                    file_path=file_path,
+                                    collection_name="database",
+                                    dpi=200,
+                                    debug=False
+                                )
+
+                                if success:
+                                    success_count += 1
+                                else:
+                                    failed_count += 1
+                                    failed_files.append((file_path, msg))
+
+                            except Exception as e:
+                                failed_count += 1
+                                failed_files.append((file_path, str(e)))
+
+                        # 完成
+                        status.update(
+                            label=f"导入完成！成功: {success_count}, 失败: {failed_count}",
+                            state="complete"
+                        )
 
                     # 显示结果
-                    if results["success_count"] > 0:
-                        st.success(f"✅ 成功导入 {results['success_count']} 个文件")
-                    if results["failed_count"] > 0:
-                        st.error(f"❌ 导入失败 {results['failed_count']} 个文件")
+                    if success_count > 0:
+                        st.success(f"✅ 成功导入 {success_count} 个文件")
+                    if failed_count > 0:
+                        st.error(f"❌ 导入失败 {failed_count} 个文件")
                         with st.expander("查看失败详情"):
-                            for file_path, error_msg in results["failed"]:
+                            for file_path, error_msg in failed_files:
                                 st.write(f"- `{os.path.basename(file_path)}`: {error_msg}")
 
                     st.rerun()

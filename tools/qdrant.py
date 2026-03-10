@@ -115,7 +115,8 @@ class QdrantDB:
             texts_for_vector = texts_to_embed
 
         vectors = self.embedding_instance.embed_list(list(texts_for_vector))
-        logger.info(f"嵌入向量生成完成，维度: {len(vectors[0]) if vectors else 'N/A'}")
+        # 改为 DEBUG 级别，避免大量日志输出
+        logger.debug(f"嵌入向量生成完成，维度: {len(vectors[0]) if vectors else 'N/A'}")
 
         for vector, text_chunk in zip(vectors, texts_to_embed):
             payload = base_payload.copy()
