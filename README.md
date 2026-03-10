@@ -5,43 +5,44 @@
 ## 项目结构
 
 ```
-run/
+rag/
 ├── agents/                              # Agent 模块
 │   ├── __init__.py
-│   ├── backend_model.py                  # LLM/Embedding 模型配置
-│   └── chat_agent.py                     # 对话 Agent 工厂函数
+│   ├── backend_model.py                  # LLM/Embedding 模型配置 + 表格摘要模型
+│   └── chat_agent.py                     # 对话 Agent 工厂函数（含系统提示词）
 │
 ├── config/                              # 配置文件
 │   └── mineru.json                       # MinerU 解析配置
 │
-├── data/                                # 数据目录
-│   ├── stored_files/                     # 本地 PDF 文件存储
-│   │   └── mineru_output/                # MinerU 输出（表格/图片）
-│   ├── content_lists/                    # 文档内容列表缓存
-│   ├── exported_chunks/                  # 导出的切片数据
-│   └── storages/                         # Qdrant 向量数据库存储
-├── .user/                               # 用户数据目录（隐藏）
-│   └── users.json                        # 用户认证数据
+├── data/                                # 数据目录（运行时生成）
+│   ├── storages/                         # Qdrant 向量数据库存储
+│   ├── stored_files/                     # 上传的 PDF 文件
+│   │   └── mineru_output/                 # MinerU 输出（表格/图片）
+│   └── content_lists/                    # 文档内容列表缓存（JSON）
 │
 ├── docs/                                # 文档目录
 │   ├── bugfix/                           # Bug 修复记录
+│   │   └── 2026-01-mineru-discarded-preprocess.md
 │   └── changes/                          # 变更日志
+│       ├── keyword&vector_hybrid_dynamic_topk_rerank.md
+│       ├── table_independent_storage_llm_summary.md
+│       └── ...
 │
-├── logs/                                # 日志目录
-│   └── qwq_response_test_*.log           # 模型测试日志
-│
-├── models/                              # 模型文件
-│   ├── bge-base-zh-v1.5/                 # Embedding 模型
-│   ├── bge-reranker-base/                # 重排序模型
-│   └── mineru/                           # MinerU 依赖模型
-│
-├── new_tools/                           # 旧版工具目录（待清理）
+├── models/                              # 本地模型目录（需下载）
+│   ├── bge-base-zh-v1.5/                 # Embedding 模型（文本向量化）
+│   ├── bge-reranker-base/                # 重排序模型（优化检索结果）
+│   ├── mineru/                           # MinerU PDF 解析依赖模型
+│   └── Qwen2.5-1.5B-Instruct/            # 表格摘要小模型（LLM 生成表格摘要）
 │
 ├── run/                                 # Streamlit 运行模块
 │   ├── .streamlit/
 │   │   └── config.toml                   # Streamlit 主题配置
-│   ├── config.py                         # UI 布局配置
-│   └── streamlit.py                      # Streamlit Web 应用
+│   ├── config.py                         # UI 布局配置（含 MathJax 公式渲染）
+│   └── streamlit.py                      # Streamlit Web 应用主入口
+│
+├── scripts/                             # 工具脚本
+│   ├── batch_import.py                   # 批量导入 PDF 文件
+│   └── download_table_summary_model.py   # 下载表格摘要模型
 │
 ├── tests/                               # 测试文件
 │   ├── agents/
@@ -50,24 +51,42 @@ run/
 │   ├── tools/
 │   │   ├── test_load_files.py            # 文件加载测试
 │   │   └── test_qdrant.py                # 向量数据库测试
-│   └── test_model_think.py               # QwQ 模型思考测试
+│   ├── smoke_*.py                        # 烟雾测试（端到端）
+│   ├── eval_*.py                         # 评估测试
+│   └── debug_*.py                        # 调试脚本
 │
-├── tools/                               # 工具模块
+├── tools/                               # 核心工具模块
 │   ├── __init__.py
 │   ├── database_toolkit.py               # 数据库工具包（检索/重排序）
-│   ├── load_files.py                     # PDF 文件加载和处理
-│   ├── mineru_toolkit.py                 # MinerU PDF 解析工具
-│   ├── qdrant.py                         # Qdrant 向量数据库接口
-│   ├── file_manager_ui.py                # 文件管理 UI 辅助函数
+│   ├── load_files.py                     # PDF 文件加载、预处理、入库
+│   ├── mineru_toolkit.py                 # MinerU PDF 解析封装
+│   ├── qdrant.py                         # Qdrant 向量数据库接口（混合检索）
+│   ├── file_manager_ui.py                # 文件管理 UI 辅助函数（含图片删除）
 │   └── user_auth.py                      # 用户认证和权限管理
+│
+├── .user/                               # 用户数据目录（隐藏）
+│   └── users.json                        # 用户认证数据
 │
 ├── .env                                 # 环境变量配置（需自行创建）
 ├── .gitignore
-├── Dockerfile                            # Docker 部署文件
+├── Dockerfile                            # Docker 部署文件（CPU）
+├── Dockerfile.cuda                       # Docker 部署文件（GPU）
+├── docker-compose.yml                    # Docker Compose 配置（CPU）
+├── docker-compose.gpu.yml                # Docker Compose 配置（GPU）
 ├── requirements.txt                      # Python 依赖
-├── test_qwq_response.py                  # QwQ-32B 响应结构测试
 └── README.md                             # 项目说明文档
 ```
+
+### 核心模块说明
+
+| 模块 | 文件 | 主要功能 |
+|-----|------|---------|
+| **Agent** | `agents/chat_agent.py` | 对话智能体，含完整系统提示词 |
+| **模型** | `agents/backend_model.py` | Embedding/Reranker/表格摘要模型加载 |
+| **入库** | `tools/load_files.py` | PDF解析→图片重命名→预处理→向量存储 |
+| **检索** | `tools/qdrant.py` | 混合检索（向量+关键词）+ 重排序 |
+| **文件管理** | `tools/file_manager_ui.py` | 文件状态追踪 + 图片联动删除 |
+| **前端** | `run/streamlit.py` | Streamlit Web 界面 |
 
 ## Quick Start
 
@@ -122,7 +141,7 @@ reranker_path=models/bge-reranker-base
 
 ### 4. 下载模型
 
-本项目需要以下本地模型（总大小约 23GB）：
+本项目需要以下本地模型（总大小约 26GB）：
 
 #### 方式一：从 NAS 下载（推荐）
 
@@ -140,8 +159,65 @@ reranker_path=models/bge-reranker-base
 | `bge-base-zh-v1.5/` | 391 MB | Embedding 模型（文本向量化） |
 | `bge-reranker-base/` | 6.3 GB | 重排序模型（优化检索结果） |
 | `mineru/` | 16 GB | MinerU PDF 解析依赖 |
+| `Qwen2.5-1.5B-Instruct/` | 3 GB | 表格摘要小模型（LLM 生成表格摘要） |
 
 > **注意**：首次加载模型需要 10-60 秒，请耐心等待。
+
+#### 方式二：单独下载表格摘要模型
+
+如果 NAS 下载的模型包中没有 `Qwen2.5-1.5B-Instruct`，可以单独下载：
+
+**方法 1：使用自动下载脚本（推荐）**
+
+```bash
+# 激活虚拟环境
+source .venv/bin/activate
+
+# 自动选择最快镜像下载
+python scripts/download_table_summary_model.py
+
+# 或指定下载源
+python scripts/download_table_summary_model.py --source modelscope   # ModelScope（国内推荐）
+python scripts/download_table_summary_model.py --source hf-mirror     # HuggingFace 镜像
+python scripts/download_table_summary_model.py --source hf            # HuggingFace 官方
+```
+
+**方法 2：手动下载**
+
+| 下载源 | 链接 |
+|-------|------|
+| ModelScope（国内推荐） | https://modelscope.cn/models/Qwen/Qwen2.5-1.5B-Instruct |
+| HuggingFace 镜像 | https://hf-mirror.com/Qwen/Qwen2.5-1.5B-Instruct |
+| HuggingFace 官方 | https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct |
+
+下载后，将所有文件放到 `models/Qwen2.5-1.5B-Instruct/` 目录下。
+
+**目录结构示例：**
+```
+models/
+└── Qwen2.5-1.5B-Instruct/
+    ├── config.json
+    ├── model.safetensors
+    ├── tokenizer.json
+    ├── tokenizer_config.json
+    ├── vocab.json
+    └── ... (其他模型文件)
+```
+
+**验证模型是否可用：**
+
+```bash
+python scripts/download_table_summary_model.py --test-only
+```
+
+#### 环境变量配置（可选）
+
+如果模型放在非默认路径，可以在 `.env` 中配置：
+
+```env
+# 表格摘要模型路径（默认 models/Qwen2.5-1.5B-Instruct）
+TABLE_SUMMARY_MODEL_PATH=models/Qwen2.5-1.5B-Instruct
+```
 
 ### 5. 启动服务
 
@@ -315,6 +391,11 @@ mv data/users.json .user/users.json
 - **联动删除**：删除文档时自动删除关联的所有图片文件
 - **避免垃圾累积**：图片与文档一一对应，不会产生孤立图片
 
+### 6. 表格智能处理
+- **LLM 表格摘要**：使用本地小模型（Qwen2.5-1.5B-Instruct）为表格生成语义摘要
+- **摘要向量化**：表格摘要用于向量检索，- **完整内容返回**：检索到表格时返回完整的表格内容（含图片）给用户
+- **上下文关联**：表格 chunk 包含前后 500 字符的上下文信息
+
 ## 技术架构
 
 ### 图片管理流程
@@ -357,6 +438,48 @@ mv data/users.json .user/users.json
 **相关文件：**
 - `tools/load_files.py` - `rename_images_for_document()` 图片重命名
 - `tools/file_manager_ui.py` - `delete_images_by_document_prefix()` 图片删除
+
+### 表格处理流程
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      表格入库流程                          │
+├─────────────────────────────────────────────────────────────┤
+│  MinerU提取表格                                              │
+│     ↓                                                       │
+│  extract_table_content() → 提取表格内容（标题+正文+脚注）    │
+│     ↓                                                       │
+│  generate_table_summary() → LLM生成200字语义摘要            │
+│     ↓                                                       │
+│  创建表格chunk:                                              │
+│    ├── child: LLM摘要（用于向量化检索）                      │
+│    ├── parent: 完整表格内容（返回给用户）                    │
+│    └── context: 前后500字符上下文                          │
+│     ↓                                                       │
+│  存入Qdrant（is_table=True 标记）                           │
+└─────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────┐
+│                      表格检索流程                          │
+├─────────────────────────────────────────────────────────────┤
+│  用户查询                                                    │
+│     ↓                                                       │
+│  向量检索（使用 LLM 摘要匹配）                              │
+│     ↓                                                       │
+│  返回完整表格内容（parent）给 LLM                           │
+│     ↓                                                       │
+│  LLM 基于完整表格内容回答用户问题                          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**表格处理优势：**
+- **语义检索**：LLM 摘要捕捉表格语义，提高检索准确率
+- **完整返回**：用户看到完整表格（含图片），信息不丢失
+- **上下文关联**：表格前后文帮助理解表格用途
+
+**相关配置：**
+- `use_llm_summary=True` - 启用 LLM 表格摘要（默认开启）
+- `context_size=500` - 上下文窗口大小（字符数）
 
 ## 常用命令
 
