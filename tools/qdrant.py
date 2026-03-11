@@ -44,6 +44,10 @@ class QdrantDB:
     _RE_EN = re.compile(r"[A-Za-z0-9]+")
     _RE_ZH_SEQ = re.compile(r"[\u4e00-\u9fff]+")
 
+    # --- 类级别词汇索引缓存（所有实例共享，按 collection_name 分隔）---
+    # 格式: {collection_name: {"index": dict, "point_count": int}}
+    _class_lex_index_cache: Dict[str, Dict[str, Any]] = {}
+
     def __init__(self, input: QdrantDB_Init):
         storages_dir = os.path.join(BASE_DIR, "data", "storages")
         os.makedirs(storages_dir, exist_ok=True)
@@ -66,11 +70,6 @@ class QdrantDB:
             )
         except Exception as e:
             raise Exception(f"QdrantStorage initialization failed: {e}")
-
-        # ---------- keyword index cache ----------
-        # 缓存永久有效，直到脚本退出
-        self._lex_index: Optional[Dict[str, Any]] = None
-        self._lex_index_point_count: Optional[int] = None
 
     def close(self):
         """close qdrant client"""
@@ -125,10 +124,9 @@ class QdrantDB:
         if records:
             self.storage_instance.add(records)
 
-        # ingestion changed collection -> invalidate keyword index lazily
-        self._lex_index = None
-        self._lex_index_point_count = None
-        self._lex_index_built_at = 0.0
+        # ingestion changed collection -> invalidate keyword index cache
+        if self.collection_name in QdrantDB._class_lex_index_cache:
+            del QdrantDB._class_lex_index_cache[self.collection_name]
 
     # ----------------------
     # Vector search (existing)
@@ -258,21 +256,26 @@ class QdrantDB:
         - index is missing
         - point count changed (有新数据入库)
 
-        缓存永久有效，直到脚本退出
+        使用类级别缓存，所有实例共享，直到脚本退出
         """
+        col = self.collection_name
+        cache = QdrantDB._class_lex_index_cache
+
         # 如果索引已存在且不强制重建
-        if not force and self._lex_index is not None:
+        if not force and col in cache:
+            cached = cache[col]
             # 检查数据量是否变化
             current_cnt = self._get_collection_point_count()
-            if current_cnt is None or current_cnt == self._lex_index_point_count:
+            if current_cnt is None or current_cnt == cached.get("point_count"):
                 return  # 缓存有效，直接返回
 
         current_cnt = self._get_collection_point_count()
-        if not force and self._lex_index is not None and current_cnt is not None:
-            if self._lex_index_point_count == current_cnt:
+        if not force and col in cache and current_cnt is not None:
+            cached = cache[col]
+            if cached.get("point_count") == current_cnt:
                 return  # 数据量未变化，不需要重建
 
-        logger.info(f"Building lexical index for collection='{self.collection_name}' ...")
+        logger.info(f"Building lexical index for collection='{col}' ...")
         points = self._scroll_points()
 
         doc_ids: List[Any] = []
@@ -304,19 +307,39 @@ class QdrantDB:
                 inv[tok].append((doc_idx, int(freq)))
 
         avgdl = (sum(doc_lens) / len(doc_lens)) if doc_lens else 1.0
-        self._lex_index = {
-            "doc_ids": doc_ids,
-            "payloads": payloads,
-            "doc_lens": doc_lens,
-            "avgdl": float(avgdl),
-            "inv": inv,
-            "N": int(len(doc_ids)),
+
+        # 存储到类级别缓存
+        cache[col] = {
+            "index": {
+                "doc_ids": doc_ids,
+                "payloads": payloads,
+                "doc_lens": doc_lens,
+                "avgdl": float(avgdl),
+                "inv": inv,
+                "N": int(len(doc_ids)),
+            },
+            "point_count": current_cnt,
         }
-        self._lex_index_point_count = current_cnt
 
         logger.info(
             f"Lexical index ready: docs={len(doc_ids)}, avgdl={avgdl:.2f}, tokens={len(inv)}"
         )
+
+    @property
+    def _lex_index(self) -> Optional[Dict[str, Any]]:
+        """获取当前 collection 的词汇索引（兼容旧代码）"""
+        cache = QdrantDB._class_lex_index_cache
+        if self.collection_name in cache:
+            return cache[self.collection_name].get("index")
+        return None
+
+    @property
+    def _lex_index_point_count(self) -> Optional[int]:
+        """获取当前 collection 的点数（兼容旧代码）"""
+        cache = QdrantDB._class_lex_index_cache
+        if self.collection_name in cache:
+            return cache[self.collection_name].get("point_count")
+        return None
 
     # ----------------------
     # Keyword search
@@ -578,7 +601,9 @@ class QdrantDB:
                     )
                 ),
             )
-            self._lex_index = None  # 清除关键词索引缓存
+            # 清除关键词索引缓存
+            if self.collection_name in QdrantDB._class_lex_index_cache:
+                del QdrantDB._class_lex_index_cache[self.collection_name]
             logger.info("数据库切块清理完毕。")
         except Exception as e:
             logger.error(f"数据库清理失败: {e}")

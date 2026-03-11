@@ -31,14 +31,27 @@ from agents import chat_agent_factory
 
 
 # ==================== 表格摘要模型生命周期管理 ====================
+# 模块级标志：是否已经打印过初始化成功的日志
+_table_summary_model_logged = False
+
+
 def init_table_summary_model():
-    """初始化表格摘要小模型"""
+    """初始化表格摘要小模型（如果尚未初始化）"""
+    global _table_summary_model_logged
     try:
-        from agents.backend_model import init_table_summary_model
+        from agents.backend_model import init_table_summary_model, get_table_summary_model
+        # 先检查是否已经初始化
+        model, _ = get_table_summary_model()
+        if model is not None:
+            # 已初始化，不重复打印日志
+            return True
+
+        # 未初始化，尝试加载
         success = init_table_summary_model()
-        if success:
+        if success and not _table_summary_model_logged:
             logger.info("✅ 表格摘要模型初始化成功")
-        else:
+            _table_summary_model_logged = True
+        elif not success:
             logger.warning("⚠️ 表格摘要模型初始化失败，将使用原始表格内容")
         return success
     except Exception as e:
@@ -47,9 +60,13 @@ def init_table_summary_model():
 
 
 def cleanup_table_summary_model():
-    """清理表格摘要模型"""
+    """清理表格摘要模型（检查模型是否真正存在才清理）"""
     try:
-        from agents.backend_model import cleanup_table_summary_model
+        from agents.backend_model import cleanup_table_summary_model, is_table_summary_model_loaded
+        # 检查模型是否真正存在（不触发初始化）
+        if not is_table_summary_model_loaded():
+            return  # 模型不存在，不需要清理
+
         cleanup_table_summary_model()
         logger.info("✅ 表格摘要模型已释放")
     except Exception as e:
@@ -58,6 +75,7 @@ def cleanup_table_summary_model():
 
 # 注意：不在此处注册 atexit，而是在 init_session_state 中注册
 # 避免 Streamlit 每次重新运行脚本时重复注册
+_atexit_registered = False  # 模块级标志，确保 atexit 只注册一次
 
 # ========== 辅助函数：处理 checkbox 状态变化 ==========
 def handle_checkbox_change(file_idx: int):
@@ -90,9 +108,10 @@ def init_session_state():
     if "file_management_page" not in st.session_state:
         st.session_state.file_management_page = 0  # 当前页码（从0开始）
 
-    # 初始化表格摘要模型（只执行一次）
-    if "table_summary_model_initialized" not in st.session_state:
-        st.session_state.table_summary_model_initialized = True
+    # 初始化表格摘要模型（全局只执行一次，使用模块级标志）
+    global _atexit_registered
+    if not _atexit_registered:
+        _atexit_registered = True
         init_table_summary_model()
         # 只注册一次 atexit 清理函数
         atexit.register(cleanup_table_summary_model)
@@ -415,14 +434,6 @@ def render_login_page():
                 else:
                     st.error("❌ 用户名或密码错误")
 
-    st.markdown("""
-        <div style="margin-top: 30px; padding: 15px; background: #f0f2f6; border-radius: 8px; font-size: 14px;">
-        <strong>🔑 默认管理员账户：</strong><br>
-        用户名: <code>admin</code><br>
-        密码: <code>admin123</code>
-        </div>
-    """, unsafe_allow_html=True)
-
     st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -625,6 +636,16 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("---")
+
+    # ========== 新对话按钮 ==========
+    if st.button("🔄 新对话", key="new_chat_btn", use_container_width=True, help="清除当前对话历史，开始新对话"):
+        # 清除智能体内部记忆
+        if "chat_agent" in st.session_state and st.session_state.chat_agent is not None:
+            st.session_state.chat_agent.memory.clear()
+        # 清除 UI 显示的消息历史
+        st.session_state.messages = []
+        logger.info(f"用户 {st.session_state.username} 开始了新对话")
+        st.rerun()
 
     # ========== 导航菜单 ==========
     page = st.radio(
@@ -1196,7 +1217,9 @@ with st.sidebar:
                     st.rerun()
 
         # ========== 批量导入选中确认对话框（仅管理员可见） ==========
-        if is_admin and st.session_state.get("batch_import_confirm"):
+        # 注意：batch_import_confirm 可能是 True（来自一键建库）或列表（来自批量导入选中）
+        # 只有当它是列表时才显示这个对话框
+        if is_admin and isinstance(st.session_state.get("batch_import_confirm"), list):
             files_to_import = st.session_state.get("batch_import_confirm", [])
             st.markdown("---")
             st.success(f"### 📥 确认批量导入")
@@ -1452,6 +1475,10 @@ elif st.session_state.page == "change_password":
     render_change_password()
 
 # ========== 文件预览区域（主页面中间，避免侧边栏空间局促） ==========
+# PDF 预览文件大小限制（超过此大小使用下载方式，避免 base64 嵌入导致浏览器崩溃）
+# 浏览器 Data URL 限制约 2MB，考虑 base64 膨胀 33%，原始文件限制约 1.5MB
+PDF_PREVIEW_MAX_SIZE = 1.5 * 1024 * 1024  # 1.5MB
+
 if st.session_state.get("preview_file_name"):
     preview_name = st.session_state["preview_file_name"]
     file_path = STORAGE_DIR / preview_name
@@ -1461,12 +1488,28 @@ if st.session_state.get("preview_file_name"):
         del st.session_state["preview_file_name"]
         st.rerun()
     if file_path.exists():
-        with open(file_path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("utf-8")
-        st.markdown(
-            f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="800" type="application/pdf"></iframe>',
-            unsafe_allow_html=True
-        )
+        file_size = file_path.stat().st_size
+
+        if file_size <= PDF_PREVIEW_MAX_SIZE:
+            # 小文件：使用 base64 嵌入 iframe 预览
+            with open(file_path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("utf-8")
+            st.markdown(
+                f'<iframe src="data:application/pdf;base64,{b64}" width="100%" height="800" type="application/pdf"></iframe>',
+                unsafe_allow_html=True
+            )
+        else:
+            # 大文件：提供下载按钮，避免浏览器崩溃
+            size_mb = file_size / (1024 * 1024)
+            st.warning(f"⚠️ 文件较大 ({size_mb:.1f} MB)，超过预览限制 ({PDF_PREVIEW_MAX_SIZE / (1024 * 1024):.1f} MB)，请下载后查看。")
+            with open(file_path, "rb") as f:
+                st.download_button(
+                    label=f"📥 下载 {preview_name} ({size_mb:.1f} MB)",
+                    data=f,
+                    file_name=preview_name,
+                    mime="application/pdf",
+                    key="download_large_pdf"
+                )
     else:
         st.error("❌ 文件路径失效，请刷新列表。")
     st.markdown("---")

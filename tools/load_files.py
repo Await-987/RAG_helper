@@ -49,7 +49,7 @@ def rename_images_for_document(
     image_counter = {}  # {基础名: 计数器}
 
     for item in content_list:
-        if item.get('type') in ('image', 'table'):
+        if item.get('type') in ('image', 'table', 'equation'):
             img_path = item.get('img_path', '')
             if not img_path:
                 continue

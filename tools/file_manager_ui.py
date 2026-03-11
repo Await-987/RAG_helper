@@ -3,6 +3,7 @@
 提供文件列表展示、切片统计、删除等功能
 """
 import os
+import streamlit as st
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from loguru import logger
@@ -234,26 +235,12 @@ def batch_import_files(file_paths: List[str], collection_name: str = "database",
     return results
 
 
-def get_database_stats(collection_name: str = "database", use_cache: bool = True) -> Tuple[Dict[str, int], int]:
+@st.cache_data(ttl=None, show_spinner=False)
+def _get_database_stats_impl(collection_name: str) -> Tuple[Dict[str, int], int]:
     """
-    获取数据库统计信息
-
-    Args:
-        collection_name: 集合名称
-        use_cache: 是否使用缓存（缓存永久有效，直到脚本退出）
-
-    Returns:
-        (stats_dict, total_chunks)
-        - stats_dict: {file_tag: chunk_count, ...}
-        - total_chunks: 总切片数
+    内部实现：获取数据库统计信息（使用 Streamlit 缓存）
+    ttl=None 表示永久缓存，直到手动清除
     """
-    # 使用模块级缓存（永久有效，直到脚本退出）
-    global _db_stats_cache, _db_stats_collection
-
-    if use_cache and _db_stats_cache is not None:
-        if _db_stats_collection == collection_name:
-            return _db_stats_cache
-
     try:
         from tools.qdrant import QdrantDB, QdrantDB_Init
         db = QdrantDB(input=QdrantDB_Init(collection_name=collection_name))
@@ -295,26 +282,36 @@ def get_database_stats(collection_name: str = "database", use_cache: bool = True
                 if offset is None:
                     break
 
-        # 缓存结果（永久有效，直到脚本退出）
-        _db_stats_cache = (stats, total_chunks)
-        _db_stats_collection = collection_name
-
         return stats, total_chunks
     except Exception as e:
         logger.error(f"获取数据库统计失败: {e}")
         return {}, 0
 
 
-# 缓存变量（永久有效，直到脚本退出）
-_db_stats_cache = None
-_db_stats_collection = None
+def get_database_stats(collection_name: str = "database", use_cache: bool = True) -> Tuple[Dict[str, int], int]:
+    """
+    获取数据库统计信息
+
+    Args:
+        collection_name: 集合名称
+        use_cache: 是否使用缓存（使用 Streamlit 原生缓存，跨会话持久化）
+
+    Returns:
+        (stats_dict, total_chunks)
+        - stats_dict: {file_tag: chunk_count, ...}
+        - total_chunks: 总切片数
+    """
+    if use_cache:
+        return _get_database_stats_impl(collection_name)
+    else:
+        # 不使用缓存时，先清除缓存再获取
+        clear_database_stats_cache()
+        return _get_database_stats_impl(collection_name)
 
 
 def clear_database_stats_cache():
     """清除数据库统计缓存（入库/删除文件后调用）"""
-    global _db_stats_cache, _db_stats_collection
-    _db_stats_cache = None
-    _db_stats_collection = None
+    _get_database_stats_impl.clear()
     logger.info("数据库统计缓存已清除")
 
 

@@ -101,6 +101,11 @@ def cleanup_table_summary_model():
     print("[INFO] 表格摘要模型已释放")
 
 
+def is_table_summary_model_loaded():
+    """检查表格摘要模型是否已加载（不触发初始化）"""
+    return _table_summary_model_cache is not None
+
+
 def get_table_summary_model():
     """
     获取表格摘要模型和 tokenizer

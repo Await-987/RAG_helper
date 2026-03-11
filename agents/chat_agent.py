@@ -1,7 +1,14 @@
+import streamlit as st
 from camel.agents.chat_agent import ChatAgent
 from camel.messages.base import BaseMessage
 from agents import stream_model
 from tools import DatabaseToolkit
+
+
+@st.cache_resource
+def get_database_toolkit():
+    """获取缓存的 DatabaseToolkit 实例（跨会话共享）"""
+    return DatabaseToolkit()
 
 
 def chat_agent_factory():
@@ -48,6 +55,24 @@ def chat_agent_factory():
           - **必须使用 top_k=15**（默认值），确保检索足够多的相关内容
           - 保持默认的 use_hybrid=True（混合检索）和 use_rerank=True（重排序）
           - 不要将 top_k 设置为小于 15 的值
+        - **搜索 query 生成规范（重要）**
+          调用 search_database 时，query 参数的生成应遵循以下规则：
+          - **提取核心关键词**：从用户问题中提取 3-8 个最关键的词语
+          - **保留专业术语**：电力系统专业术语必须原样保留，如：
+            - 设备名称：变压器、断路器、互感器、避雷器、电容器、电抗器等
+            - 技术参数：额定电压、额定电流、额定容量、短路阻抗、绝缘水平等
+            - 标准规范：GB、DL/T、IEC、国标、行标等
+            - 单位符号：kV、MW、kVA、A、Ω、Hz 等
+          - **保留限定条件**：如果问题有数值范围、时间、条件等限定，必须包含在 query 中
+          - **移除无关词汇**：去除”的”、”了”、”吗”、”请问”、”我想知道”等虚词
+          - **保持简洁**：query 应该是紧凑的关键词组合，不是完整句子
+          - **示例对照**：
+            - 用户问题：”请问变压器的额定电压一般是多少？”
+            - 生成的 query：”变压器 额定电压”
+            - 用户问题：”110kV断路器的开断电流有什么要求？”
+            - 生成的 query：”110kV 断路器 开断电流 要求”
+            - 用户问题：”DL/T标准中对互感器的试验是怎么规定的？”
+            - 生成的 query：”DL/T 互感器 试验 规定”
         - **可不调用工具的场景**
           仅当用户已提供完整信息，且任务仅为整理、润色、结构化表达时，才可不调用工具直接作答。
         ## 六、回答风格与表达要求
@@ -119,7 +144,8 @@ def chat_agent_factory():
         你的目标不是”尽量给出答案”，而是**只输出可以被知识库内容直接支撑、且来源清晰可追溯的回答**。
         '''
 
-    data_base_toolkit = DatabaseToolkit()
+    # 使用缓存的 DatabaseToolkit 实例（词汇索引在所有会话间共享）
+    data_base_toolkit = get_database_toolkit()
 
     return ChatAgent(
         system_message=BaseMessage.make_assistant_message(
@@ -127,6 +153,10 @@ def chat_agent_factory():
             content=system_message,
         ),
         model=stream_model(),
-        tools = [*data_base_toolkit.get_tools()],
+        tools=[*data_base_toolkit.get_tools()],
+        # ========== 上下文记忆管理配置 ==========
+        message_window_size=50,  # 保留最近 50 条消息，防止上下文过长
+        summarize_threshold=30,  # 当上下文达到 token 限制的 30% 时触发压缩
+        prune_tool_calls_from_memory=True,  # 清理工具调用消息节省 token
         stream_accumulate=False
     )
