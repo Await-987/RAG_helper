@@ -1,17 +1,46 @@
 # @ wangpei
+import json
 import os
 from pathlib import Path
-absolute_path = Path(__file__).absolute().parent.parent
-mineru_path = str(absolute_path / "config" / "mineru.json")
 
-os.environ["MINERU_TOOLS_CONFIG_JSON"] = mineru_path
-print("mineru:", mineru_path)
+absolute_path = Path(__file__).absolute().parent.parent
+mineru_path = absolute_path / "config" / "mineru.json"
+
+
+def _resolve_mineru_config_paths(config_path: Path) -> Path:
+    """Resolve MinerU model paths against project root so cwd does not matter."""
+    with config_path.open("r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    models_dir = config.get("models-dir", {})
+    changed = False
+    for key, value in list(models_dir.items()):
+        if not value:
+            continue
+        candidate = Path(value)
+        if candidate.is_absolute():
+            continue
+        models_dir[key] = str((absolute_path / candidate).resolve())
+        changed = True
+
+    if not changed:
+        return config_path
+
+    resolved_path = config_path.with_name("mineru.resolved.json")
+    with resolved_path.open("w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=4)
+    return resolved_path
+
+
+resolved_mineru_path = _resolve_mineru_config_paths(mineru_path)
+
+os.environ["MINERU_TOOLS_CONFIG_JSON"] = str(resolved_mineru_path)
+print("mineru:", resolved_mineru_path)
 # os.environ['MODELSCOPE_USE_CACHE'] = "1"
 # os.environ['MODELSCOPE_HUB_CHECK'] = "0"
 # os.environ['HF_HUB_OFFLINE'] = "1"
 # os.environ['TRANSFORMERS_OFFLINE'] = "1" # 强制 transformers 也不许联网
 import copy
-import json
 from pathlib import Path
 from typing import Dict, Any, Optional
 from mineru.cli.common import (
@@ -244,4 +273,3 @@ class MineruComponent:
         # except Exception as e:
         #     print(e)
         #     return MineruResponse("error", None, str(e))
-

@@ -18,6 +18,24 @@ MINERU_OUTPUT_DIR = project_root / "data" / "stored_files" / "mineru_output"
 
 # ==================== 图片重命名相关函数 ====================
 
+def build_safe_debug_filename(original_stem: str, suffix: str, max_stem_length: int = 80) -> str:
+    """
+    Build a stable shortened filename for debug artifacts.
+    """
+    sanitized = original_stem.strip().replace("/", "_").replace("\\", "_")
+    digest = hashlib.md5(sanitized.encode("utf-8")).hexdigest()[:12]
+    short_stem = sanitized[:max_stem_length].rstrip(" ._")
+    if not short_stem:
+        short_stem = "document"
+    return f"{short_stem}_{digest}{suffix}"
+
+
+def build_safe_name_prefix(original_stem: str, max_stem_length: int = 80) -> str:
+    """
+    Build a stable shortened prefix for generated asset filenames.
+    """
+    return build_safe_debug_filename(original_stem, "", max_stem_length=max_stem_length)
+
 def rename_images_for_document(
     content_list: list,
     document_name: str,
@@ -67,7 +85,7 @@ def rename_images_for_document(
 
             # 生成新的图片名：文档名_数字.扩展名
             ext = os.path.splitext(old_img_name)[1] or '.jpg'
-            base_name = document_name
+            base_name = build_safe_name_prefix(document_name)
 
             # 获取或初始化计数器
             if base_name not in image_counter:
@@ -984,19 +1002,8 @@ def load_and_store_file(
             backend=backend,
         )
 
-    # 保存 content_list.json 用于调试
-    import json
     original_filename = os.path.basename(file_path)
     file_basename = os.path.splitext(original_filename)[0]
-
-    # content_list 存储到 data/content_lists/ 目录
-    content_lists_dir = os.path.join(str(project_root), "data", "content_lists")
-    os.makedirs(content_lists_dir, exist_ok=True)
-    content_list_path = os.path.join(content_lists_dir, f"{file_basename}_content_list.json")
-
-    with open(content_list_path, 'w', encoding='utf-8') as f:
-        json.dump(recognized_text.data, f, ensure_ascii=False, indent=2)
-    print(f"[INFO] content_list 已保存到: {content_list_path}")
 
     # ==================== 图片重命名：绑定文档 ====================
     # 将图片从哈希命名改为 "文档名_数字.jpg" 格式
@@ -1276,4 +1283,3 @@ def load_multiple_files_parallel(
     print(f"{'='*60}\n")
 
     return results
-

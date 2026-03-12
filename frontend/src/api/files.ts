@@ -40,7 +40,9 @@ export const fileApi = {
   },
 
   importFiles: async (data: FileImportRequest): Promise<FileImportResponse> => {
-    const response = await api.post<FileImportResponse>('/files/import', data);
+    const response = await api.post<FileImportResponse>('/files/import', data, {
+      timeout: 10 * 60 * 1000,
+    });
     return response.data;
   },
 
@@ -69,4 +71,18 @@ export const fileApi = {
       .split('/')
       .map((segment) => encodeURIComponent(segment))
       .join('/')}`,
+
+  fetchContentBlobUrl: async (fileTag: string): Promise<string> => {
+    const token = localStorage.getItem('access_token');
+    const response = await fetch(fileApi.getContentUrl(fileTag), {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch file content: ${response.status}`);
+    }
+
+    const blob = await response.blob();
+    return URL.createObjectURL(blob);
+  },
 };

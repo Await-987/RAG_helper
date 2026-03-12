@@ -42,6 +42,9 @@ export function FileManagerPage() {
   const [deleting, setDeleting] = useState(false);
 
   const [previewFile, setPreviewFile] = useState<string | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   // Stats
   const [stats, setStats] = useState({
@@ -79,6 +82,49 @@ export function FileManagerPage() {
     fetchFiles();
     setSelectedFiles(new Set());
   }, [currentPage, filterType]);
+
+  useEffect(() => {
+    if (!previewFile) {
+      setPreviewUrl(null);
+      setPreviewLoading(false);
+      setPreviewError(null);
+      return;
+    }
+
+    let cancelled = false;
+    let objectUrl = '';
+
+    setPreviewLoading(true);
+    setPreviewError(null);
+    setPreviewUrl(null);
+
+    const loadPreview = async () => {
+      try {
+        objectUrl = await fileApi.fetchContentBlobUrl(previewFile);
+        if (!cancelled) {
+          setPreviewUrl(objectUrl);
+        }
+      } catch (error) {
+        console.error('Failed to load preview:', error);
+        if (!cancelled) {
+          setPreviewError('预览加载失败，请重新登录后重试');
+        }
+      } finally {
+        if (!cancelled) {
+          setPreviewLoading(false);
+        }
+      }
+    };
+
+    loadPreview();
+
+    return () => {
+      cancelled = true;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [previewFile]);
 
   // Filter by search query
   const filteredFiles = searchQuery
@@ -463,11 +509,22 @@ export function FileManagerPage() {
               </button>
             </div>
             <div className="flex-1 p-4">
-              <iframe
-                src={fileApi.getContentUrl(previewFile)}
-                className="w-full h-full rounded-lg"
-                title="PDF Preview"
-              />
+              {previewLoading ? (
+                <div className="w-full h-full rounded-lg border border-dark-border bg-dark-surface flex items-center justify-center text-gray-400 gap-3">
+                  <Loader2 size={18} className="animate-spin" />
+                  <span>正在加载预览...</span>
+                </div>
+              ) : previewError ? (
+                <div className="w-full h-full rounded-lg border border-red-500/30 bg-red-500/10 flex items-center justify-center text-red-300">
+                  {previewError}
+                </div>
+              ) : previewUrl ? (
+                <iframe
+                  src={previewUrl}
+                  className="w-full h-full rounded-lg"
+                  title="PDF Preview"
+                />
+              ) : null}
             </div>
           </div>
         </div>
