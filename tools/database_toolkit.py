@@ -21,6 +21,35 @@ class DatabaseToolkit(BaseToolkit):
         qdrant_init = QdrantDB_Init(collection_name="database")
         self.db = QdrantDB(input=qdrant_init)
         self._reranker = None  # lazy-load
+        self._index_warmed_up = False  # 索引预热标志
+
+    def warmup_lexical_index(self):
+        """
+        预热词汇索引和 reranker 模型，避免首次搜索时长时间等待。
+        应在服务启动时调用。
+        """
+        if self._index_warmed_up:
+            return
+
+        logger.info("🔥 开始预热词汇索引...")
+        try:
+            # 触发索引构建
+            self.db._maybe_build_lex_index(force=False)
+            self._index_warmed_up = True
+            logger.info("✅ 词汇索引预热完成")
+        except Exception as e:
+            logger.warning(f"⚠️ 词汇索引预热失败: {e}")
+
+        # 同时预热 reranker 模型
+        logger.info("🔥 开始预热 Reranker 模型...")
+        try:
+            self._get_reranker()  # 触发 lazy-load
+            if self._reranker is not None:
+                logger.info("✅ Reranker 模型预热完成")
+            else:
+                logger.info("ℹ️ Reranker 未配置，跳过")
+        except Exception as e:
+            logger.warning(f"⚠️ Reranker 预热失败: {e}")
 
     def close(self):
         """Close the database connection"""
@@ -93,7 +122,15 @@ class DatabaseToolkit(BaseToolkit):
         for h in hits:
             payload = h.get("payload", {}) or {}
             # 优先使用 child_content（子chunk），fallback 到 Content
-            content = payload.get("child_content") or payload.get("Content") or payload.get("content") or ""
+            # 注意：child_content 可能在 payload.metadata 中或 payload 顶级
+            metadata = payload.get("metadata", {}) or {}
+            content = (
+                metadata.get("child_content")
+                or payload.get("child_content")
+                or payload.get("Content")
+                or payload.get("content")
+                or ""
+            )
             if not isinstance(content, str):
                 content = str(content)
             content = content.strip()

@@ -7,8 +7,11 @@ from tools import DatabaseToolkit
 
 @st.cache_resource
 def get_database_toolkit():
-    """获取缓存的 DatabaseToolkit 实例（跨会话共享）"""
-    return DatabaseToolkit()
+    """获取缓存的 DatabaseToolkit 实例（跨会话共享），并预热词汇索引"""
+    toolkit = DatabaseToolkit()
+    # 首次创建时预热词汇索引
+    toolkit.warmup_lexical_index()
+    return toolkit
 
 
 def chat_agent_factory():
@@ -52,9 +55,10 @@ def chat_agent_factory():
           - 机构定义、项目背景
         - **工具调用参数要求**
           调用 search_database 工具时：
-          - **必须使用 top_k=15**（默认值），确保检索足够多的相关内容
+          - **使用 top_k=30** 或更大值，确保检索足够多的相关内容
           - 保持默认的 use_hybrid=True（混合检索）和 use_rerank=True（重排序）
-          - 不要将 top_k 设置为小于 15 的值
+          - **不要手动设置 dynamic_topk=False**，保持默认的动态扩展功能
+          - 如果首次搜索结果不理想，可以尝试用不同的关键词再次搜索
         - **搜索 query 生成规范（重要）**
           调用 search_database 时，query 参数的生成应遵循以下规则：
           - **提取核心关键词**：从用户问题中提取 3-8 个最关键的词语

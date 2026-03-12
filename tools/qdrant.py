@@ -4,6 +4,7 @@ import time
 import math
 import re
 import hashlib
+import pickle
 from pathlib import Path
 from dataclasses import dataclass
 from collections import defaultdict, Counter
@@ -44,10 +45,6 @@ class QdrantDB:
     _RE_EN = re.compile(r"[A-Za-z0-9]+")
     _RE_ZH_SEQ = re.compile(r"[\u4e00-\u9fff]+")
 
-    # --- 类级别词汇索引缓存（所有实例共享，按 collection_name 分隔）---
-    # 格式: {collection_name: {"index": dict, "point_count": int}}
-    _class_lex_index_cache: Dict[str, Dict[str, Any]] = {}
-
     def __init__(self, input: QdrantDB_Init):
         storages_dir = os.path.join(BASE_DIR, "data", "storages")
         os.makedirs(storages_dir, exist_ok=True)
@@ -60,6 +57,15 @@ class QdrantDB:
             raise Exception(f"Failed to initialize embedding model via API: {e}")
 
         self.collection_name = input.collection_name
+
+        # --- 实例级别词汇索引缓存（随实例持久化，适合 Streamlit @st.cache_resource）---
+        # 格式: {"index": dict, "point_count": int, "build_time": float, "collection_name": str}
+        self._lex_index_cache: Dict[str, Any] = {}
+
+        # --- 词汇索引持久化路径 ---
+        self._lex_index_dir = Path(self.storage_path) / "lex_index"
+        self._lex_index_dir.mkdir(exist_ok=True)
+        self._lex_index_file = self._lex_index_dir / f"{self.collection_name}_lex_index.pkl"
 
         try:
             vector_dim = self.embedding_instance.get_output_dim()
@@ -91,9 +97,10 @@ class QdrantDB:
     # ----------------------
     # Ingest
     # ----------------------
-    def save2Qdrant(self, input: save2Qdrant_Input, vector_text: Optional[str] = None):
+    def save2Qdrant(self, input: save2Qdrant_Input, vector_text: Optional[str] = None) -> List[Tuple[str, Dict]]:
         """
         Input text and store the text data along with its source information into the Qdrant database.
+        返回新增的 [(point_id, payload)] 列表，用于增量更新词汇索引。
         """
         base_payload = {'Original_file': '', 'metadata': {}, 'Content': ''}
 
@@ -121,12 +128,20 @@ class QdrantDB:
             record = VectorRecord(vector=vector, payload=payload)
             records.append(record)
 
+        new_points: List[Tuple[str, Dict]] = []
         if records:
             self.storage_instance.add(records)
+            # 记录新增的 point_id 和 payload
+            new_points = [(str(record.id), record.payload) for record in records]
 
-        # ingestion changed collection -> invalidate keyword index cache
-        if self.collection_name in QdrantDB._class_lex_index_cache:
-            del QdrantDB._class_lex_index_cache[self.collection_name]
+            # 增量更新词汇索引
+            if self._lex_index_cache:
+                self._update_lex_index_for_new_points(new_points)
+            else:
+                # 如果索引不存在，更新 point_count 以便下次构建时知道数据变化
+                pass
+
+        return new_points
 
     # ----------------------
     # Vector search (existing)
@@ -249,6 +264,166 @@ class QdrantDB:
 
         return out[:limit] if limit else out
 
+    # ----------------------
+    # 词汇索引持久化
+    # ----------------------
+    def _get_lex_index_path(self) -> Path:
+        """获取词汇索引持久化文件路径"""
+        return self._lex_index_file
+
+    def _load_lex_index_from_disk(self) -> bool:
+        """从磁盘加载词汇索引，返回是否成功"""
+        if not self._lex_index_file.exists():
+            return False
+        try:
+            with open(self._lex_index_file, 'rb') as f:
+                loaded_cache = pickle.load(f)
+
+            # 验证基本结构
+            if not isinstance(loaded_cache, dict):
+                return False
+            if "index" not in loaded_cache:
+                return False
+
+            idx = loaded_cache.get("index", {})
+            required_keys = {"doc_ids", "payloads", "doc_lens", "avgdl", "inv", "N"}
+            if not required_keys.issubset(idx.keys()):
+                return False
+
+            # 确保 point_id_to_doc_idx 存在（用于增量删除）
+            if "point_id_to_doc_idx" not in idx:
+                # 旧格式，重建映射
+                idx["point_id_to_doc_idx"] = {
+                    str(pid): doc_idx
+                    for doc_idx, pid in enumerate(idx["doc_ids"])
+                }
+
+            self._lex_index_cache = loaded_cache
+            logger.info(f"从磁盘加载词汇索引: {loaded_cache.get('point_count', 0)} 个点")
+            return True
+        except Exception as e:
+            logger.warning(f"加载词汇索引失败: {e}")
+            return False
+
+    def _save_lex_index_to_disk(self):
+        """保存词汇索引到磁盘"""
+        if not self._lex_index_cache:
+            return
+        try:
+            with open(self._lex_index_file, 'wb') as f:
+                pickle.dump(self._lex_index_cache, f)
+            logger.debug(f"词汇索引已保存到磁盘: {self._lex_index_file}")
+        except Exception as e:
+            logger.warning(f"保存词汇索引失败: {e}")
+
+    # ----------------------
+    # 增量更新
+    # ----------------------
+    def _update_lex_index_for_new_points(self, new_points: List[Tuple[str, Dict]]):
+        """增量添加新点到词汇索引"""
+        if not new_points:
+            return
+
+        # 确保索引已初始化
+        if not self._lex_index_cache or "index" not in self._lex_index_cache:
+            logger.warning("词汇索引未初始化，跳过增量更新")
+            return
+
+        idx = self._lex_index_cache["index"]
+
+        for point_id, payload in new_points:
+            content = payload.get("Content", "") or payload.get("content", "") or ""
+            if not isinstance(content, str):
+                continue
+            content = content.strip()
+            if not content:
+                continue
+
+            tokens = self._tokenize(content)
+            if not tokens:
+                continue
+
+            doc_idx = len(idx["doc_ids"])
+            tf = Counter(tokens)
+
+            idx["doc_ids"].append(point_id)
+            idx["payloads"].append(payload)
+            idx["doc_lens"].append(sum(tf.values()))
+            idx["point_id_to_doc_idx"][point_id] = doc_idx
+
+            for tok, freq in tf.items():
+                idx["inv"].setdefault(tok, []).append((doc_idx, int(freq)))
+
+        # 更新统计信息
+        idx["N"] = len(idx["doc_ids"])
+        idx["avgdl"] = sum(idx["doc_lens"]) / idx["N"] if idx["N"] > 0 else 1.0
+        self._lex_index_cache["point_count"] = idx["N"]
+
+        logger.info(f"词汇索引增量添加 {len(new_points)} 个点，总计 {idx['N']} 个点")
+
+        # 保存到磁盘
+        self._save_lex_index_to_disk()
+
+    def _update_lex_index_for_deleted_points(self, deleted_point_ids: List[str]):
+        """增量删除点（紧凑删除）"""
+        if not deleted_point_ids or not self._lex_index_cache:
+            return
+
+        idx = self._lex_index_cache["index"]
+
+        # 1. 找到要删除的 doc_indices
+        to_delete = set()
+        for pid in deleted_point_ids:
+            pid_str = str(pid)
+            if pid_str in idx["point_id_to_doc_idx"]:
+                to_delete.add(idx["point_id_to_doc_idx"][pid_str])
+
+        if not to_delete:
+            logger.debug("没有找到需要删除的点")
+            return
+
+        # 2. 紧凑删除：重建数组
+        new_doc_ids = []
+        new_payloads = []
+        new_doc_lens = []
+        new_point_id_to_idx = {}
+        old_to_new_idx = {}  # 旧索引 -> 新索引
+
+        for old_idx, (doc_id, payload, doc_len) in enumerate(zip(
+            idx["doc_ids"], idx["payloads"], idx["doc_lens"]
+        )):
+            if old_idx in to_delete:
+                continue
+            new_idx = len(new_doc_ids)
+            old_to_new_idx[old_idx] = new_idx
+            new_doc_ids.append(doc_id)
+            new_payloads.append(payload)
+            new_doc_lens.append(doc_len)
+            new_point_id_to_idx[str(doc_id)] = new_idx
+
+        # 3. 重建倒排索引
+        new_inv = defaultdict(list)
+        for token, postings in idx["inv"].items():
+            for old_doc_idx, tf in postings:
+                if old_doc_idx in old_to_new_idx:
+                    new_doc_idx = old_to_new_idx[old_doc_idx]
+                    new_inv[token].append((new_doc_idx, tf))
+
+        # 4. 更新索引
+        idx["doc_ids"] = new_doc_ids
+        idx["payloads"] = new_payloads
+        idx["doc_lens"] = new_doc_lens
+        idx["point_id_to_doc_idx"] = new_point_id_to_idx
+        idx["inv"] = dict(new_inv)
+        idx["N"] = len(new_doc_ids)
+        idx["avgdl"] = sum(new_doc_lens) / idx["N"] if idx["N"] > 0 else 1.0
+        self._lex_index_cache["point_count"] = idx["N"]
+
+        logger.info(f"词汇索引增量删除 {len(to_delete)} 个点，剩余 {idx['N']} 个点")
+
+        # 5. 保存到磁盘
+        self._save_lex_index_to_disk()
+
     def _maybe_build_lex_index(self, force: bool = False):
         """
         Build lexical inverted index if:
@@ -256,32 +431,33 @@ class QdrantDB:
         - index is missing
         - point count changed (有新数据入库)
 
-        使用类级别缓存，所有实例共享，直到脚本退出
+        优先从磁盘加载持久化索引，加载失败或数据不一致时才全量重建。
         """
-        col = self.collection_name
-        cache = QdrantDB._class_lex_index_cache
+        # 如果不强制重建，先尝试从磁盘加载
+        if not force:
+            cache = self._lex_index_cache
 
-        # 如果索引已存在且不强制重建
-        if not force and col in cache:
-            cached = cache[col]
-            # 检查数据量是否变化
-            current_cnt = self._get_collection_point_count()
-            if current_cnt is None or current_cnt == cached.get("point_count"):
-                return  # 缓存有效，直接返回
+            # 1. 如果内存缓存已存在，检查是否需要刷新
+            if cache:
+                current_cnt = self._get_collection_point_count()
+                if current_cnt is None or current_cnt == cache.get("point_count"):
+                    return  # 缓存有效，直接返回
+            else:
+                # 2. 尝试从磁盘加载
+                if self._load_lex_index_from_disk():
+                    current_cnt = self._get_collection_point_count()
+                    if current_cnt is not None and current_cnt == self._lex_index_cache.get("point_count"):
+                        return  # 磁盘缓存有效
 
-        current_cnt = self._get_collection_point_count()
-        if not force and col in cache and current_cnt is not None:
-            cached = cache[col]
-            if cached.get("point_count") == current_cnt:
-                return  # 数据量未变化，不需要重建
-
-        logger.info(f"Building lexical index for collection='{col}' ...")
+        # 3. 全量重建
+        logger.info(f"Building lexical index for collection='{self.collection_name}' ...")
         points = self._scroll_points()
 
         doc_ids: List[Any] = []
         payloads: List[Dict[str, Any]] = []
         doc_lens: List[int] = []
         inv: Dict[str, List[Tuple[int, int]]] = defaultdict(list)  # token -> [(doc_idx, tf)]
+        point_id_to_doc_idx: Dict[str, int] = {}  # point_id -> doc_idx 映射
 
         for pid, payload in points:
             # payload content field (your ingest uses 'Content')
@@ -299,17 +475,20 @@ class QdrantDB:
             tf = Counter(tokens)
             doc_idx = len(doc_ids)
 
-            doc_ids.append(pid)
+            pid_str = str(pid)
+            doc_ids.append(pid_str)
             payloads.append(payload)
             doc_lens.append(sum(tf.values()))
+            point_id_to_doc_idx[pid_str] = doc_idx
 
             for tok, freq in tf.items():
                 inv[tok].append((doc_idx, int(freq)))
 
         avgdl = (sum(doc_lens) / len(doc_lens)) if doc_lens else 1.0
+        current_cnt = len(doc_ids)
 
-        # 存储到类级别缓存
-        cache[col] = {
+        # 存储到实例级别缓存
+        self._lex_index_cache = {
             "index": {
                 "doc_ids": doc_ids,
                 "payloads": payloads,
@@ -317,28 +496,34 @@ class QdrantDB:
                 "avgdl": float(avgdl),
                 "inv": inv,
                 "N": int(len(doc_ids)),
+                "point_id_to_doc_idx": point_id_to_doc_idx,
             },
             "point_count": current_cnt,
+            "build_time": time.time(),
+            "collection_name": self.collection_name,
         }
 
         logger.info(
             f"Lexical index ready: docs={len(doc_ids)}, avgdl={avgdl:.2f}, tokens={len(inv)}"
         )
 
+        # 4. 保存到磁盘
+        self._save_lex_index_to_disk()
+
     @property
     def _lex_index(self) -> Optional[Dict[str, Any]]:
-        """获取当前 collection 的词汇索引（兼容旧代码）"""
-        cache = QdrantDB._class_lex_index_cache
-        if self.collection_name in cache:
-            return cache[self.collection_name].get("index")
+        """获取当前实例的词汇索引"""
+        cache = self._lex_index_cache
+        if cache:
+            return cache.get("index")
         return None
 
     @property
     def _lex_index_point_count(self) -> Optional[int]:
-        """获取当前 collection 的点数（兼容旧代码）"""
-        cache = QdrantDB._class_lex_index_cache
-        if self.collection_name in cache:
-            return cache[self.collection_name].get("point_count")
+        """获取当前实例的点数"""
+        cache = self._lex_index_cache
+        if cache:
+            return cache.get("point_count")
         return None
 
     # ----------------------
@@ -581,13 +766,35 @@ class QdrantDB:
             self.storage_instance._client.delete_collection(collection_name=name)
             logger.info(f"Collection '{name}' has been deleted.")
 
-    def delete_by_file_name(self, file_tag: str):
-        """根据入库时记录的 file_tag 删除数据库中的所有切块"""
+    def delete_by_file_name(self, file_tag: str) -> List[str]:
+        """
+        根据入库时记录的 file_tag 删除数据库中的所有切块。
+        返回被删除的 point_ids 列表。
+        """
         from qdrant_client import models
         client = self.storage_instance._client
 
         logger.info(f"正在从 Qdrant 清理标签为: {file_tag} 的数据...")
+
+        deleted_ids: List[str] = []
         try:
+            # 1. 先获取要删除的 point_ids
+            points_to_delete = client.scroll(
+                collection_name=self.collection_name,
+                scroll_filter=models.Filter(
+                    must=[models.FieldCondition(
+                        key="Original_file",
+                        match=models.MatchValue(value=file_tag)
+                    )]
+                ),
+                with_payload=False,
+                with_vectors=False,
+                limit=10000
+            )[0]
+            deleted_ids = [str(p.id) for p in points_to_delete]
+            logger.info(f"找到 {len(deleted_ids)} 个待删除点")
+
+            # 2. 执行删除
             client.delete(
                 collection_name=self.collection_name,
                 points_selector=models.FilterSelector(
@@ -601,9 +808,13 @@ class QdrantDB:
                     )
                 ),
             )
-            # 清除关键词索引缓存
-            if self.collection_name in QdrantDB._class_lex_index_cache:
-                del QdrantDB._class_lex_index_cache[self.collection_name]
+
+            # 3. 增量更新词汇索引
+            if deleted_ids and self._lex_index_cache:
+                self._update_lex_index_for_deleted_points(deleted_ids)
+
             logger.info("数据库切块清理完毕。")
         except Exception as e:
             logger.error(f"数据库清理失败: {e}")
+
+        return deleted_ids

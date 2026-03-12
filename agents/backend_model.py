@@ -1,4 +1,5 @@
 import os
+import streamlit as st
 from dotenv import load_dotenv
 from camel.models import ModelFactory
 from camel.types import ModelPlatformType, ModelType
@@ -208,8 +209,6 @@ def stream_model():
             },
     )
 
-_embedding_model_cache = None
-
 """
 @qiaoyu 2026-01-26 注释掉改为在线 embedding 版本：
 def backend_embedding_model():
@@ -227,44 +226,42 @@ def backend_embedding_model():
     return _embedding_model_cache
 """
 
+@st.cache_resource
 def backend_embedding_model():
-    global _embedding_model_cache
-    if _embedding_model_cache is None:
-        path = os.getenv('conan_path')  # models/bge-base-zh-v1.5
-        if not path:
-            raise ValueError("Missing env var `conan_path` for local embedding model path")
+    """获取缓存的 embedding 模型（使用 Streamlit 缓存，跨会话共享）"""
+    path = os.getenv('conan_path')  # models/bge-base-zh-v1.5
+    if not path:
+        raise ValueError("Missing env var `conan_path` for local embedding model path")
 
-        BASE_DIR = Path(__file__).resolve().parent.parent
-        path = os.path.join(BASE_DIR, path)
-        print(f"Loading embedding model from: {path}")
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    path = os.path.join(BASE_DIR, path)
+    print(f"Loading embedding model from: {path}")
 
-        # 自动检测并使用 CUDA（如果可用）
-        device = os.getenv('EMBEDDING_DEVICE', None)  # 允许通过环境变量指定
-        if device is None:
-            # 自动检测：优先使用 CUDA
-            import torch
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    # 自动检测并使用 CUDA（如果可用）
+    device = os.getenv('EMBEDDING_DEVICE', None)  # 允许通过环境变量指定
+    if device is None:
+        # 自动检测：优先使用 CUDA
+        import torch
+        device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-        print(f"  使用设备: {device}")
-        if device == 'cpu':
-            print("  (首次加载需要 10-60 秒，请耐心等待...)")
-        else:
-            print("  (GPU 加速模式)")
+    print(f"  使用设备: {device}")
+    if device == 'cpu':
+        print("  (首次加载需要 10-60 秒，请耐心等待...)")
+    else:
+        print("  (GPU 加速模式)")
 
-        _embedding_model_cache = SentenceTransformerEncoder(
-            model_name=str(path),
-            device=device,
-            trust_remote_code=True,
-        )
+    model = SentenceTransformerEncoder(
+        model_name=str(path),
+        device=device,
+        trust_remote_code=True,
+    )
 
-        print("  Embedding model loaded successfully!")
+    print("  Embedding model loaded successfully!")
 
-    return _embedding_model_cache
-
-
-_reranker_model_cache = None
+    return model
 
 
+@st.cache_resource
 def backend_reranker_model():
     """
     Reranker (cross-encoder) for improving search relevance.
@@ -273,10 +270,6 @@ def backend_reranker_model():
     Returns:
         CrossEncoder instance if configured, None otherwise
     """
-    global _reranker_model_cache
-    if _reranker_model_cache is not None:
-        return _reranker_model_cache
-
     try:
         from sentence_transformers import CrossEncoder
         reranker_path = os.getenv('reranker_path')
@@ -292,8 +285,7 @@ def backend_reranker_model():
                 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
             print(f"  使用设备: {device}")
-            _reranker_model_cache = CrossEncoder(full_path, device=device)
-            return _reranker_model_cache
+            return CrossEncoder(full_path, device=device)
     except Exception as e:
         print(f"Failed to load reranker: {e}")
 

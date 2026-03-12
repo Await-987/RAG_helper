@@ -30,46 +30,29 @@ from agents import chat_agent_factory
 
 
 # ==================== 表格摘要模型生命周期管理 ====================
-# 模块级标志：是否已经打印过初始化成功的日志
-_table_summary_model_logged = False
 
-
-def init_table_summary_model():
-    """初始化表格摘要小模型（如果尚未初始化）"""
-    global _table_summary_model_logged
+@st.cache_resource
+def init_table_summary_model_once():
+    """初始化表格摘要小模型（全局只执行一次，使用 streamlit 缓存）"""
     try:
         from agents.backend_model import init_table_summary_model, get_table_summary_model
         # 先检查是否已经初始化
         model, _ = get_table_summary_model()
         if model is not None:
-            # 已初始化，不重复打印日志
+            logger.info("✅ 表格摘要模型已初始化（复用）")
             return True
 
         # 未初始化，尝试加载
+        logger.info("🔥 正在初始化表格摘要模型...")
         success = init_table_summary_model()
-        if success and not _table_summary_model_logged:
+        if success:
             logger.info("✅ 表格摘要模型初始化成功")
-            _table_summary_model_logged = True
-        elif not success:
+        else:
             logger.warning("⚠️ 表格摘要模型初始化失败，将使用原始表格内容")
         return success
     except Exception as e:
         logger.warning(f"⚠️ 表格摘要模型初始化异常: {e}")
         return False
-
-
-def cleanup_table_summary_model():
-    """清理表格摘要模型（检查模型是否真正存在才清理）"""
-    try:
-        from agents.backend_model import cleanup_table_summary_model, is_table_summary_model_loaded
-        # 检查模型是否真正存在（不触发初始化）
-        if not is_table_summary_model_loaded():
-            return  # 模型不存在，不需要清理
-
-        cleanup_table_summary_model()
-        logger.info("✅ 表格摘要模型已释放")
-    except Exception as e:
-        logger.warning(f"⚠️ 表格摘要模型清理异常: {e}")
 
 
 # 注意：不在此处注册 atexit，而是在 init_session_state 中注册
@@ -89,7 +72,7 @@ def handle_checkbox_change(file_idx: int):
 
 # ========== 登录状态初始化 ==========
 def init_session_state():
-    """初始化 session_state"""
+    """初始化 session_state（只做轻量初始化，重对象延迟到登录后）"""
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
     if "username" not in st.session_state:
@@ -98,22 +81,23 @@ def init_session_state():
         st.session_state.user_role = None
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    # chat_agent 延迟到登录后初始化，提升首屏速度
     if "chat_agent" not in st.session_state:
-        st.session_state.chat_agent = chat_agent_factory()
+        st.session_state.chat_agent = None
     if "uploaded_files_list" not in st.session_state:
         st.session_state.uploaded_files_list = []
     if "page" not in st.session_state:
         st.session_state.page = "login"  # login, chat, admin
     if "file_management_page" not in st.session_state:
         st.session_state.file_management_page = 0  # 当前页码（从0开始）
+    # 表格摘要模型延迟到登录后初始化
 
-    # 初始化表格摘要模型（全局只执行一次，使用模块级标志）
-    global _atexit_registered
-    if not _atexit_registered:
-        _atexit_registered = True
-        init_table_summary_model()
-        # 只注册一次 atexit 清理函数
-        atexit.register(cleanup_table_summary_model)
+
+def ensure_chat_agent():
+    """确保 chat_agent 已初始化（登录后调用）"""
+    if st.session_state.chat_agent is None:
+        st.session_state.chat_agent = chat_agent_factory()
+    return st.session_state.chat_agent
 
 
 st.set_page_config(
@@ -428,6 +412,12 @@ def render_login_page():
                     st.session_state.logged_in = True
                     st.session_state.username = user["username"]
                     st.session_state.user_role = user["role"]
+                    # 登录成功后初始化重对象（延迟加载，提升首屏速度）
+                    if st.session_state.chat_agent is None:
+                        st.session_state.chat_agent = chat_agent_factory()
+                    if "table_summary_model_init" not in st.session_state:
+                        init_table_summary_model_once()
+                        st.session_state.table_summary_model_init = True
                     st.success(f"✅ 登录成功！欢迎回来，{user['username']}")
                     st.rerun()
                 else:
@@ -517,7 +507,7 @@ def render_user_management():
                         )
                         if success:
                             st.success(f"✅ {msg}")
-                            st.rerun()
+                            st.rerun()  # 需要立即刷新用户列表显示新角色
                         else:
                             st.error(f"❌ {msg}")
 
@@ -525,7 +515,7 @@ def render_user_management():
                 # 重置密码
                 if st.button(f"🔑 重置密码", key=f"reset_pwd_{user['username']}"):
                     st.session_state[f"reset_pwd_{user['username']}"] = True
-                    st.rerun()
+                    st.rerun()  # 需要立即显示重置密码对话框
 
                 # 重置密码对话框
                 if st.session_state.get(f"reset_pwd_{user['username']}", False):
@@ -538,22 +528,22 @@ def render_user_management():
                             )
                             if success:
                                 st.success(f"✅ {msg}")
-                                del st.session_state[f"reset_pwd_{user['username']}"]
-                                st.rerun()
+                                st.session_state.pop(f"reset_pwd_{user['username']}", None)
+                                st.rerun()  # 需要立即关闭重置密码框
                             else:
                                 st.error(f"❌ {msg}")
                         else:
                             st.warning("请输入新密码")
                     if st.button("❌ 取消", key=f"cancel_reset_{user['username']}"):
-                        del st.session_state[f"reset_pwd_{user['username']}"]
-                        st.rerun()
+                        st.session_state.pop(f"reset_pwd_{user['username']}", None)
+                        st.rerun()  # 需要立即关闭重置密码框
 
             with col6:
                 # 删除用户
                 if user["username"] != st.session_state.username:  # 不能删除自己
                     if st.button(f"🗑️ 删除", key=f"delete_user_{user['username']}"):
                         st.session_state[f"confirm_delete_user_{user['username']}"] = True
-                        st.rerun()
+                        st.rerun()  # 需要立即显示确认框
 
                     # 删除确认对话框
                     if st.session_state.get(f"confirm_delete_user_{user['username']}", False):
@@ -566,14 +556,14 @@ def render_user_management():
                                 )
                                 if success:
                                     st.success(f"✅ {msg}")
-                                    del st.session_state[f"confirm_delete_user_{user['username']}"]
-                                    st.rerun()
+                                    st.session_state.pop(f"confirm_delete_user_{user['username']}", None)
+                                    st.rerun()  # 需要立即刷新用户列表
                                 else:
                                     st.error(f"❌ {msg}")
                         with col_no:
                             if st.button("❌ 取消", key=f"no_delete_{user['username']}"):
-                                del st.session_state[f"confirm_delete_user_{user['username']}"]
-                                st.rerun()
+                                st.session_state.pop(f"confirm_delete_user_{user['username']}", None)
+                                st.rerun()  # 需要立即关闭确认框
 
             st.markdown("---")
 
@@ -632,7 +622,7 @@ with st.sidebar:
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             init_session_state()
-            st.rerun()
+            st.rerun()  # 需要立即刷新，否则页面状态不会更新
 
     st.markdown("---")
 
@@ -644,7 +634,7 @@ with st.sidebar:
         # 清除 UI 显示的消息历史
         st.session_state.messages = []
         logger.info(f"用户 {st.session_state.username} 开始了新对话")
-        st.rerun()
+        st.rerun()  # 需要立即刷新聊天界面
 
     # ========== 导航菜单 ==========
     page = st.radio(
@@ -659,7 +649,7 @@ with st.sidebar:
         # 导航菜单改变了，清除特殊页面状态（用户管理/修改密码）
         if st.session_state.page in ["user_management", "change_password"]:
             st.session_state.page = None
-            st.rerun()
+            st.rerun()  # 需要立即刷新页面结构
     st.session_state.last_nav_page = page
 
     # 管理员专用功能
@@ -675,7 +665,7 @@ with st.sidebar:
             else:
                 # 打开用户管理
                 st.session_state.page = "user_management"
-            st.rerun()
+            st.rerun()  # 需要立即刷新按钮文字和页面结构
          # 修改密码按钮 - 可切换：点击打开，再次点击关闭
         change_pwd_btn_label = "🔑 修改密码 (收起)" if st.session_state.page == "change_password" else "🔑 修改密码"
         if st.button(change_pwd_btn_label, use_container_width=True):
@@ -683,7 +673,7 @@ with st.sidebar:
                 st.session_state.page = None
             else:
                 st.session_state.page = "change_password"
-            st.rerun()
+            st.rerun()  # 需要立即刷新按钮文字和页面结构
     else:
         st.markdown("---")
         # 修改密码按钮 - 可切换：点击打开，再次点击关闭
@@ -693,7 +683,7 @@ with st.sidebar:
                 st.session_state.page = None
             else:
                 st.session_state.page = "change_password"
-            st.rerun()
+            st.rerun()  # 需要立即刷新按钮文字和页面结构
 
     st.markdown("---")
 
@@ -798,6 +788,8 @@ with st.sidebar:
                 for key in list(st.session_state.keys()):
                     if key.startswith("selected_"):
                         del st.session_state[key]
+                # 清除文件列表缓存
+                file_manager_ui.get_local_files_with_db_status.clear()
                 st.rerun()
 
         # 获取文件信息（显示所有本地文件及其数据库状态）
@@ -866,7 +858,7 @@ with st.sidebar:
             # 一键建库按钮
             if st.button(f"🚀 一键建库 ({len(not_imported_files)} 个文件)", type="primary", key="batch_import_btn"):
                 st.session_state["batch_import_confirm"] = [str(f["path"]) for f in not_imported_files if f.get("path")]
-                st.rerun()
+                # 按钮点击本身会触发 rerun
 
             # 建库确认对话框
             batch_import_confirm = st.session_state.get("batch_import_confirm", [])
@@ -946,8 +938,8 @@ with st.sidebar:
 
                 with col_no:
                     if st.button("❌ 取消", key="batch_import_no"):
-                        del st.session_state["batch_import_confirm"]
-                        st.rerun()
+                        st.session_state.pop("batch_import_confirm", None)
+                        st.rerun()  # 需要立即关闭确认框
 
         # ========== 搜索和筛选 ==========
         st.markdown("**🔍 搜索与筛选：**")
@@ -1049,7 +1041,7 @@ with st.sidebar:
                             selected_count += 1
                     if selected_count > 0:
                         st.session_state["batch_delete_confirm"] = True
-                        st.rerun()
+                        # 按钮点击本身会触发 rerun
                     else:
                         st.warning("⚠️ 请先选择要删除的文件")
 
@@ -1062,12 +1054,12 @@ with st.sidebar:
             with batch_col4:
                 if st.button("⬅️ 上一页", disabled=(current_page == 0), key="prev_page"):
                     st.session_state.file_management_page = current_page - 1
-                    st.rerun()
+                    st.rerun()  # 需要立即刷新显示新页面内容
 
             with batch_col5:
                 if st.button("下一页 ➡️", disabled=(current_page >= total_pages - 1), key="next_page"):
                     st.session_state.file_management_page = current_page + 1
-                    st.rerun()
+                    st.rerun()  # 需要立即刷新显示新页面内容
 
             # ========== 导入操作按钮 ==========
             st.markdown("---")
@@ -1083,7 +1075,7 @@ with st.sidebar:
                                 selected_not_imported.append(str(info["path"]))
                     if selected_not_imported:
                         st.session_state["batch_import_confirm"] = selected_not_imported
-                        st.rerun()
+                        # 按钮点击本身会触发 rerun
                     else:
                         st.warning("⚠️ 请先选择要导入的未建库文件")
 
@@ -1094,7 +1086,7 @@ with st.sidebar:
                     all_not_imported = [str(f["path"]) for f in filtered_list if f["type"] == "not_imported" and f["path"]]
                     if all_not_imported:
                         st.session_state["import_all_confirm"] = all_not_imported
-                        st.rerun()
+                        # 按钮点击本身会触发 rerun
 
             with import_col3:
                 # 显示未建库文件数量
@@ -1169,14 +1161,14 @@ with st.sidebar:
                                 else:  # not_imported
                                     not_imported_count += 1
 
-                        # 第一步：删除数据库切片（已建库 + 残留数据）
-                        for info in to_delete:
-                            if info["type"] in ["imported", "ghost"]:
-                                if file_manager_ui.delete_file_by_tag(info["tag"]):
-                                    db_success += 1
-                                else:
-                                    db_fail += 1
-                                    logger.error(f"删除数据库切片失败: {info['tag']}")
+                        # 第一步：批量删除数据库切片（已建库 + 残留数据）- 使用优化版本
+                        db_tags_to_delete = [info["tag"] for info in to_delete if info["type"] in ["imported", "ghost"]]
+                        if db_tags_to_delete:
+                            db_result = file_manager_ui.batch_delete_files_by_tags(db_tags_to_delete)
+                            db_success = db_result["success_count"]
+                            db_fail = db_result["failed_count"]
+                            for tag, error in db_result.get("failed_tags", []):
+                                logger.error(f"删除数据库切片失败: {tag} - {error}")
 
                         # 第二步：删除本地文件（已建库 + 未建库）
                         for info in to_delete:
@@ -1216,7 +1208,7 @@ with st.sidebar:
             with col_cancel:
                 if st.button("❌ 取消", key="batch_delete_no"):
                     st.session_state.pop("batch_delete_confirm", None)
-                    st.rerun()
+                    st.rerun()  # 需要立即关闭确认框
 
         # ========== 批量导入选中确认对话框（仅管理员可见） ==========
         # @shengwanying：20260310修改：增加类型检查，防止布尔值导致 len() 报错
@@ -1264,7 +1256,7 @@ with st.sidebar:
             with col_cancel:
                 if st.button("❌ 取消", key="batch_import_confirm_no"):
                     st.session_state.pop("batch_import_confirm", None)
-                    st.rerun()
+                    st.rerun()  # 需要立即关闭确认框
 
         # ========== 一键全部导入确认对话框（仅管理员可见） ==========
         if is_admin and st.session_state.get("import_all_confirm"):
@@ -1313,7 +1305,7 @@ with st.sidebar:
             with col_cancel:
                 if st.button("❌ 取消", key="import_all_no"):
                     st.session_state.pop("import_all_confirm", None)
-                    st.rerun()
+                    st.rerun()  # 需要立即关闭确认框
 
         # ========== 文件列表 ==========
         st.markdown("**📁 文件列表：**")
@@ -1372,10 +1364,10 @@ with st.sidebar:
                             if info["type"] != "ghost":
                                 # toggle：再次点击同一文件则关闭预览
                                 if st.session_state.get("preview_file_name") == info["name"]:
-                                    del st.session_state["preview_file_name"]
+                                    st.session_state.pop("preview_file_name", None)
                                 else:
                                     st.session_state["preview_file_name"] = info["name"]
-                                st.rerun()
+                                st.rerun()  # 需要立即显示/关闭预览区域
 
                     with col_chunks:
                         # 切片数
@@ -1401,7 +1393,7 @@ with st.sidebar:
                             help_text = "删除此文件（本地+数据库）" if info["type"] != "ghost" else "删除此文件（仅数据库记录）"
                             if st.button("🗑️", key=button_key, help=help_text):
                                 st.session_state[f"single_delete_confirm_page_{current_page}_{page_idx}"] = True
-                                st.rerun()
+                                # 按钮点击本身会触发 rerun
                     else:
                         # 普通用户看到的状态信息
                         with col_status:
@@ -1460,8 +1452,8 @@ with st.sidebar:
                                         st.error(f"❌ 删除失败: {str(e)}")
                             with col_no:
                                 if st.button("❌ 取消", key=f"single_no_page_{current_page}_{page_idx}"):
-                                    del st.session_state[f"single_delete_confirm_page_{current_page}_{page_idx}"]
-                                    st.rerun()
+                                    st.session_state.pop(f"single_delete_confirm_page_{current_page}_{page_idx}", None)
+                                    st.rerun()  # 需要立即关闭确认框
         else:
             st.info("📭 没有找到匹配的文件")
 
@@ -1489,8 +1481,8 @@ if st.session_state.get("preview_file_name"):
     col_title, col_close = st.columns([5, 1])
     col_title.markdown(f"### 📖 预览：{preview_name}")
     if col_close.button("✖️ 关闭预览", key="main_close_preview"):
-        del st.session_state["preview_file_name"]
-        st.rerun()
+        st.session_state.pop("preview_file_name", None)
+        st.rerun()  # 需要立即关闭预览区域
     if file_path.exists():
         file_size = file_path.stat().st_size
 
@@ -1544,7 +1536,9 @@ if prompt := st.chat_input("💭 请输入您的问题..."):
     assistant_container = st.empty()
 
     try:
-        response = st.session_state.chat_agent.step(prompt)
+        # 确保 chat_agent 已初始化
+        chat_agent = ensure_chat_agent()
+        response = chat_agent.step(prompt)
         print(f"Response from chat_agent: {response}")
 
         # 流式处理响应 - 统一气泡显示思考过程和回答
@@ -1625,7 +1619,8 @@ if prompt := st.chat_input("💭 请输入您的问题..."):
             "content": final_message_content
         })
 
-        st.rerun()
+        # 注意：不需要 st.rerun()，因为流式输出已经显示了内容
+        # 消息已存入 session_state，下次用户输入时会自动显示在历史中
 
     except Exception as e:
         error_message = f"❌ 处理消息时出错：{str(e)}"

@@ -240,10 +240,31 @@ def _get_database_stats_impl(collection_name: str) -> Tuple[Dict[str, int], int]
     """
     内部实现：获取数据库统计信息（使用 Streamlit 缓存）
     ttl=None 表示永久缓存，直到手动清除
+
+    优先从词汇索引获取（快速），fallback 到 scroll（慢）
     """
     try:
         from tools.qdrant import QdrantDB, QdrantDB_Init
         db = QdrantDB(input=QdrantDB_Init(collection_name=collection_name))
+
+        # 1. 尝试从词汇索引获取（快速路径）
+        db._maybe_build_lex_index(force=False)
+        lex_index = db._lex_index
+
+        if lex_index and lex_index.get("N", 0) > 0:
+            # 从词汇索引的 payloads 中提取文件统计
+            stats = {}
+            payloads = lex_index.get("payloads", [])
+            for payload in payloads:
+                tag = payload.get("Original_file", "未知文件")
+                stats[tag] = stats.get(tag, 0) + 1
+
+            total_chunks = lex_index.get("N", 0)
+            logger.debug(f"从词汇索引获取文件统计: {len(stats)} 个文件, {total_chunks} 个切片")
+            return stats, total_chunks
+
+        # 2. Fallback：从 Qdrant scroll 获取（慢速路径）
+        logger.info("词汇索引不可用，使用 scroll 获取文件统计...")
         client = db.storage_instance._client
 
         # 获取数据库点数（快速操作）
@@ -376,7 +397,8 @@ def get_file_info_list(storage_dir: Path) -> List[Dict]:
     return file_info_list, total_chunks
 
 
-def delete_file_by_tag(file_tag: str, collection_name: str = "database", delete_images: bool = True) -> bool:
+def delete_file_by_tag(file_tag: str, collection_name: str = "database", delete_images: bool = True,
+                       db_instance=None, skip_cache_clear: bool = False) -> bool:
     """
     根据文件标签删除数据库中的切片，并可选删除关联图片
 
@@ -384,13 +406,21 @@ def delete_file_by_tag(file_tag: str, collection_name: str = "database", delete_
         file_tag: 文件标签（相对路径）
         collection_name: 集合名称
         delete_images: 是否同时删除关联的图片文件
+        db_instance: 可选的 QdrantDB 实例（批量删除时复用，避免重复初始化）
+        skip_cache_clear: 是否跳过缓存清除（批量删除时最后统一清除）
 
     Returns:
         是否删除成功
     """
     try:
         from tools.qdrant import QdrantDB, QdrantDB_Init
-        db = QdrantDB(input=QdrantDB_Init(collection_name=collection_name))
+
+        # 复用传入的 db 实例，或创建新实例
+        if db_instance is not None:
+            db = db_instance
+        else:
+            db = QdrantDB(input=QdrantDB_Init(collection_name=collection_name))
+
         # 不使用 normpath，保持 POSIX 格式（正斜杠）与数据库存储格式一致
         db.delete_by_file_name(file_tag)
 
@@ -401,13 +431,72 @@ def delete_file_by_tag(file_tag: str, collection_name: str = "database", delete_
             if deleted_count > 0:
                 logger.info(f"已删除文档 '{document_name}' 关联的 {deleted_count} 个图片文件")
 
-        # 删除后清除缓存，下次访问时重新统计
-        clear_database_stats_cache()
+        # 删除后清除缓存，下次访问时重新统计（批量删除时跳过）
+        if not skip_cache_clear:
+            clear_database_stats_cache()
 
         return True
     except Exception as e:
         logger.error(f"删除数据库切片失败: {e}")
         return False
+
+
+def batch_delete_files_by_tags(file_tags: List[str], collection_name: str = "database",
+                               delete_images: bool = True) -> Dict:
+    """
+    批量删除数据库中的切片（优化版本，复用 QdrantDB 实例）
+
+    Args:
+        file_tags: 文件标签列表
+        collection_name: 集合名称
+        delete_images: 是否同时删除关联的图片文件
+
+    Returns:
+        {
+            "success_count": 成功数,
+            "failed_count": 失败数,
+            "failed_tags": [(tag, error), ...]
+        }
+    """
+    from tools.qdrant import QdrantDB, QdrantDB_Init
+
+    result = {
+        "success_count": 0,
+        "failed_count": 0,
+        "failed_tags": []
+    }
+
+    if not file_tags:
+        return result
+
+    # 创建一个 QdrantDB 实例复用
+    db = QdrantDB(input=QdrantDB_Init(collection_name=collection_name))
+
+    for file_tag in file_tags:
+        try:
+            # 复用 db 实例，跳过单独的缓存清除
+            success = delete_file_by_tag(
+                file_tag=file_tag,
+                collection_name=collection_name,
+                delete_images=delete_images,
+                db_instance=db,
+                skip_cache_clear=True
+            )
+
+            if success:
+                result["success_count"] += 1
+            else:
+                result["failed_count"] += 1
+                result["failed_tags"].append((file_tag, "删除失败"))
+        except Exception as e:
+            result["failed_count"] += 1
+            result["failed_tags"].append((file_tag, str(e)))
+
+    # 最后统一清除缓存
+    clear_database_stats_cache()
+
+    logger.info(f"批量删除完成：成功 {result['success_count']}，失败 {result['failed_count']}")
+    return result
 
 
 def delete_local_file(file_path: Path, delete_images: bool = False) -> bool:
@@ -505,7 +594,8 @@ def delete_file_completely(
         return result
 
 
-def get_local_files_with_db_status(storage_dir: Path) -> List[Dict]:
+@st.cache_data(ttl=60, show_spinner=False)  # 缓存60秒，减少重复查询
+def get_local_files_with_db_status(storage_dir: Path) -> Tuple[List[Dict], int]:
     """
     获取所有本地文件和数据库残留数据
 
