@@ -16,6 +16,12 @@ def _log_search(msg: str):
 class DatabaseToolkit(BaseToolkit):
     """A toolkit for retrieving information from your local Qdrant knowledge base."""
 
+    DEFAULT_CANDIDATE_LIMIT = 20
+    DEFAULT_FINAL_FULL_CHUNKS = 4
+    DEFAULT_MAX_TOTAL_CHARS = 12000
+    DEFAULT_MAX_CHARS_PER_CHUNK = 3200
+    TABLE_QUERY_HINTS = ("表", "表格", "议程", "清单", "名单", "名录", "统计", "汇总")
+
     def __init__(self):
         super().__init__()
         qdrant_init = QdrantDB_Init(collection_name="database")
@@ -170,19 +176,79 @@ class DatabaseToolkit(BaseToolkit):
                 deduped.append(h)
         return deduped
 
+    @staticmethod
+    def _truncate_text(text: str, max_chars: int) -> str:
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars].rstrip() + "\n...[内容过长，已截断]"
+
+    @classmethod
+    def _is_table_like_query(cls, query: str) -> bool:
+        query = (query or "").strip()
+        if not query:
+            return False
+        return any(token in query for token in cls.TABLE_QUERY_HINTS)
+
+    def _select_full_chunk_hits(
+        self,
+        hits: List[Dict[str, Any]],
+        *,
+        full_chunk_limit: int,
+        max_total_chars: int,
+        max_chars_per_chunk: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        Keep only a few highest-confidence chunks, while preserving their original content.
+        This balances answer fidelity and context budget.
+        """
+        selected: List[Dict[str, Any]] = []
+        total_chars = 0
+
+        for hit in hits:
+            if len(selected) >= full_chunk_limit:
+                break
+
+            payload = hit.get("payload", {}) or {}
+            content = payload.get("Content", "") or payload.get("content", "")
+            if not isinstance(content, str):
+                content = str(content)
+            content = content.strip()
+            if not content:
+                continue
+
+            content_chars = min(len(content), max_chars_per_chunk)
+            if selected and total_chars + content_chars > max_total_chars:
+                continue
+
+            selected.append(hit)
+            total_chars += content_chars
+
+        if not selected and hits:
+            selected = hits[:1]
+
+        _log_search(
+            f"🧠 证据收缩: 候选 {len(hits)} 条 -> 完整原文 {len(selected)} 条, "
+            f"总字符预算 {max_total_chars}, 单条上限 {max_chars_per_chunk}"
+        )
+        return selected
+
     def search_database(
         self,
         query: str,
-        top_k: int = 50,
+        top_k: int = 8,
         *,
         # ---- new knobs (all optional; keep old usage compatible) ----
         use_hybrid: bool = True,
         use_rerank: bool = True,
         dynamic_topk: bool = True,
         score_threshold: Optional[float] = None,
-        max_results: int = 50,
+        max_results: int = 12,
         alpha: float = 0.75,
         restore_table_context: bool = False,  # 是否恢复表格上下文
+        candidate_top_k: int = DEFAULT_CANDIDATE_LIMIT,
+        full_chunk_limit: int = DEFAULT_FINAL_FULL_CHUNKS,
+        max_total_chars: int = DEFAULT_MAX_TOTAL_CHARS,
+        max_chars_per_chunk: int = DEFAULT_MAX_CHARS_PER_CHUNK,
     ) -> str:
         """
         Hybrid retrieval within local database.
@@ -198,20 +264,49 @@ class DatabaseToolkit(BaseToolkit):
         if alpha is None:
             alpha = 0.75
         if max_results is None:
-            max_results = 50
+            max_results = 12
+        if candidate_top_k is None:
+            candidate_top_k = self.DEFAULT_CANDIDATE_LIMIT
+        if full_chunk_limit is None:
+            full_chunk_limit = self.DEFAULT_FINAL_FULL_CHUNKS
+        if max_total_chars is None:
+            max_total_chars = self.DEFAULT_MAX_TOTAL_CHARS
+        if max_chars_per_chunk is None:
+            max_chars_per_chunk = self.DEFAULT_MAX_CHARS_PER_CHUNK
+
+        top_k = max(1, int(top_k))
+        candidate_top_k = max(top_k, int(candidate_top_k))
+        full_chunk_limit = max(1, min(int(full_chunk_limit), top_k))
+        max_results = max(top_k, int(max_results))
+        max_total_chars = max(1000, int(max_total_chars))
+        max_chars_per_chunk = max(500, int(max_chars_per_chunk))
+
+        # 表格/议程类问题对证据长度敏感，避免模型传入过小预算导致表格被截断。
+        if self._is_table_like_query(query):
+            full_chunk_limit = max(full_chunk_limit, min(top_k, 5))
+            max_total_chars = max(max_total_chars, 8000)
+            max_chars_per_chunk = max(max_chars_per_chunk, 2400)
+            restore_table_context = True
 
         # ===== 搜索开始日志 =====
         _log_search(f"\n{'='*60}")
         _log_search(f"🔍 [搜索工具被调用]")
         _log_search(f"   query: '{query[:80]}{'...' if len(query) > 80 else ''}'")
-        _log_search(f"   参数: top_k={top_k}, hybrid={use_hybrid}, rerank={use_rerank}, dynamic={dynamic_topk}, alpha={alpha}")
+        _log_search(
+            f"   参数: top_k={top_k}, candidate_top_k={candidate_top_k}, "
+            f"full_chunk_limit={full_chunk_limit}, hybrid={use_hybrid}, "
+            f"rerank={use_rerank}, dynamic={dynamic_topk}, alpha={alpha}"
+        )
+        _log_search(
+            f"   预算: max_total_chars={max_total_chars}, "
+            f"max_chars_per_chunk={max_chars_per_chunk}, "
+            f"restore_table_context={restore_table_context}"
+        )
         _log_search(f"{'='*60}\n")
 
         # 放在 search_database() 开头，参数校正
         if dynamic_topk:
-            # 领导演示用：保证动态 topk 有空间"变多"
-            # 你可以把 50 改成 30/100，看你想演示的幅度
-            max_results = max(int(max_results), 50)
+            max_results = max(int(max_results), candidate_top_k)
 
         if not query or not query.strip():
             logger.warning("⚠️ 搜索 query 为空，返回无结果")
@@ -222,7 +317,7 @@ class DatabaseToolkit(BaseToolkit):
             _log_search(f"📊 执行混合搜索 (vector + keyword BM25)...")
             hits = self.db.hybrid_search(
                 query=query,
-                top_k=top_k,
+                top_k=candidate_top_k,
                 alpha=alpha,
                 dynamic_topk=False,
                 score_threshold=score_threshold,
@@ -230,7 +325,7 @@ class DatabaseToolkit(BaseToolkit):
             )
         else:
             _log_search(f"📊 执行纯向量搜索...")
-            hits = self.db.search(query=query, top_k=top_k)
+            hits = self.db.search(query=query, top_k=candidate_top_k)
 
         if not hits:
             return "No results from the vector database."
@@ -242,17 +337,28 @@ class DatabaseToolkit(BaseToolkit):
 
             # 3) dynamic threshold cut should use final scores (after rerank)
             if dynamic_topk:
-                _log_search(f"✂️ 执行动态阈值过滤 (min_results={top_k}, max_results={max_results})...")
+                _log_search(
+                    f"✂️ 执行动态阈值过滤 (min_results={top_k}, max_results={candidate_top_k})..."
+                )
                 hits = DatabaseToolkit._apply_dynamic_cut(
                     hits=hits,
                     min_results=int(top_k),
-                    max_results=int(max_results),
+                    max_results=int(candidate_top_k),
                     score_threshold=score_threshold,
                 )
             else:
-                hits = sorted(hits, key=lambda h: float(h.get("score", 0.0)), reverse=True)[: int(top_k)]
+                hits = sorted(hits, key=lambda h: float(h.get("score", 0.0)), reverse=True)[
+                    : int(candidate_top_k)
+                ]
 
-        _log_search(f"✅ 搜索完成: 找到 {len(hits)} 条结果")
+        hits = self._select_full_chunk_hits(
+            hits,
+            full_chunk_limit=full_chunk_limit,
+            max_total_chars=max_total_chars,
+            max_chars_per_chunk=max_chars_per_chunk,
+        )
+
+        _log_search(f"✅ 搜索完成: 最终返回 {len(hits)} 条完整原文结果")
 
         # 4) format output
         formatted_results = []
@@ -270,6 +376,8 @@ class DatabaseToolkit(BaseToolkit):
                     # 合并上下文
                     content = f"{context_before}\n{content}\n{context_after}".strip()
                     _log_search(f"   📊 表格上下文已恢复 (前{len(context_before)}字 + 后{len(context_after)}字)")
+
+            content = DatabaseToolkit._truncate_text(content, max_chars_per_chunk)
 
             result_str = (
                 f"File: {source}\n"

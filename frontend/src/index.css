@@ -1,0 +1,258 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary-50: #eff6ff;
+  --color-primary-100: #dbeafe;
+  --color-primary-200: #bfdbfe;
+  --color-primary-300: #93c5fd;
+  --color-primary-400: #60a5fa;
+  --color-primary-500: #3b82f6;
+  --color-primary-600: #2563eb;
+  --color-primary-700: #1d4ed8;
+  --color-primary-800: #1e40af;
+  --color-primary-900: #1e3a8a;
+
+  --color-dark-bg: #0f0f0f;
+  --color-dark-card: #1a1a1a;
+  --color-dark-border: #2a2a2a;
+  --color-dark-hover: #2a2a2a;
+}
+
+@layer base {
+  :root {
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    line-height: 1.5;
+    font-weight: 400;
+    color-scheme: dark;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-dark-bg text-gray-100 min-h-screen m-0;
+  }
+
+  #root {
+    @apply min-h-screen;
+  }
+}
+
+@layer components {
+  /* Scrollbar styles */
+  .custom-scrollbar::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-track {
+    @apply bg-dark-bg;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb {
+    @apply bg-gray-600 rounded-full;
+  }
+
+  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-500;
+  }
+
+  /* Message bubble styles */
+  .message-bubble {
+    @apply rounded-2xl px-4 py-3 max-w-[80%] break-words;
+  }
+
+  .message-bubble-user {
+    @apply bg-primary-600 text-white ml-auto;
+  }
+
+  .message-bubble-assistant {
+    @apply bg-dark-card text-gray-100 border border-dark-border;
+  }
+
+  /* Reasoning block */
+  .reasoning-block {
+    @apply bg-dark-hover rounded-lg p-3 mb-3 text-sm text-gray-400 border-l-2 border-primary-500;
+  }
+
+  /* Input styles */
+  .input-field {
+    @apply w-full bg-dark-card border border-dark-border rounded-xl px-4 py-3
+           text-gray-100 placeholder-gray-500
+           focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent
+           transition-all duration-200;
+  }
+
+  /* Button styles */
+  .btn {
+    @apply px-4 py-2 rounded-lg font-medium transition-all duration-200
+           disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-primary {
+    @apply bg-primary-600 text-white hover:bg-primary-700 active:bg-primary-800;
+  }
+
+  .btn-secondary {
+    @apply bg-dark-card text-gray-300 border border-dark-border
+           hover:bg-dark-hover active:bg-gray-700;
+  }
+
+  .btn-danger {
+    @apply bg-red-600 text-white hover:bg-red-700 active:bg-red-800;
+  }
+
+  /* Card styles */
+  .card {
+    @apply bg-dark-card border border-dark-border rounded-xl p-4;
+  }
+
+  /* Sidebar item */
+  .sidebar-item {
+    @apply flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer
+           text-gray-400 hover:text-gray-100 hover:bg-dark-hover
+           transition-colors duration-200;
+  }
+
+  .sidebar-item-active {
+    @apply text-gray-100 bg-dark-hover;
+  }
+}
+
+/* KaTeX styles */
+.katex {
+  font-size: 1.1em !important;
+}
+
+/* Markdown content styles */
+.markdown-content {
+  @apply text-gray-100 leading-relaxed;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3 {
+  @apply font-bold text-white mt-4 mb-2;
+}
+
+.markdown-content h1 {
+  @apply text-2xl;
+}
+
+.markdown-content h2 {
+  @apply text-xl;
+}
+
+.markdown-content h3 {
+  @apply text-lg;
+}
+
+.markdown-content p {
+  @apply mb-3;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  @apply mb-3 pl-6;
+}
+
+.markdown-content ul {
+  @apply list-disc;
+}
+
+.markdown-content ol {
+  @apply list-decimal;
+}
+
+.markdown-content li {
+  @apply mb-1;
+}
+
+.markdown-content code {
+  @apply bg-dark-hover px-1.5 py-0.5 rounded text-primary-400 text-sm;
+}
+
+.markdown-content pre {
+  @apply bg-dark-hover p-3 rounded-lg overflow-x-auto mb-3;
+}
+
+.markdown-content pre code {
+  @apply bg-transparent p-0;
+}
+
+.markdown-content table {
+  @apply w-full border-collapse mb-3;
+}
+
+.markdown-content th,
+.markdown-content td {
+  @apply border border-dark-border px-3 py-2 text-left;
+}
+
+.markdown-content th {
+  @apply bg-dark-hover font-medium;
+}
+
+.markdown-content img {
+  @apply max-w-full rounded-lg my-3;
+}
+
+.kb-image-shell {
+  @apply relative overflow-hidden rounded-xl border border-dark-border bg-dark-hover;
+  min-height: 200px;
+}
+
+.kb-image {
+  @apply block w-full h-auto;
+  max-height: 540px;
+  object-fit: contain;
+  transition: opacity 180ms ease;
+}
+
+.kb-image-hidden {
+  opacity: 0;
+}
+
+.kb-image-visible {
+  opacity: 1;
+}
+
+.kb-image-placeholder,
+.kb-image-fallback {
+  @apply absolute inset-0 flex items-center justify-center text-sm text-gray-400;
+}
+
+.kb-image-placeholder {
+  background:
+    linear-gradient(135deg, rgba(255,255,255,0.03), rgba(255,255,255,0.01)),
+    linear-gradient(90deg, rgba(255,255,255,0.03) 25%, rgba(255,255,255,0.08) 37%, rgba(255,255,255,0.03) 63%);
+  background-size: auto, 240% 100%;
+  animation: kb-image-loading 1.4s ease-in-out infinite;
+}
+
+.kb-image-shimmer {
+  @apply absolute inset-0;
+}
+
+.kb-image-fallback {
+  @apply bg-dark-hover;
+}
+
+@keyframes kb-image-loading {
+  0% {
+    background-position: 0 0, 100% 0;
+  }
+
+  100% {
+    background-position: 0 0, -100% 0;
+  }
+}
+
+.markdown-content a {
+  @apply text-primary-400 hover:text-primary-300 underline;
+}
+
+.markdown-content blockquote {
+  @apply border-l-4 border-primary-500 pl-4 py-2 my-3 bg-dark-hover rounded-r-lg;
+}

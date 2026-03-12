@@ -1,6 +1,8 @@
 .env
+.env.*
 
 .claude
+.claude/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -50,6 +52,12 @@ env/
 # User Data (sensitive information)
 .user/
 
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
+
 # data/storages/
 data/storages/*
 #  .gitkeep
@@ -63,6 +71,7 @@ models/Conan-embedding-v1/*
 # Logs
 *.log
 logs/
+import.log
 
 # OS
 Thumbs.db
@@ -112,3 +121,4 @@ test_qwq_response.py
 node-v20.7.0-linux-x64
 node-v20.7.0-linux-x64.tar.xz
 知识库文件.zip
+*.zip

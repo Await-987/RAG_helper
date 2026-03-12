@@ -1,0 +1,24 @@
+# Backend-specific requirements
+# These are in addition to the main project requirements
+
+# FastAPI framework
+fastapi>=0.109.0
+
+# ASGI server
+uvicorn[standard]>=0.27.0
+
+# SSE support for streaming
+sse-starlette>=2.0.0
+
+# JWT authentication
+PyJWT>=2.8.0
+passlib[bcrypt]>=1.7.4
+
+# Pydantic settings
+pydantic-settings>=2.1.0
+
+# These are already in main requirements.txt but listed here for reference:
+# - python-dotenv
+# - python-multipart
+# - pydantic
+# - loguru
