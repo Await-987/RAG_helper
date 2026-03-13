@@ -112,16 +112,26 @@ class DatabaseToolkit(BaseToolkit):
             kept = hits_sorted[:min_results]
         return kept[:max_results]
 
-    def _rerank(self, query: str, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _rerank(self, query: str, hits: List[Dict[str, Any]], intent_description: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Rerank by CrossEncoder if available.
         We normalize rerank scores to 0~1 and overwrite hit['score'] for final sorting.
 
         @shengwanying：20260306修改：rerank用子chunk，精度更高
+        @shengwanying：20260313修改：支持用意图描述进行重排，而不是简化后的query
+        
+        Args:
+            query: 简化后的搜索query（用于日志）
+            hits: 候选结果列表
+            intent_description: 用户真实意图的完整描述（用于重排），消除代词、补全背景主体
+                如果为None则使用query
         """
         reranker = self._get_reranker()
         if reranker is None or not hits:
             return hits
+
+        # 使用意图描述进行重排，如果没有则使用query
+        rerank_text = intent_description if intent_description else query
 
         pairs = []
         valid_hits = []
@@ -142,7 +152,7 @@ class DatabaseToolkit(BaseToolkit):
             content = content.strip()
             if not content:
                 continue
-            pairs.append((query, content))
+            pairs.append((rerank_text, content))
             valid_hits.append(h)
 
         if not valid_hits:
@@ -232,9 +242,28 @@ class DatabaseToolkit(BaseToolkit):
         )
         return selected
 
-    def search_database(
+    def search_database(self, query: str, intent_description: Optional[str] = None, **kwargs) -> str:
+        """检索本地电力系统知识库的工具。
+        Agent-friendly entrypoint：仅需传入 query 和 intent_description。
+        
+        Args:
+            query: 简化后的搜索query（3-8个核心关键词，用于向量检索）
+            intent_description: 用户真实意图的完整描述（用于重排序，消除代词、补全背景主体）
+                应该是一个完整的自然语言句子，最接近用户的真实意图。
+                如果为None，重排序将使用query。建议总是传入意图描述以获得更好的重排准确性。
+        
+        Returns:
+            格式化的搜索结果字符串
+        
+        Note:
+            其他参数（如 top_k、max_results 等）使用默认值，无需传入。
+        """
+        return self._search_database(query=query, intent_description=intent_description, **kwargs)
+
+    def _search_database(
         self,
         query: str,
+        intent_description: Optional[str] = None,
         top_k: int = 8,
         *,
         # ---- new knobs (all optional; keep old usage compatible) ----
@@ -292,10 +321,10 @@ class DatabaseToolkit(BaseToolkit):
         _log_search(f"\n{'='*60}")
         _log_search(f"🔍 [搜索工具被调用]")
         _log_search(f"   query: '{query[:80]}{'...' if len(query) > 80 else ''}'")
+        if intent_description:
+            _log_search(f"   intent_description: '{intent_description[:80]}{'...' if len(intent_description) > 80 else ''}'")
         _log_search(
-            f"   参数: top_k={top_k}, candidate_top_k={candidate_top_k}, "
-            f"full_chunk_limit={full_chunk_limit}, hybrid={use_hybrid}, "
-            f"rerank={use_rerank}, dynamic={dynamic_topk}, alpha={alpha}"
+            f"   配置: hybrid={use_hybrid}, rerank={use_rerank}, dynamic={dynamic_topk}, alpha={alpha}"
         )
         _log_search(
             f"   预算: max_total_chars={max_total_chars}, "
@@ -333,7 +362,7 @@ class DatabaseToolkit(BaseToolkit):
         # 2) rerank (optional)
         if use_rerank:
             _log_search(f"🔄 执行重排序 (reranker)...")
-            hits = self._rerank(query, hits)
+            hits = self._rerank(query, hits, intent_description=intent_description)
 
             # 3) dynamic threshold cut should use final scores (after rerank)
             if dynamic_topk:
