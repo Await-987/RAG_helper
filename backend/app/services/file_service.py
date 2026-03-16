@@ -332,10 +332,12 @@ class FileService:
         return self._tag_to_path(file_tag)
 
     def _sanitize_filename(self, filename: str) -> str:
-        """Sanitize filename for safe storage"""
-        # Remove path separators
+        """支持中文、数字、字母及常用符号的文件名清洗逻辑"""
+        import re
         filename = os.path.basename(filename)
-        # Keep only safe characters
-        safe_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")
-        sanitized = "".join(c if c in safe_chars else "_" for c in filename)
+        illegal_chars = r'[\\/:*?"<>|]'
+        sanitized = re.sub(illegal_chars, "_", filename)
+        sanitized = "".join(c for c in sanitized if c.isprintable()).strip(" .")
+        sanitized = re.sub(r'_+', '_', sanitized)
+        
         return sanitized or "unnamed_file"
