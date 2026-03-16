@@ -1,4 +1,5 @@
 import api from './client';
+import { getAccessToken } from '@/utils/authToken';
 import type {
   FileListResponse,
   FileUploadResponse,
@@ -73,7 +74,7 @@ export const fileApi = {
       .join('/')}`,
 
   fetchContentBlobUrl: async (fileTag: string): Promise<string> => {
-    const token = localStorage.getItem('access_token');
+    const token = getAccessToken();
     const response = await fetch(fileApi.getContentUrl(fileTag), {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });

@@ -2,6 +2,7 @@
 Configuration management for the FastAPI backend.
 """
 import os
+import uuid
 from pathlib import Path
 from typing import Optional
 from pydantic_settings import BaseSettings
@@ -26,6 +27,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-change-in-production")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
+    AUTH_INSTANCE_ID: str = os.getenv("AUTH_INSTANCE_ID", uuid.uuid4().hex)
 
     # CORS settings
     CORS_ORIGINS: list[str] = ["*"]

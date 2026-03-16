@@ -4,6 +4,7 @@ import type {
   ChatSessionListResponse,
   SSEEvent,
 } from '@/types';
+import { getAccessToken } from '@/utils/authToken';
 
 const API_BASE_URL = '/api/v1';
 
@@ -114,7 +115,7 @@ export const chatApi = {
   },
 
   clearSession: async (sessionId: string): Promise<void> => {
-    const token = localStorage.getItem('access_token');
+    const token = getAccessToken();
     const response = await fetch(`${API_BASE_URL}/chat/session/${sessionId}`, {
       method: 'DELETE',
       headers: {
@@ -128,7 +129,7 @@ export const chatApi = {
   },
 
   listSessions: async (): Promise<ChatSessionListResponse> => {
-    const token = localStorage.getItem('access_token');
+    const token = getAccessToken();
     const response = await fetch(`${API_BASE_URL}/chat/sessions`, {
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
@@ -143,7 +144,7 @@ export const chatApi = {
   },
 
   getSessionDetail: async (sessionId: string): Promise<ChatSessionDetailResponse> => {
-    const token = localStorage.getItem('access_token');
+    const token = getAccessToken();
     const response = await fetch(`${API_BASE_URL}/chat/session/${sessionId}`, {
       headers: {
         ...(token ? { Authorization: `Bearer ${token}` } : {}),

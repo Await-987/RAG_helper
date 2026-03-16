@@ -5,6 +5,7 @@ import { Send, Loader2, Trash2, MessageSquare } from 'lucide-react';
 import { MessageItem } from '@/components/Chat';
 import { StreamingMessage } from '@/components/Chat';
 import type { ChatMessage, ChatSessionSummary } from '@/types';
+import { getAccessToken } from '@/utils/authToken';
 
 function normalizeMessage(message: ChatMessage | {
   role: 'user' | 'assistant';
@@ -124,7 +125,7 @@ export function ChatPage() {
     clearStreaming();
 
     try {
-      const token = localStorage.getItem('access_token') || undefined;
+      const token = getAccessToken() || undefined;
 
       // Create assistant message placeholder
       let assistantContent = '';

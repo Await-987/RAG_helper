@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { resolveKnowledgeBaseAssetUrl } from './utils';
+import { getAccessToken } from '@/utils/authToken';
 
 interface AuthenticatedImageProps {
   src?: string;
@@ -44,7 +45,7 @@ export function AuthenticatedImage({
 
     const loadImage = async () => {
       try {
-        const token = localStorage.getItem('access_token');
+        const token = getAccessToken();
         const response = await fetch(normalizedSrc, {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         });

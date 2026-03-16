@@ -33,7 +33,8 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
     to_encode.update({
         "exp": expire,
-        "iat": datetime.utcnow()
+        "iat": datetime.utcnow(),
+        "auth_instance_id": settings.AUTH_INSTANCE_ID,
     })
 
     encoded_jwt = jwt.encode(
@@ -61,6 +62,8 @@ def verify_token(token: str) -> Optional[dict]:
             settings.SECRET_KEY,
             algorithms=[settings.ALGORITHM]
         )
+        if payload.get("auth_instance_id") != settings.AUTH_INSTANCE_ID:
+            return None
         return payload
     except jwt.ExpiredSignatureError:
         return None

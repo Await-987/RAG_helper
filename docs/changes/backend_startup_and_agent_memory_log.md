@@ -104,6 +104,33 @@
 - 如果该用户当前还有活跃会话在后端内存中，也会同步清理对应 session。
 - 这样用户被删除后，本地对话历史、memory 快照和活跃会话状态都会统一回收，避免残留孤儿数据。
 
+### 6. 登录态改为更鲁棒的会话校验
+
+涉及文件：
+
+- `backend/app/config.py`
+- `backend/app/core/security.py`
+- `frontend/src/stores/authStore.ts`
+- `frontend/src/api/client.ts`
+- `frontend/src/api/chat.ts`
+- `frontend/src/api/files.ts`
+- `frontend/src/components/Chat/AuthenticatedImage.tsx`
+- `frontend/src/pages/Chat.tsx`
+- `frontend/src/utils/authToken.ts`
+
+具体改动：
+
+- 后端 JWT 新增 `auth_instance_id` 绑定当前后端实例。
+- 后端重启后会生成新的 `AUTH_INSTANCE_ID`，旧 token 将自动失效。
+- 前端 token 存储从 `localStorage` 改为 `sessionStorage`，降低长期残留登录态的风险。
+- 前端不再持久化 `user`、`isAuthenticated` 这类派生状态，而是在启动时用当前 token 实时校验 `/auth/me`。
+- 统一抽出了 `authToken` 工具，避免不同模块混用不同存储逻辑。
+
+结果：
+
+- 后端重启后，旧登录态不会再继续“无感复活”。
+- 前端刷新时会以当前 token 的实时校验结果为准，而不是直接相信上一次保存在本地的已登录状态。
+
 ### 2. Agent 接入 CAMEL Long-Term Memory
 
 涉及文件：
