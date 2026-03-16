@@ -92,6 +92,7 @@ async def get_file_content(
     Serve a stored file or generated image for preview/download.
 
     - **file_tag**: Relative storage path such as `data/stored_files/a.pdf`
+      or `shared-files/stored_files/a.pdf`
       or `mineru_output/example.jpg`
     """
     file_path = file_service.get_file_path(file_tag)

@@ -25,6 +25,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from tools.file_manager_ui import batch_import_files
 from loguru import logger
+from storage_paths import STORED_FILES_DIR
 
 
 def get_all_pdf_files(storage_dir: Path) -> list:
@@ -74,7 +75,7 @@ def main():
     logger.info(f"=== 批量导入开始 {start_time.strftime('%Y-%m-%d %H:%M:%S')} ===")
 
     # 存储目录
-    storage_dir = PROJECT_ROOT / "data" / "stored_files"
+    storage_dir = STORED_FILES_DIR
 
     # 获取所有 PDF 文件
     all_files = get_all_pdf_files(storage_dir)

@@ -17,6 +17,9 @@ passlib[bcrypt]>=1.7.4
 # Pydantic settings
 pydantic-settings>=2.1.0
 
+# Redis session store
+redis>=5.2.0
+
 # These are already in main requirements.txt but listed here for reference:
 # - python-dotenv
 # - python-multipart

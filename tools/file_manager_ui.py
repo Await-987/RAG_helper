@@ -7,11 +7,15 @@ import streamlit as st
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional
 from loguru import logger
+from storage_paths import (
+    PROJECT_ROOT as APP_PROJECT_ROOT,
+    MINERU_OUTPUT_DIR as APP_MINERU_OUTPUT_DIR,
+    project_relative_path,
+)
 
 # 获取项目根目录（与 load_files.py 保持一致）
-PROJECT_ROOT = Path(__file__).absolute().parent.parent
-# 图片存储目录
-MINERU_OUTPUT_DIR = PROJECT_ROOT / "data" / "stored_files" / "mineru_output"
+PROJECT_ROOT = APP_PROJECT_ROOT
+MINERU_OUTPUT_DIR = APP_MINERU_OUTPUT_DIR
 
 
 def delete_images_by_document_prefix(document_name: str, output_dir: Path = None) -> Tuple[int, List[str]]:
@@ -90,9 +94,8 @@ def _get_file_tag(file_path: Path) -> str:
 
     # 如果是绝对路径，转换为相对路径
     try:
-        return file_path.relative_to(PROJECT_ROOT).as_posix()
-    except ValueError:
-        # 如果不在 PROJECT_ROOT 下，返回原路径的 POSIX 格式
+        return project_relative_path(file_path)
+    except Exception:
         return file_path.as_posix()
 
 

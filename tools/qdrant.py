@@ -21,6 +21,46 @@ sys.path.insert(0, str(BASE_DIR))
 load_dotenv()
 
 
+def _resolve_path(path_value: str) -> Path:
+    path = Path(path_value)
+    if path.is_absolute():
+        return path
+    return BASE_DIR / path
+
+
+def _get_qdrant_runtime_config() -> Dict[str, Any]:
+    mode = os.getenv("QDRANT_MODE", "local").strip().lower()
+    if mode not in {"local", "server"}:
+        raise ValueError("QDRANT_MODE must be either 'local' or 'server'")
+
+    local_path = _resolve_path(os.getenv("QDRANT_LOCAL_PATH", "data/storages"))
+    lex_index_dir = _resolve_path(os.getenv("QDRANT_LEXICAL_INDEX_DIR", "data/lex_index"))
+    url = os.getenv("QDRANT_URL", "").strip()
+    api_key = os.getenv("QDRANT_API_KEY", "").strip()
+    timeout = int(os.getenv("QDRANT_TIMEOUT_SEC", "30"))
+    retries_default = "10" if mode == "server" else "1"
+    init_retries = max(1, int(os.getenv("QDRANT_INIT_RETRIES", retries_default)))
+    init_delay = max(0.5, float(os.getenv("QDRANT_INIT_DELAY_SEC", "3")))
+
+    if mode == "server" and not url:
+        raise ValueError("QDRANT_URL is required when QDRANT_MODE=server")
+
+    if mode == "local":
+        local_path.mkdir(parents=True, exist_ok=True)
+    lex_index_dir.mkdir(parents=True, exist_ok=True)
+
+    return {
+        "mode": mode,
+        "local_path": local_path,
+        "lex_index_dir": lex_index_dir,
+        "url": url,
+        "api_key": api_key or None,
+        "timeout": timeout,
+        "init_retries": init_retries,
+        "init_delay": init_delay,
+    }
+
+
 @dataclass
 class QdrantDB_Init:
     collection_name: str = None
@@ -46,10 +86,6 @@ class QdrantDB:
     _RE_ZH_SEQ = re.compile(r"[\u4e00-\u9fff]+")
 
     def __init__(self, input: QdrantDB_Init):
-        storages_dir = os.path.join(BASE_DIR, "data", "storages")
-        os.makedirs(storages_dir, exist_ok=True)
-        self.storage_path = storages_dir
-
         try:
             from agents.backend_model import backend_embedding_model
             self.embedding_instance = backend_embedding_model()
@@ -57,25 +93,81 @@ class QdrantDB:
             raise Exception(f"Failed to initialize embedding model via API: {e}")
 
         self.collection_name = input.collection_name
+        self.runtime_config = _get_qdrant_runtime_config()
+        self.storage_mode = self.runtime_config["mode"]
+        self.storage_path = str(self.runtime_config["local_path"])
 
         # --- 实例级别词汇索引缓存（随实例持久化，适合 Streamlit @st.cache_resource）---
         # 格式: {"index": dict, "point_count": int, "build_time": float, "collection_name": str}
         self._lex_index_cache: Dict[str, Any] = {}
 
         # --- 词汇索引持久化路径 ---
-        self._lex_index_dir = Path(self.storage_path) / "lex_index"
-        self._lex_index_dir.mkdir(exist_ok=True)
+        self._lex_index_dir = self.runtime_config["lex_index_dir"]
         self._lex_index_file = self._lex_index_dir / f"{self.collection_name}_lex_index.pkl"
 
         try:
             vector_dim = self.embedding_instance.get_output_dim()
-            self.storage_instance = QdrantStorage(
-                vector_dim=vector_dim,
-                path=self.storage_path,
-                collection_name=self.collection_name
-            )
+            self.storage_instance = self._create_storage_instance(vector_dim)
         except Exception as e:
             raise Exception(f"QdrantStorage initialization failed: {e}")
+
+    def _create_storage_instance(self, vector_dim: int) -> QdrantStorage:
+        retries = self.runtime_config["init_retries"]
+        delay = self.runtime_config["init_delay"]
+        last_error = None
+
+        for attempt in range(1, retries + 1):
+            try:
+                if self.storage_mode == "server":
+                    storage = QdrantStorage(
+                        vector_dim=vector_dim,
+                        url_and_api_key=(
+                            self.runtime_config["url"],
+                            self.runtime_config["api_key"],
+                        ),
+                        collection_name=self.collection_name,
+                        timeout=self.runtime_config["timeout"],
+                    )
+                    logger.info(
+                        "Initialized Qdrant server connection | url={} collection={} attempt={}/{}",
+                        self.runtime_config["url"],
+                        self.collection_name,
+                        attempt,
+                        retries,
+                    )
+                    return storage
+
+                storage = QdrantStorage(
+                    vector_dim=vector_dim,
+                    path=self.storage_path,
+                    collection_name=self.collection_name,
+                    timeout=self.runtime_config["timeout"],
+                )
+                logger.info(
+                    "Initialized local Qdrant storage | path={} collection={}",
+                    self.storage_path,
+                    self.collection_name,
+                )
+                return storage
+            except Exception as exc:
+                last_error = exc
+                if attempt >= retries:
+                    break
+                logger.warning(
+                    "Qdrant init failed | mode={} target={} collection={} attempt={}/{} error={}",
+                    self.storage_mode,
+                    self.runtime_config["url"] if self.storage_mode == "server" else self.storage_path,
+                    self.collection_name,
+                    attempt,
+                    retries,
+                    exc,
+                )
+                time.sleep(delay)
+
+        raise RuntimeError(
+            "Unable to initialize Qdrant storage "
+            f"(mode={self.storage_mode}, collection={self.collection_name})"
+        ) from last_error
 
     def close(self):
         """close qdrant client"""
@@ -310,6 +402,7 @@ class QdrantDB:
         if not self._lex_index_cache:
             return
         try:
+            self._lex_index_dir.mkdir(parents=True, exist_ok=True)
             with open(self._lex_index_file, 'wb') as f:
                 pickle.dump(self._lex_index_cache, f)
             logger.debug(f"词汇索引已保存到磁盘: {self._lex_index_file}")

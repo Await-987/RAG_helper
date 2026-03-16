@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from storage_paths import STORED_FILES_DIR
 
 absolute_path = Path(__file__).absolute().parent.parent
 mineru_path = absolute_path / "config" / "mineru.json"
@@ -92,10 +93,7 @@ class MineruPathManager:
         Returns:
             str: 默认基础目录的路径字符串
         """
-        current_file = Path(__file__).absolute()
-        project_root_dir = current_file.parent.parent
-        data_dir = os.path.join(project_root_dir, "data", "stored_files")
-        return str(data_dir)
+        return str(STORED_FILES_DIR)
 
     @staticmethod
     def _ensure_dir_exists(dir_path):

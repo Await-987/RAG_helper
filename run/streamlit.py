@@ -22,6 +22,11 @@ logger.add(
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
+from storage_paths import (
+    STORED_FILES_DIR as APP_STORED_FILES_DIR,
+    MINERU_OUTPUT_DIR as APP_MINERU_OUTPUT_DIR,
+)
+
 from tools import load_multiple_files, load_multiple_files_parallel
 from tools import file_manager_ui
 from tools import user_auth
@@ -111,11 +116,11 @@ st.markdown(layout, unsafe_allow_html=True)
 # 初始化 session state
 init_session_state()
 
-STORAGE_DIR = project_root / "data" / "stored_files"
+STORAGE_DIR = APP_STORED_FILES_DIR
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 # 图片存储目录（mineru 输出）
-MINERU_OUTPUT_DIR = project_root / "data" / "mineru_output"
+MINERU_OUTPUT_DIR = APP_MINERU_OUTPUT_DIR
 
 
 def safe_html(content: str) -> str:

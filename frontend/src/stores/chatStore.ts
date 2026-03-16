@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { ChatMessage, ChatState } from '@/types';
+import type { ChatContentBlock, ChatMessage, ChatState } from '@/types';
 
 interface ChatStore extends ChatState {
   addMessage: (message: ChatMessage) => void;
@@ -63,11 +63,15 @@ export const useChatStore = create<ChatStore>((set) => ({
 export const createMessage = (
   role: 'user' | 'assistant',
   content: string,
-  reasoning?: string
+  reasoning?: string,
+  blocks?: ChatContentBlock[],
+  reasoningBlocks?: ChatContentBlock[],
 ): ChatMessage => ({
   id: generateId(),
   role,
   content,
+  blocks,
   reasoning,
+  reasoningBlocks,
   timestamp: new Date(),
 });

@@ -60,7 +60,7 @@
 
   /* Message bubble styles */
   .message-bubble {
-    @apply rounded-2xl px-4 py-3 max-w-[80%] break-words;
+    @apply rounded-2xl px-4 py-3 max-w-[80%] break-words overflow-hidden;
   }
 
   .message-bubble-user {
@@ -73,7 +73,8 @@
 
   /* Reasoning block */
   .reasoning-block {
-    @apply bg-dark-hover rounded-lg p-3 mb-3 text-sm text-gray-400 border-l-2 border-primary-500;
+    @apply bg-dark-hover rounded-lg p-3 mb-3 text-sm text-gray-400 border-l-2 border-primary-500 overflow-y-auto;
+    max-height: min(60vh, 720px);
   }
 
   /* Input styles */
@@ -125,9 +126,37 @@
   font-size: 1.1em !important;
 }
 
+.markdown-content .katex-display {
+  margin: 0.75rem 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 0.25rem;
+}
+
+.markdown-content .katex-display > .katex {
+  white-space: nowrap;
+}
+
+.markdown-content .katex-error {
+  display: inline;
+  color: #fca5a5;
+  white-space: normal;
+  word-break: break-word;
+}
+
 /* Markdown content styles */
 .markdown-content {
   @apply text-gray-100 leading-relaxed;
+  overflow-wrap: anywhere;
+}
+
+.chat-block-shell {
+  margin: 0.75rem 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  contain: layout paint;
 }
 
 .markdown-content h1,
@@ -150,6 +179,10 @@
 
 .markdown-content p {
   @apply mb-3;
+}
+
+.markdown-content p:empty {
+  display: none;
 }
 
 .markdown-content ul,

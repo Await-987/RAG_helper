@@ -1,8 +1,15 @@
+export interface ChatContentBlock {
+  type: 'markdown' | 'math' | 'table' | 'code';
+  content: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  blocks?: ChatContentBlock[];
   reasoning?: string;
+  reasoningBlocks?: ChatContentBlock[];
   timestamp: Date;
 }
 
@@ -27,7 +34,9 @@ export interface ChatSessionDetailResponse {
   messages: Array<{
     role: 'user' | 'assistant';
     content: string;
+    blocks?: ChatContentBlock[] | null;
     reasoning?: string | null;
+    reasoning_blocks?: ChatContentBlock[] | null;
     timestamp: string;
   }>;
 }
@@ -40,8 +49,10 @@ export interface ChatRequest {
 export interface SSEEvent {
   type: 'session' | 'reasoning' | 'content' | 'done' | 'error';
   content?: string;
+  blocks?: ChatContentBlock[];
   full?: string;
   reasoning?: string;
+  reasoning_blocks?: ChatContentBlock[];
   session_id?: string;
   message?: string;
 }

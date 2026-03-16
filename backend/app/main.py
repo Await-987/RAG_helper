@@ -44,8 +44,10 @@ async def lifespan(app: FastAPI):
     print("Shutting down application...")
     # Cleanup resources if needed
     from app.dependencies import cleanup_database_toolkit, cleanup_table_summary_model
+    from app.core.redis_client import cleanup_redis_client
     cleanup_database_toolkit()
     cleanup_table_summary_model()
+    cleanup_redis_client()
     print("Application shutdown complete.")
 
 

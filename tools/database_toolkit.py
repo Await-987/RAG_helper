@@ -1,5 +1,6 @@
 import sys
 import re
+from contextvars import ContextVar
 from loguru import logger
 from typing import List, Optional, Any, Dict
 
@@ -12,6 +13,12 @@ def _log_search(msg: str):
     logger.info(msg)
     print(msg)
     sys.stdout.flush()
+
+
+_turn_seen_evidence_keys: ContextVar[Optional[set[str]]] = ContextVar(
+    "turn_seen_evidence_keys",
+    default=None,
+)
 
 
 class DatabaseToolkit(BaseToolkit):
@@ -71,6 +78,14 @@ class DatabaseToolkit(BaseToolkit):
         """Close the database connection"""
         if hasattr(self, 'db'):
             self.db.close()
+
+    def begin_turn(self) -> None:
+        """Start per-turn evidence dedup state."""
+        _turn_seen_evidence_keys.set(set())
+
+    def end_turn(self) -> None:
+        """Clear per-turn evidence dedup state."""
+        _turn_seen_evidence_keys.set(None)
 
     def __enter__(self):
         return self
@@ -226,6 +241,18 @@ class DatabaseToolkit(BaseToolkit):
         return f"{source}::{content}"
 
     @classmethod
+    def _hit_evidence_key(cls, hit: Dict[str, Any]) -> str:
+        payload = hit.get("payload", {}) or {}
+        metadata = payload.get("metadata", {}) or {}
+        source = str(payload.get("Original_file", ""))
+        page = metadata.get("page") or payload.get("page") or ""
+        chunk_index = metadata.get("chunk_index")
+        content = payload.get("Content", "") or payload.get("content", "")
+        if isinstance(chunk_index, int):
+            return f"{source}::page={page}::chunk={chunk_index}"
+        return f"{source}::{content}"
+
+    @classmethod
     def _hit_has_numeric_content(cls, hit: Dict[str, Any]) -> bool:
         payload = hit.get("payload", {}) or {}
         metadata = payload.get("metadata", {}) or {}
@@ -326,6 +353,25 @@ class DatabaseToolkit(BaseToolkit):
         expanded_payload["neighbor_expanded"] = True
         expanded["payload"] = expanded_payload
         return expanded
+
+    def _filter_seen_turn_evidence(self, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        seen_keys = _turn_seen_evidence_keys.get()
+        if seen_keys is None:
+            return hits
+
+        fresh_hits: List[Dict[str, Any]] = []
+        for hit in hits:
+            evidence_key = self._hit_evidence_key(hit)
+            if evidence_key in seen_keys:
+                continue
+            fresh_hits.append(hit)
+
+        if fresh_hits:
+            for hit in fresh_hits:
+                seen_keys.add(self._hit_evidence_key(hit))
+            return fresh_hits
+
+        return []
 
     def _select_full_chunk_hits(
         self,
@@ -522,6 +568,10 @@ class DatabaseToolkit(BaseToolkit):
             max_total_chars=max_total_chars,
             max_chars_per_chunk=max_chars_per_chunk,
         )
+        hits = self._filter_seen_turn_evidence(hits)
+        if not hits:
+            _log_search("♻️ 本轮后续检索未发现新增证据，已过滤重复结果")
+            return "No new results from the vector database in this turn."
 
         _log_search(f"✅ 搜索完成: 最终返回 {len(hits)} 条完整原文结果")
 

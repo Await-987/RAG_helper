@@ -1,39 +1,86 @@
-version: '3.8'
-
 services:
-  rag-app:
+  redis:
+    image: redis:7-alpine
+    container_name: rag-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    expose:
+      - "6379"
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: rag-qdrant
+    expose:
+      - "6333"
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+    restart: unless-stopped
+
+  backend:
     build:
       context: .
-      dockerfile: Dockerfile
-    
-    container_name: rag-chatbot
-    
-    ports:
-      - "8501:8501"
-    
+      dockerfile: Dockerfile.backend
+    container_name: rag-backend
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    env_file:
+      - .env
     volumes:
-      # 业务数据目录
       - ./data:/app/data
-      # 用户数据目录（隐藏）
       - ./.user:/app/.user
-      # 模型目录
       - ./models:/app/models
-      # 环境配置
-      - ./.env:/app/.env
-    
     environment:
-      - STREAMLIT_SERVER_PORT=8501
-      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
-      - PYTHONUNBUFFERED=1
-    
+      PYTHONUNBUFFERED: "1"
+      BACKEND_WORKERS: "${BACKEND_WORKERS:-1}"
+      SHARED_STORAGE_ROOT: "data"
+      QDRANT_MODE: "server"
+      QDRANT_URL: "http://qdrant:6333"
+      QDRANT_LEXICAL_INDEX_DIR: "data/lex_index"
+      QDRANT_INIT_RETRIES: "${QDRANT_INIT_RETRIES:-20}"
+      QDRANT_INIT_DELAY_SEC: "${QDRANT_INIT_DELAY_SEC:-3}"
+      REDIS_URL: "redis://redis:6379/0"
+      REDIS_PREFIX: "${REDIS_PREFIX:-rag}"
+    expose:
+      - "8000"
+    init: true
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
     restart: unless-stopped
-    
-    # 可选：资源限制（根据你的机器配置调整）
-    # deploy:
-    #   resources:
-    #     limits:
-    #       cpus: '4'
-    #       memory: 8G
-    #     reservations:
-    #       cpus: '2'
-    #       memory: 4G
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: rag-web
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-8080}:80"
+    environment:
+      NGINX_ENTRYPOINT_QUIET_LOGS: "1"
+    init: true
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped

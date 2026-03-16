@@ -6,14 +6,13 @@ from tools import MineruComponent
 from tools.qdrant import QdrantDB, QdrantDB_Init, save2Qdrant_Input
 from typing import *
 from loguru import logger
+from storage_paths import PROJECT_ROOT, STORED_FILES_DIR, MINERU_OUTPUT_DIR, project_relative_path
 
 mineru_tool = MineruComponent()
 from pathlib import Path
 
 # 获取项目根目录和图片存储路径
-project_root = Path(__file__).absolute().parent.parent
-# 图片存储在 data/stored_files/mineru_output 下
-MINERU_OUTPUT_DIR = project_root / "data" / "stored_files" / "mineru_output"
+project_root = PROJECT_ROOT
 
 
 # ==================== 图片重命名相关函数 ====================
@@ -966,10 +965,10 @@ def load_and_store_file(
     # load_files.py 在 tools/ 目录下，需要向上两级到达项目根目录
     project_root = Path(__file__).absolute().parent.parent
     file_name = os.path.basename(file_path)
-    file_path = project_root / "data" / "stored_files" / file_name
+    file_path = STORED_FILES_DIR / file_name
 
     # 确保 stored_files 目录存在
-    (project_root / "data" / "stored_files").mkdir(parents=True, exist_ok=True)
+    STORED_FILES_DIR.mkdir(parents=True, exist_ok=True)
 
     # @luxinrong：20260303修改：支持混合模式
     if backend == "both":
@@ -1032,7 +1031,7 @@ def load_and_store_file(
     db = QdrantDB(input=qdrant_init)
     # @shengwanying：20260306修改：使用相对路径，确保跨平台兼容
     # 相对于项目根目录的路径，便于在不同平台间迁移数据
-    file_relative_path = (file_path.relative_to(project_root)).as_posix()
+    file_relative_path = project_relative_path(file_path)
     file_tag = file_relative_path
     print(f"[DEBUG] file_tag (相对路径) = {file_tag}")
 
@@ -1143,10 +1142,10 @@ def _process_single_file(args):
         # 获取项目根目录和文件路径
         project_root = Path(__file__).absolute().parent.parent
         file_name = os.path.basename(file_path)
-        file_path_full = project_root / "data" / "stored_files" / file_name
+        file_path_full = STORED_FILES_DIR / file_name
 
         # 确保 stored_files 目录存在
-        (project_root / "data" / "stored_files").mkdir(parents=True, exist_ok=True)
+        STORED_FILES_DIR.mkdir(parents=True, exist_ok=True)
 
         # 调用mineru处理
         recognized_text = mineru_tool_local.run(
@@ -1183,7 +1182,7 @@ def _process_single_file(args):
         db = QdrantDB(input=qdrant_init)
 
         # @shengwanying：20260306修改：使用相对路径，确保跨平台兼容
-        file_tag = (file_path_full.relative_to(project_root)).as_posix()
+        file_tag = project_relative_path(file_path_full)
 
         # 收集所有类型用于 meta_data
         all_types = list(set(t for chunk in chunks for t in chunk.get('types', [])))

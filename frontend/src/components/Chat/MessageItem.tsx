@@ -1,30 +1,16 @@
-import { useState } from 'react';
-import type { ComponentPropsWithoutRef } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkMath from 'remark-math';
-import remarkGfm from 'remark-gfm';
-import rehypeKatex from 'rehype-katex';
-import rehypeRaw from 'rehype-raw';
+import { memo, useState } from 'react';
 import type { ChatMessage } from '@/types';
 import { User, Bot, ChevronDown, ChevronUp, Copy, Check, Image as ImageIcon } from 'lucide-react';
 import clsx from 'clsx';
 import { AuthenticatedImage } from './AuthenticatedImage';
-import { extractImageReferences, normalizeChatMarkdown, stripImageReferences } from './markdown';
-
-import 'katex/dist/katex.min.css';
-
-type TableProps = ComponentPropsWithoutRef<'table'>;
-type TableSectionProps = ComponentPropsWithoutRef<'thead'>;
-type TableBodyProps = ComponentPropsWithoutRef<'tbody'>;
-type TableRowProps = ComponentPropsWithoutRef<'tr'>;
-type TableCellProps = ComponentPropsWithoutRef<'th'>;
-type TableDataCellProps = ComponentPropsWithoutRef<'td'>;
+import { ChatContent } from './ChatContent';
+import { extractImageReferences, stripImageReferences } from './markdown';
 
 interface MessageItemProps {
   message: ChatMessage;
 }
 
-export function MessageItem({ message }: MessageItemProps) {
+export const MessageItem = memo(function MessageItem({ message }: MessageItemProps) {
   const [showReasoning, setShowReasoning] = useState(false);
   const [showAttachments, setShowAttachments] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -32,7 +18,7 @@ export function MessageItem({ message }: MessageItemProps) {
   const hasReasoning = message.reasoning && message.reasoning.length > 0;
   const imageReferences = extractImageReferences(message.content);
   const hasAttachments = imageReferences.length > 0;
-  const markdownContent = normalizeChatMarkdown(stripImageReferences(message.content));
+  const contentWithoutImages = stripImageReferences(message.content);
 
   const handleCopy = async () => {
     try {
@@ -93,80 +79,19 @@ export function MessageItem({ message }: MessageItemProps) {
                 <span>思考过程</span>
               </button>
               {showReasoning && (
-                <div className="reasoning-block mt-2 whitespace-pre-wrap">
-                  {message.reasoning}
+                <div className="reasoning-block mt-2">
+                  <ChatContent
+                    content={message.reasoning || ''}
+                    blocks={message.reasoningBlocks}
+                    suppressImages
+                  />
                 </div>
               )}
             </div>
           )}
 
           {/* Main content */}
-          <div className="markdown-content">
-            <ReactMarkdown
-              remarkPlugins={[remarkMath, remarkGfm]}
-              rehypePlugins={[rehypeKatex, rehypeRaw]}
-              components={{
-                // Table styling
-                table: ({ children, ...props }: TableProps) => (
-                  <div className="overflow-x-auto my-3">
-                    <table {...props} className="min-w-full border-collapse text-sm">
-                      {children}
-                    </table>
-                  </div>
-                ),
-                thead: ({ children, ...props }: TableSectionProps) => (
-                  <thead {...props} className="bg-dark-hover text-gray-100">
-                    {children}
-                  </thead>
-                ),
-                tbody: ({ children, ...props }: TableBodyProps) => (
-                  <tbody {...props} className="divide-y divide-dark-border">
-                    {children}
-                  </tbody>
-                ),
-                tr: ({ children, ...props }: TableRowProps) => (
-                  <tr {...props} className="border-b border-dark-border align-top">
-                    {children}
-                  </tr>
-                ),
-                th: ({ children, ...props }: TableCellProps) => (
-                  <th
-                    {...props}
-                    className="border border-dark-border px-3 py-2 text-left font-semibold whitespace-nowrap"
-                  >
-                    {children}
-                  </th>
-                ),
-                td: ({ children, ...props }: TableDataCellProps) => (
-                  <td
-                    {...props}
-                    className="border border-dark-border px-3 py-2 align-top whitespace-pre-wrap"
-                  >
-                    {children}
-                  </td>
-                ),
-                // Code block styling
-                pre: ({ children }) => (
-                  <pre className="bg-dark-bg p-3 rounded-lg overflow-x-auto my-3 text-sm">
-                    {children}
-                  </pre>
-                ),
-                // Inline code styling
-                code: ({ className, children }) => {
-                  const isInline = !className;
-                  return isInline ? (
-                    <code className="bg-dark-hover px-1.5 py-0.5 rounded text-primary-400 text-sm">
-                      {children}
-                    </code>
-                  ) : (
-                    <code className={className}>{children}</code>
-                  );
-                },
-              }}
-            >
-              {markdownContent}
-            </ReactMarkdown>
-          </div>
+          <ChatContent content={contentWithoutImages} blocks={message.blocks} suppressImages />
 
           {!isUser && hasAttachments && (
             <div className="mt-3 rounded-xl border border-dark-border bg-dark-hover/40">
@@ -225,4 +150,4 @@ export function MessageItem({ message }: MessageItemProps) {
       </div>
     </div>
   );
-}
+});

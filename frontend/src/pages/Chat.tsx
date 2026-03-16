@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { startTransition, useEffect, useRef, useState } from 'react';
 import { useChatStore, createMessage } from '@/stores';
 import { chatApi } from '@/api';
 import { Send, Loader2, Trash2, MessageSquare } from 'lucide-react';
@@ -10,7 +10,9 @@ import { getAccessToken } from '@/utils/authToken';
 function normalizeMessage(message: ChatMessage | {
   role: 'user' | 'assistant';
   content: string;
+  blocks?: ChatMessage['blocks'] | null;
   reasoning?: string | null;
+  reasoning_blocks?: ChatMessage['reasoningBlocks'] | null;
   timestamp: string;
 }): ChatMessage {
   if ('id' in message) {
@@ -21,7 +23,9 @@ function normalizeMessage(message: ChatMessage | {
     id: `${message.role}-${message.timestamp}-${message.content.slice(0, 12)}`,
     role: message.role,
     content: message.content,
+    blocks: message.blocks || undefined,
     reasoning: message.reasoning || undefined,
+    reasoningBlocks: message.reasoning_blocks || undefined,
     timestamp: new Date(message.timestamp),
   };
 }
@@ -48,6 +52,46 @@ export function ChatPage() {
   const [isSessionsLoading, setIsSessionsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const streamingContentRef = useRef('');
+  const streamingReasoningRef = useRef('');
+  const streamingFlushHandleRef = useRef<number | null>(null);
+  const streamingDoneRef = useRef(false);
+
+  const scheduleStreamingFlush = () => {
+    if (streamingFlushHandleRef.current !== null) {
+      return;
+    }
+
+    streamingFlushHandleRef.current = window.setTimeout(() => {
+      streamingFlushHandleRef.current = null;
+      const nextContent = streamingContentRef.current;
+      const nextReasoning = streamingReasoningRef.current;
+
+      startTransition(() => {
+        updateStreamingContent(nextContent);
+        updateStreamingReasoning(nextReasoning);
+      });
+    }, 33);
+  };
+
+  const flushStreamingState = () => {
+    if (streamingFlushHandleRef.current !== null) {
+      window.clearTimeout(streamingFlushHandleRef.current);
+      streamingFlushHandleRef.current = null;
+    }
+
+    updateStreamingContent(streamingContentRef.current);
+    updateStreamingReasoning(streamingReasoningRef.current);
+  };
+
+  const resetStreamingBuffers = () => {
+    streamingContentRef.current = '';
+    streamingReasoningRef.current = '';
+    if (streamingFlushHandleRef.current !== null) {
+      window.clearTimeout(streamingFlushHandleRef.current);
+      streamingFlushHandleRef.current = null;
+    }
+  };
 
   const loadSessions = async (preferredSessionId?: string | null) => {
     setIsSessionsLoading(true);
@@ -100,6 +144,12 @@ export function ChatPage() {
     loadSessions();
   }, []);
 
+  useEffect(() => () => {
+    if (streamingFlushHandleRef.current !== null) {
+      window.clearTimeout(streamingFlushHandleRef.current);
+    }
+  }, []);
+
   // Listen for new chat event
   useEffect(() => {
     const handleNewChat = () => {
@@ -123,15 +173,13 @@ export function ChatPage() {
     setInput('');
     setLoading(true);
     clearStreaming();
+    streamingDoneRef.current = false;
+    resetStreamingBuffers();
 
     try {
       const token = getAccessToken() || undefined;
 
       // Create assistant message placeholder
-      let assistantContent = '';
-      let assistantReasoning = '';
-      let completed = false;
-
       // Stream chat response
       for await (const event of chatApi.streamChat(message, sessionId || undefined, token)) {
         switch (event.type) {
@@ -142,29 +190,34 @@ export function ChatPage() {
             break;
 
           case 'reasoning':
-            if (event.full) {
-              assistantReasoning = event.full;
-            } else if (event.content) {
-              assistantReasoning += event.content;
+            if (event.content) {
+              streamingReasoningRef.current += event.content;
+              scheduleStreamingFlush();
             }
-            updateStreamingReasoning(assistantReasoning);
             break;
 
           case 'content':
-            if (event.full) {
-              assistantContent = event.full;
-            } else if (event.content) {
-              assistantContent += event.content;
+            if (event.content) {
+              streamingContentRef.current += event.content;
+              scheduleStreamingFlush();
             }
-            updateStreamingContent(assistantContent);
             break;
 
           case 'done':
             // Final message
+            if (event.reasoning) {
+              streamingReasoningRef.current = event.reasoning;
+            }
+            if (event.content) {
+              streamingContentRef.current = event.content;
+            }
+            flushStreamingState();
             const assistantMessage = createMessage(
               'assistant',
-              event.content || assistantContent,
-              event.reasoning || assistantReasoning
+              streamingContentRef.current,
+              streamingReasoningRef.current || undefined,
+              event.blocks,
+              event.reasoning_blocks,
             );
             addMessage(assistantMessage);
             if (event.session_id) {
@@ -173,7 +226,8 @@ export function ChatPage() {
             clearStreaming();
             setLoading(false);
             loadSessions(event.session_id || sessionId);
-            completed = true;
+            streamingDoneRef.current = true;
+            resetStreamingBuffers();
             break;
 
           case 'error':
@@ -185,17 +239,20 @@ export function ChatPage() {
             clearStreaming();
             setLoading(false);
             loadSessions(sessionId);
-            completed = true;
+            streamingDoneRef.current = true;
+            resetStreamingBuffers();
             break;
         }
       }
 
-      if (!completed) {
-        const finalContent = assistantContent.trim() || '未收到完整响应，请重试。';
-        addMessage(createMessage('assistant', finalContent, assistantReasoning || undefined));
+      if (!streamingDoneRef.current) {
+        flushStreamingState();
+        const finalContent = streamingContentRef.current.trim() || '未收到完整响应，请重试。';
+        addMessage(createMessage('assistant', finalContent, streamingReasoningRef.current || undefined));
         clearStreaming();
         setLoading(false);
         loadSessions(sessionId);
+        resetStreamingBuffers();
       }
     } catch (error: any) {
       const errorMessage = createMessage(
@@ -205,6 +262,7 @@ export function ChatPage() {
       addMessage(errorMessage);
       clearStreaming();
       setLoading(false);
+      resetStreamingBuffers();
     } finally {
       setLoading(false);
     }
@@ -332,7 +390,7 @@ export function ChatPage() {
             <StreamingMessage
               content={streamingContent}
               reasoning={streamingReasoning}
-              isLoading={isLoading && !streamingContent && !streamingReasoning}
+              isLoading={isLoading}
             />
           )}
 

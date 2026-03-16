@@ -45,11 +45,7 @@ class UserService:
             from app.dependencies import get_chat_service
 
             chat_service = get_chat_service()
-            session_ids = [
-                session_id
-                for session_id, metadata in chat_service.session_manager._session_metadata.items()
-                if metadata.get("username") == username
-            ]
+            session_ids = chat_service.session_manager.list_session_ids_for_user(username)
             for session_id in session_ids:
                 chat_service.session_manager.clear_session(username, session_id)
             if session_ids:

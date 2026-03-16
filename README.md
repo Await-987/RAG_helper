@@ -6,7 +6,7 @@
 - `backend/`：FastAPI 后端，负责鉴权、会话、流式回答、文件服务接口
 - `tools/`、`agents/`、`config/`、`data/`、`models/`：前后端共享的知识库、解析、检索和模型资源
 
-项目内仍保留 `run/streamlit.py` 作为旧入口，但不再是推荐主路径。后续如果继续演进，建议以前后端分离版本为准。
+项目历史上保留过 `run/streamlit.py` 旧入口，但当前部署主线已经统一为前后端分离架构。
 
 ## 1. 项目概览
 
@@ -24,144 +24,225 @@
 - 支持图片与表格证据回溯
 - 支持流式回答
 - 支持用户鉴权与管理员文件管理
-- 兼容旧版 Streamlit 入口
+- 当前部署统一走前后端分离入口
 
 ## 2. 当前架构
 
-### 2.1 主线架构
+### 2.1 总体拓扑
+
+当前主线由四类组件组成：
+
+- `frontend`：React + Vite 前端，负责页面、登录态、聊天 UI、文件管理 UI
+- `backend`：FastAPI 后端，负责鉴权、会话、SSE 流式问答、文件接口
+- `qdrant`：向量库服务，负责持久化向量、payload 和相似度检索
+- `redis`：会话索引与元数据服务，负责会话列表、标题、最近活跃时间、消息数
+
+运行拓扑如下：
 
 ```text
-用户浏览器
-   |
-   v
-frontend (React/Vite, :3000)
-   |
-   |  /api 代理
-   v
-backend (FastAPI, :8000)
-   |
-   +--> agents/   对话与模型装配
-   +--> tools/    入库、解析、检索、Qdrant
-   +--> data/     上传文件、图片、向量库
-   +--> models/   本地模型
+浏览器
+  |
+  v
+frontend
+  |
+  |  /api
+  v
+backend
+  |
+  +--> qdrant        向量库服务
+  +--> redis         会话索引与元数据
+  +--> models/       本地 embedding / reranker / summary 模型
+  +--> .user/        用户与鉴权数据
+  +--> SHARED_STORAGE_ROOT/
+       ├── stored_files/
+       │   └── mineru_output/
+       ├── content_lists/
+       ├── exported_chunks/
+       ├── agent_memory/
+       └── chat_sessions/
 ```
 
-### 2.2 旧入口
+### 2.2 状态分层
+
+当前项目的状态分成三层：
+
+1. 持久化服务层
+   - `qdrant`：知识库向量、payload、collection 数据
+   - `redis`：会话索引、会话元信息
+
+2. 文件持久化层
+   - `SHARED_STORAGE_ROOT/stored_files`：上传原始文件
+   - `SHARED_STORAGE_ROOT/stored_files/mineru_output`：图片、表格截图
+   - `SHARED_STORAGE_ROOT/agent_memory`：memory 快照
+   - `SHARED_STORAGE_ROOT/chat_sessions`：完整 transcript
+
+3. 进程内运行态
+   - backend 进程内 `ChatAgent`
+   - backend 进程内热模型缓存
+   - backend 进程内 session 执行态
+
+这也是当前仍然保持 `BACKEND_WORKERS=1` 的原因：会话索引已经外置，但 `ChatAgent` 执行态还没有完全无状态化。
+
+### 2.3 当前支持的运行模式
+
+当前代码支持三种模式：
+
+- 本地最小模式
+  - `QDRANT_MODE=local`
+  - `REDIS_URL=` 为空
+  - 用于先验证前后端主流程
+
+- 本地完整链路模式
+  - backend / frontend 本地启动
+  - `qdrant` 和 `redis` 作为独立服务运行
+  - 用于验证完整服务链
+
+- Docker 部署模式
+  - `web + backend + qdrant + redis`
+  - 用于标准化部署
+
+### 2.4 历史旧入口
 
 ```text
 streamlit run run/streamlit.py
 ```
 
-旧入口仍可运行，但其 UI、鉴权和前后端逻辑与当前主线已经分离，后续维护建议优先以 `frontend/ + backend/` 为主。
+该入口仅作为历史代码保留，不再作为主部署方案的一部分。
 
 ## 3. 目录结构
 
 ```text
 rag/
-├── frontend/                        # React/Vite 前端
+├── frontend/                        # React + Vite 前端
 │   ├── src/
-│   │   ├── api/                     # 前端 API 调用
-│   │   ├── components/              # 消息、布局等组件
-│   │   ├── pages/                   # 页面
-│   │   ├── stores/                  # Zustand 状态管理
-│   │   └── types/                   # TS 类型定义
+│   │   ├── api/
+│   │   ├── components/
+│   │   ├── pages/
+│   │   ├── stores/
+│   │   └── types/
 │   ├── package.json
 │   └── vite.config.ts
 │
 ├── backend/                         # FastAPI 后端
 │   ├── app/
-│   │   ├── api/v1/                  # 路由
-│   │   ├── services/                # 业务服务
-│   │   ├── schemas/                 # Pydantic 模型
-│   │   ├── core/                    # 安全、日志、中间件
-│   │   ├── dependencies.py          # 依赖注入
+│   │   ├── api/v1/                  # 路由层
+│   │   ├── core/                    # 安全、中间件、Redis 客户端
+│   │   ├── schemas/                 # Pydantic schema
+│   │   ├── services/                # chat / file / user / auth
+│   │   ├── config.py                # 后端配置入口
+│   │   ├── dependencies.py          # 依赖注入与资源缓存
 │   │   └── main.py                  # FastAPI 应用入口
-│   ├── run.py                       # 启动脚本
+│   ├── run.py
 │   └── requirements.txt
 │
-├── agents/                          # Agent 与模型装配
-│   ├── backend_model.py             # LLM / embedding / reranker / 表格摘要模型
-│   └── chat_agent.py                # 系统提示词与 Agent 工厂
-│
-├── tools/                           # 核心能力
-│   ├── database_toolkit.py          # 检索工具入口
-│   ├── load_files.py                # 文档解析、切块、入库
-│   ├── mineru_toolkit.py            # MinerU 封装
-│   ├── qdrant.py                    # Qdrant 检索与混合检索
-│   ├── file_manager_ui.py           # 文件管理与入库辅助
-│   └── user_auth.py                 # 用户鉴权底层能力
-│
-├── config/                          # 公共配置
-│   └── mineru.json
-│
-├── data/                            # 运行数据
-│   ├── storages/                    # Qdrant 本地存储
-│   ├── stored_files/                # 上传文档
-│   │   └── mineru_output/           # 图片/表格截图输出
-│   ├── content_lists/               # 文档解析结果缓存
-│   └── exported_chunks/             # 调试导出的切块
-│
-├── models/                          # 本地模型目录
-├── docs/                            # 设计与变更文档
-├── scripts/                         # 下载模型、批量导入等脚本
-├── run/                             # 旧版 Streamlit
-├── tests/                           # 公共测试
+├── agents/                          # LLM、embedding、reranker、Agent 组装
+├── tools/                           # MinerU、入库、检索、Qdrant 工具链
+├── config/                          # MinerU 等公共配置
+├── deploy/nginx/                    # Docker Nginx 反向代理配置
+├── scripts/                         # 迁移、批量导入等脚本
+├── docs/                            # 设计与改动日志
+├── run/                             # 历史 Streamlit 入口
+├── tests/                           # 测试与 smoke 脚本
+├── storage_paths.py                 # 共享存储路径统一入口
+├── Dockerfile.backend
+├── Dockerfile.frontend
+├── docker-compose.yml
 ├── README.md
 └── .gitignore
 ```
 
-## 4. 功能模块说明
+### 3.1 运行数据目录
+
+默认 `SHARED_STORAGE_ROOT=data`，因此当前运行数据目录如下：
+
+```text
+data/
+├── qdrant/                          # Qdrant Server 数据目录
+├── redis/                           # Redis AOF / RDB 数据目录
+├── lex_index/                       # 后端词汇索引缓存
+├── stored_files/                    # 上传的原始文件
+│   └── mineru_output/               # 图片、表格截图、方程截图
+├── content_lists/                   # 文档解析中间结果
+├── exported_chunks/                 # 调试导出的 chunk
+├── agent_memory/                    # memory 快照
+├── chat_sessions/                   # transcript 文件
+└── storages/                        # 历史 local Qdrant 数据目录（兼容旧库）
+```
+
+## 4. 模块职责
 
 ### 4.1 前端
 
-前端主要负责：
+前端负责：
 
 - 登录与用户态维护
-- 会话聊天页面
-- 文件管理页面
-- 用户管理页面
-- 消息内 markdown / 表格 / 附件图片渲染
+- 聊天页面与历史会话列表
+- 文件管理、导入、删除
+- SSE 流式渲染
+- Markdown / 表格 / 数学公式 / 附件图片区渲染
 
-关键目录：
+关键模块：
 
+- `frontend/src/pages/Chat.tsx`
 - `frontend/src/components/Chat/`
-  消息渲染、流式渲染、表格渲染、附件图片区
-- `frontend/src/api/`
-  对后端的 API 封装
 - `frontend/src/stores/`
-  聊天状态、鉴权状态
+- `frontend/src/api/`
 
 ### 4.2 后端
 
-后端主要负责：
+后端负责：
 
 - JWT 鉴权
-- 会话管理
-- 聊天 SSE 流式响应
-- 文件上传、导入、删除、内容预览
-- 调用共享 `tools/` 和 `agents/`
+- Chat SSE 流式响应
+- ChatAgent 会话生命周期管理
+- transcript / memory 持久化
+- 文件上传、入库、删除、预览
+- 调用 `agents/` 与 `tools/`
 
-关键目录：
+关键模块：
 
-- `backend/app/api/v1/`
-  路由层
-- `backend/app/services/`
-  聊天、文件、用户、鉴权服务
-- `backend/app/core/`
-  JWT、安全、中间件、请求日志
+- `backend/app/services/chat_service.py`
+- `backend/app/services/file_service.py`
+- `backend/app/services/user_service.py`
+- `backend/app/core/redis_client.py`
+- `backend/app/dependencies.py`
 
-### 4.3 共享核心能力
+### 4.3 检索与入库层
+
+共享核心能力：
+
+- `tools/mineru_toolkit.py`
+  - PDF 解析
+  - 图片、表格、方程输出
 
 - `tools/load_files.py`
-  PDF 解析、MinerU 输出接入、图片重命名、切块、入库
-- `tools/database_toolkit.py`
-  对外暴露给 Agent 的检索工具
+  - 内容预处理
+  - chunk 切分
+  - 表格摘要
+  - Qdrant 写入
+
 - `tools/qdrant.py`
-  Qdrant 本地存储、检索、混合检索、动态阈值、重排序
+  - 支持 `local` / `server` 双模式
+  - 向量检索
+  - 词汇索引缓存
+  - hybrid 检索
+
+- `tools/database_toolkit.py`
+  - 对 Agent 暴露 `search_database`
+  - rerank
+  - 动态裁剪和去重
+
+### 4.4 模型层
+
 - `agents/backend_model.py`
-  模型初始化与缓存
+  - LLM
+  - embedding
+  - reranker
+  - table summary model
+
 - `agents/chat_agent.py`
-  问答 Agent 的提示词约束
+  - 问答 Agent 工厂
+  - 系统提示词与行为约束
 
 ## 5. 依赖要求
 
@@ -189,7 +270,19 @@ npm install
 cd ..
 ```
 
-## 7. 环境变量
+### 6.3 独立服务准备
+
+如果要跑完整服务链，需要额外准备：
+
+- `qdrant` 服务
+- `redis` 服务
+
+你可以：
+
+- 用 Docker 起这两个服务
+- 或者在系统里单独安装它们并本地启动
+
+## 7. 环境变量与配置模式
 
 在项目根目录创建 `.env`。
 
@@ -209,6 +302,20 @@ TABLE_SUMMARY_MODEL_PATH=models/Qwen2.5-1.5B-Instruct
 # 可选
 DEBUG=false
 SECRET_KEY=change-me
+
+# Qdrant
+QDRANT_MODE=local
+QDRANT_URL=
+QDRANT_API_KEY=
+QDRANT_LOCAL_PATH=data/storages
+QDRANT_LEXICAL_INDEX_DIR=data/lex_index
+
+# Redis
+REDIS_URL=
+REDIS_PREFIX=rag
+
+# 共享文件根目录
+SHARED_STORAGE_ROOT=data
 ```
 
 ### 7.1 常用变量说明
@@ -223,67 +330,312 @@ SECRET_KEY=change-me
 | `TABLE_SUMMARY_MODEL_PATH` | 表格摘要模型路径 |
 | `SECRET_KEY` | 后端 JWT 密钥 |
 | `DEBUG` | 后端调试模式 |
+| `QDRANT_MODE` | Qdrant 运行模式，`local` 或 `server` |
+| `QDRANT_URL` | Qdrant 服务地址，服务模式必填 |
+| `QDRANT_LEXICAL_INDEX_DIR` | BM25 词汇索引缓存目录 |
+| `REDIS_URL` | Redis 地址，用于会话索引和元数据共享 |
+| `REDIS_PREFIX` | Redis key 前缀 |
+| `SHARED_STORAGE_ROOT` | 共享文件根目录，默认 `data` |
+
+### 7.2 推荐配置模式
+
+#### 本地最小模式
+
+用于先跑通前后端主流程：
+
+```env
+QDRANT_MODE=local
+QDRANT_URL=
+REDIS_URL=
+SHARED_STORAGE_ROOT=data
+```
+
+#### 本地完整链路模式
+
+用于验证独立服务链：
+
+```env
+QDRANT_MODE=server
+QDRANT_URL=http://127.0.0.1:6333
+REDIS_URL=redis://127.0.0.1:6379/0
+SHARED_STORAGE_ROOT=data
+```
+
+#### Docker 模式
+
+Docker Compose 会覆盖为：
+
+```env
+QDRANT_MODE=server
+QDRANT_URL=http://qdrant:6333
+REDIS_URL=redis://redis:6379/0
+SHARED_STORAGE_ROOT=data
+```
 
 ## 8. 模型与数据目录
 
 以下目录默认不提交远程仓库：
 
 - `models/`
-- `data/storages/`
+- `data/qdrant/`
+- `data/redis/`
+- `data/lex_index/`
 - `data/stored_files/`
 - `data/content_lists/`
 - `data/exported_chunks/`
+- `data/agent_memory/`
+- `data/chat_sessions/`
 - `.user/`
 
 这些目录分别存放：
 
 - 本地模型
-- Qdrant 向量库
+- Qdrant Server 持久化数据
+- Redis 持久化数据
+- 本地词汇索引缓存
 - 上传原始文件
 - MinerU 输出图片/表格截图
 - 文档解析缓存
+- 会话与 agent memory 持久化数据
 - 用户数据
 
-## 9. 启动方式
+## 9. 运行方式
 
-### 9.1 推荐：前后端分离
+### 9.1 本地最小模式
 
-启动后端：
+适用于先验证：
+
+- 后端可启动
+- 前端可启动
+- 本地 local Qdrant 可工作
+- 上传、入库、问答链路可跑通
+
+后端：
 
 ```bash
+cd /home/ubuntu/rag_project/rag
 source .venv/bin/activate
-cd backend
-python3 run.py
+python backend/run.py --host 0.0.0.0 --port 8000
 ```
 
-默认地址：
-
-- `http://localhost:8000`
-- Swagger：`http://localhost:8000/docs`
-
-启动前端：
+前端：
 
 ```bash
-cd frontend
-npm run dev
+cd /home/ubuntu/rag_project/rag/frontend
+npm run dev -- --host 0.0.0.0 --port 3000
 ```
 
-默认地址：
+访问：
 
-- `http://localhost:3000`
+- 前端：`http://127.0.0.1:3000`
+- 后端：`http://127.0.0.1:8000/docs`
 
-前端会把 `/api` 自动代理到 `http://localhost:8000`。
+### 9.2 本地完整链路模式
 
-### 9.2 旧版 Streamlit
+适用于验证：
+
+- backend
+- frontend
+- qdrant server
+- redis
+- 完整服务链
+
+典型启动顺序：
+
+1. 启动 `redis`
+2. 启动 `qdrant`
+3. 启动 `backend`
+4. 启动 `frontend`
+
+验证命令：
 
 ```bash
+curl http://127.0.0.1:6333/collections
+redis-cli -p 6379 ping
+curl http://127.0.0.1:8000/health
+```
+
+### 9.3 旧 local Qdrant 数据迁移到 server
+
+如果你之前使用的是：
+
+- `QDRANT_MODE=local`
+- 旧库位于 `data/storages`
+
+而现在切到：
+
+- `QDRANT_MODE=server`
+
+那么需要把旧数据迁移到 Qdrant Server。
+
+项目已提供迁移脚本：
+
+- [`scripts/migrate_qdrant_local_to_server.py`](/home/ubuntu/rag_project/rag/scripts/migrate_qdrant_local_to_server.py)
+
+推荐命令：
+
+```bash
+cd /home/ubuntu/rag_project/rag
 source .venv/bin/activate
-streamlit run run/streamlit.py
+python scripts/migrate_qdrant_local_to_server.py \
+  --local-path data/storages \
+  --server-url http://127.0.0.1:6333 \
+  --collection database \
+  --recreate
 ```
 
-默认地址：
+说明：
 
-- `http://localhost:8501`
+- 迁移直接复制 `id + vector + payload`
+- 不需要重新 embedding
+- 不需要重新导入 PDF
+
+迁移后验证：
+
+```bash
+curl http://127.0.0.1:6333/collections/database
+```
+
+### 9.4 Docker 部署
+
+当前只推荐一种启动方式：使用根目录 `docker-compose.yml` 统一启动 `web + backend + qdrant + redis`。
+
+架构如下：
+
+```text
+浏览器
+  |
+  v
+nginx + frontend 静态资源   (:APP_PORT，默认 8080)
+  |
+  v
+backend (FastAPI, 容器内 :8000)
+  |
+  +--> qdrant (容器内 :6333)
+  +--> redis  (容器内 :6379)
+  |
+  +--> data/     持久化文档、词汇索引、截图、transcript、memory
+  +--> models/   本地模型目录
+  +--> .user/    用户数据
+```
+
+### 9.4.1 部署文件结构
+
+部署相关文件现在只保留这一组：
+
+```text
+rag/
+├── docker-compose.yml              # 唯一启动入口
+├── Dockerfile.backend              # 后端镜像
+├── Dockerfile.frontend             # 前端静态构建 + Nginx 镜像
+└── deploy/nginx/default.conf       # 统一反向代理配置
+```
+
+旧的 `Dockerfile`、`Dockerfile.cuda`、`docker-compose.gpu.yml` 不再保留，避免入口分叉。
+
+### 9.4.2 启动前准备
+
+确认以下目录和文件存在：
+
+- 根目录 `.env`
+- 根目录 `data/`
+- 根目录 `models/`
+- 根目录 `.user/`
+
+最少需要在 `.env` 中提供：
+
+```env
+OPENAI_API_KEY=your-api-key
+url=https://your-api-endpoint/v1
+MODEL_NAME=qwq32b
+SECRET_KEY=change-me
+
+conan_path=models/bge-base-zh-v1.5
+reranker_path=models/bge-reranker-base
+TABLE_SUMMARY_MODEL_PATH=models/Qwen2.5-1.5B-Instruct
+```
+
+可选覆盖项：
+
+```env
+APP_PORT=8080
+BACKEND_WORKERS=1
+```
+
+说明：
+
+- `APP_PORT` 是宿主机对外端口，默认 `8080`
+- `BACKEND_WORKERS` 默认固定为 `1`，这是为了避免本地会话状态和本地向量存储在多进程下产生不一致
+
+### 9.4.3 外部挂载约定
+
+当前只需要把下面 3 个顶层目录作为宿主机持久化挂载：
+
+- `./data:/app/data`
+- `./models:/app/models`
+- `./.user:/app/.user`
+
+说明：
+
+- `data/` 已经包含 `qdrant/`、`redis/`、`lex_index/`、`stored_files/`、`content_lists/`、`exported_chunks/`、`agent_memory/`、`chat_sessions/`
+- `models/` 用于本地 embedding、reranker、表格模型以及其他下载模型
+- `.user/` 用于用户数据和鉴权信息
+- `.env` 只通过 `env_file` 注入，不需要作为 volume 挂载
+- 当前 Compose 默认注入 `SHARED_STORAGE_ROOT=data`，所有上传文件、MinerU 输出、transcript、memory 都从这个根目录派生
+
+### 9.4.4 启动命令
+
+```bash
+docker compose up -d --build
+```
+
+查看状态：
+
+```bash
+docker compose ps
+docker compose logs -f redis
+docker compose logs -f qdrant
+docker compose logs -f backend
+docker compose logs -f web
+```
+
+停止服务：
+
+```bash
+docker compose down
+```
+
+### 9.4.5 访问地址
+
+- 主应用：`http://localhost:8080`
+- 后端健康检查：`http://localhost:8080/health`
+- Swagger：`http://localhost:8080/docs`
+- ReDoc：`http://localhost:8080/redoc`
+
+如果你设置了 `APP_PORT`，把上面的 `8080` 替换掉即可。
+
+### 9.4.6 方案特性
+
+- 前端静态资源由 Nginx 托管，启动更稳定，资源占用低
+- 外部只暴露一个端口，后端不直接对公网开放
+- `/api` 反向代理已关闭缓冲，兼容 SSE 流式输出
+- 向量库已切换为独立 `qdrant` 服务，不再依赖 backend 容器内的本地 embedded storage
+- 会话索引、标题、消息数和最近活跃时间已切到独立 `redis` 服务
+- `data/`、`models/`、`.user/` 全部通过 bind mount 持久化
+- redis、backend 和 web 都带健康检查；backend 会在启动时自动等待 redis 并重试连接 qdrant
+- `init: true` 和 `restart: unless-stopped` 已开启，降低僵尸进程和意外退出影响
+
+### 9.4.7 为什么不推荐多进程后端
+
+当前后端包含：
+
+- 进程内会话缓存
+- 本地 agent memory 持久化恢复
+- 本地 chat transcript 持久化文件
+
+虽然向量库和会话索引已经切到独立服务，但 `ChatAgent` 实例本身、memory 快照恢复和 transcript 文件仍然是单实例语义，所以 Docker 部署默认采用单 worker。如果后续把会话执行态也进一步外置，再考虑多 backend 横向扩展。
+
+如果后续要走多人共享和后端多副本部署，参考 [`docs/scalable_docker_architecture.md`](/home/ubuntu/rag_project/rag/docs/scalable_docker_architecture.md)。
 
 ## 10. 文档入库流程
 
@@ -327,20 +679,64 @@ streamlit run run/streamlit.py
 - 表格和图片证据路径要求尽量原样保留
 - 前端将图片与正文分离，放到附件图片区
 
-## 12. API 简述
+## 12. 会话与状态架构
 
-### 12.1 鉴权
+### 12.1 会话索引
+
+会话索引和元数据目前保存在 Redis 中，包括：
+
+- `session_id`
+- `username`
+- `title`
+- `created_at`
+- `updated_at`
+- `last_activity`
+- `message_count`
+- `memory_enabled`
+
+### 12.2 transcript 与 memory
+
+会话全文和 memory 快照目前仍然通过文件持久化：
+
+- `data/chat_sessions/<username>/`
+- `data/agent_memory/<username>/`
+
+这意味着：
+
+- 会话列表可以跨 backend 共享
+- 但具体 `ChatAgent` 执行态仍然不是完全无状态
+
+### 12.3 文件路径统一入口
+
+当前所有文件类路径统一收口在：
+
+- [`storage_paths.py`](/home/ubuntu/rag_project/rag/storage_paths.py)
+
+后端、工具链、脚本都会从 `SHARED_STORAGE_ROOT` 派生：
+
+- `stored_files`
+- `mineru_output`
+- `content_lists`
+- `exported_chunks`
+- `agent_memory`
+- `chat_sessions`
+
+## 13. API 简述
+
+### 13.1 鉴权
 
 - `POST /api/v1/auth/login`
 - `GET /api/v1/auth/me`
 - `POST /api/v1/auth/logout`
 
-### 12.2 聊天
+### 13.2 聊天
 
 - `POST /api/v1/chat/stream`
 - `DELETE /api/v1/chat/session/{session_id}`
+- `GET /api/v1/chat/sessions`
+- `GET /api/v1/chat/session/{session_id}`
 
-### 12.3 文件
+### 13.3 文件
 
 - `GET /api/v1/files`
 - `POST /api/v1/files/upload`
@@ -348,7 +744,7 @@ streamlit run run/streamlit.py
 - `GET /api/v1/files/content/{file_tag}`
 - `DELETE /api/v1/files`
 
-### 12.4 用户
+### 13.4 用户
 
 - `GET /api/v1/users`
 - `POST /api/v1/users`
@@ -360,32 +756,53 @@ streamlit run run/streamlit.py
 - `backend/README.md`
 - `http://localhost:8000/docs`
 
-## 13. 测试与检查
+## 14. 测试、检查与联调
 
-### 13.1 Python 测试
+### 14.1 Python 语法检查
+
+```bash
+source .venv/bin/activate
+python -m py_compile backend/app/config.py
+python -m py_compile backend/app/services/chat_service.py
+python -m py_compile tools/qdrant.py
+```
+
+### 14.2 Python 测试
 
 ```bash
 source .venv/bin/activate
 python3 -m pytest
 ```
 
-### 13.2 前端构建检查
+### 14.3 前端构建检查
 
 ```bash
 cd frontend
 npm run build
 ```
 
-### 13.3 后端启动检查
+### 14.4 后端启动检查
 
 ```bash
 cd backend
 python3 run.py
 ```
 
-## 14. 常见问题
+### 14.5 完整链路自检顺序
 
-### 14.1 前端页面一直 loading
+推荐按这个顺序检查：
+
+1. `qdrant` 是否可访问
+2. `redis` 是否可访问
+3. 后端 `/health` 是否正常
+4. 前端能否登录
+5. 文件列表是否正常显示
+6. 文件入库后 `database` collection 点数是否增加
+7. 聊天是否返回检索结果
+
+## 15. 常见问题
+
+### 15.1 前端页面一直 loading
 
 优先检查：
 
@@ -394,7 +811,16 @@ python3 run.py
 - 浏览器是否拿到旧 bundle
 - `/api/v1/auth/me` 是否异常
 
-### 14.2 图片或表格不显示
+### 15.2 文件存在但显示“未建库”
+
+优先检查：
+
+- 当前后端使用的是 `QDRANT_MODE=local` 还是 `server`
+- `QDRANT_MODE=server` 时，`http://127.0.0.1:6333/collections/database` 的 `points_count` 是否大于 0
+- 旧库是否还停留在 `data/storages`
+- 是否已经执行迁移脚本 `scripts/migrate_qdrant_local_to_server.py`
+
+### 15.3 图片或表格不显示
 
 优先检查：
 
@@ -403,7 +829,7 @@ python3 run.py
 - 回答中的图片路径是否被模型改写
 - 浏览器是否仍在使用旧前端代码
 
-### 14.3 表格检索内容被截断
+### 15.4 表格检索内容被截断
 
 当前项目已对表格/议程/清单类 query 自动放宽检索预算。如果仍然截断，优先检查：
 
@@ -411,11 +837,11 @@ python3 run.py
 - 表格切块是否正常
 - 原始文档在 MinerU 输出中是否已被截断
 
-### 14.4 Streamlit 和 FastAPI 是否能同时跑
+### 15.5 Streamlit 和 FastAPI 是否能同时跑
 
 可以，但不建议长期作为主运行方式。因为两套入口已经分化，后续维护更推荐以前后端分离架构为主。
 
-## 15. 仓库提交建议
+## 16. 仓库提交建议
 
 建议提交：
 
@@ -430,7 +856,9 @@ python3 run.py
 - `.user/`
 - `models/`
 - `data/stored_files/`
-- `data/storages/`
+- `data/qdrant/`
+- `data/redis/`
+- `data/lex_index/`
 - `frontend/node_modules/`
 - `frontend/dist/`
 - 大日志与压缩包
@@ -440,12 +868,14 @@ python3 run.py
 ```bash
 git status
 git diff --cached --stat
-git check-ignore -v .env models data/stored_files frontend/node_modules frontend/dist
+git check-ignore -v .env models data/stored_files data/qdrant data/redis data/lex_index frontend/node_modules frontend/dist
 ```
 
-## 16. 当前仓库状态说明
+## 17. 当前仓库状态说明
 
 - 主线：前后端分离
+- Runtime 依赖：`backend + frontend + qdrant + redis`
 - Streamlit：保留但视为旧入口
-- 数据与模型目录按本地运行资源管理，不建议入库
+- 当前状态：Qdrant 服务化、Redis 会话索引化、共享存储根目录统一化均已完成
+- 仍未完成：`ChatAgent` 执行态彻底无状态化
 - 仓库适合提交为代码仓，不适合直接提交运行数据仓

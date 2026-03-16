@@ -18,6 +18,12 @@ from app.schemas.file import (
     FileInfo, FileListResponse, FileImportResponse, FileImportStatus,
     FileDeleteResponse, FileDeleteStatus
 )
+from storage_paths import (
+    project_relative_path,
+    tag_to_project_path,
+    SHARED_STORAGE_ROOT_REL,
+    LEGACY_SHARED_STORAGE_ROOT_REL,
+)
 
 
 class FileService:
@@ -25,7 +31,9 @@ class FileService:
 
     def __init__(self):
         self.storage_dir = settings.STORAGE_DIR
+        self.mineru_output_dir = settings.MINERU_OUTPUT_DIR
         self.storage_dir.mkdir(parents=True, exist_ok=True)
+        self.mineru_output_dir.mkdir(parents=True, exist_ok=True)
         self.collection_name = settings.COLLECTION_NAME
 
     def warmup(self) -> None:
@@ -133,12 +141,12 @@ class FileService:
         for tag in file_tags:
             # Tag is relative path like "data/stored_files/file.pdf"
             # Need to convert to absolute path
-            if tag.startswith("data/"):
-                full_path = PROJECT_ROOT / tag
+            if tag.startswith(f"{SHARED_STORAGE_ROOT_REL}/") or tag.startswith(f"{LEGACY_SHARED_STORAGE_ROOT_REL}/"):
+                full_path = tag_to_project_path(tag)
             else:
                 full_path = self.storage_dir / Path(tag).name
 
-            if full_path.exists():
+            if full_path is not None and full_path.exists():
                 file_paths.append(str(full_path))
             else:
                 logger.warning(f"File not found: {full_path}")
@@ -290,20 +298,26 @@ class FileService:
 
     def _path_to_tag(self, path: str) -> str:
         """Convert absolute path to relative tag"""
-        path_obj = Path(path)
-        try:
-            return path_obj.relative_to(PROJECT_ROOT).as_posix()
-        except ValueError:
-            return path_obj.as_posix()
+        return project_relative_path(Path(path))
 
     def _tag_to_path(self, tag: str) -> Optional[Path]:
         """Convert tag to absolute path"""
         normalized_tag = unquote(tag.lstrip("/"))
-        if normalized_tag.startswith("data/"):
+        shared_stored_prefix = f"{SHARED_STORAGE_ROOT_REL}/stored_files/"
+        if normalized_tag.startswith(f"{shared_stored_prefix}mineru_output/"):
+            path = self.storage_dir / normalized_tag.removeprefix(shared_stored_prefix)
+        elif normalized_tag.startswith("data/stored_files/mineru_output/"):
+            path = self.storage_dir / normalized_tag.removeprefix("data/stored_files/")
+        elif normalized_tag.startswith("data/mineru_output/"):
             path = PROJECT_ROOT / normalized_tag
-        else:
+        elif normalized_tag.startswith("mineru_output/"):
             path = self.storage_dir / normalized_tag
-        if path.exists():
+        else:
+            if "/" in normalized_tag:
+                path = tag_to_project_path(normalized_tag)
+            else:
+                path = self.storage_dir / normalized_tag
+        if path is not None and path.exists():
             return path
 
         # MinerU image references in answers may omit the original PDF prefix.
@@ -311,8 +325,13 @@ class FileService:
         # resolve to `mineru_output/0【...】foo_1.jpg`.
         if "mineru_output/" in normalized_tag:
             image_name = Path(normalized_tag).name
-            mineru_dir = self.storage_dir / "mineru_output"
-            if mineru_dir.exists():
+            mineru_dirs = [self.storage_dir / "mineru_output"]
+            if self.mineru_output_dir not in mineru_dirs:
+                mineru_dirs.append(self.mineru_output_dir)
+
+            for mineru_dir in mineru_dirs:
+                if not mineru_dir.exists():
+                    continue
                 candidate_patterns = [image_name]
 
                 # Some generated answers may slightly alter the bracketed PDF

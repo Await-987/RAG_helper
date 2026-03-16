@@ -4,6 +4,8 @@ venv/
 ENV/
 env/
 __pycache__/
+frontend/node_modules/
+frontend/dist/
 
 # Git
 .git/
@@ -20,6 +22,7 @@ __pycache__/
 *.log
 *.tmp
 *.temp
+*.zip
 .DS_Store
 Thumbs.db
 Desktop.ini
@@ -64,6 +67,7 @@ MANIFEST
 data/
 models/
 .user/
+backend/context_files/
 
 # 环境配置（会被 volume 挂载）
 .env
@@ -97,13 +101,12 @@ qdrant_storage/
 smoke_out.txt
 new_tools/
 claude_code_env.sh
+import.log
 
 # 文档（可选，生产镜像不需要）
 README.md
 docs/
 *.md
 
-# Docker 配置文件（CPU 版本使用 Dockerfile，GPU 版本使用 Dockerfile.cuda）
-# 两者都不打包进镜像
+# 部署编排文件不需要进入镜像
 docker-compose.yml
-docker-compose.gpu.yml

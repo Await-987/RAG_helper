@@ -94,6 +94,13 @@ temp/
 # Vector Database
 qdrant_storage/
 .qdrant/
+.qdrant-initialized
+
+# Runtime service data
+data/qdrant/
+data/redis/
+data/lex_index/
+backend/context_files/
 
 # Model Cache
 .cache/

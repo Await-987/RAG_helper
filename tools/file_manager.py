@@ -3,6 +3,7 @@ import sys
 import time
 from pathlib import Path
 from loguru import logger
+from storage_paths import STORED_FILES_DIR
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -19,7 +20,7 @@ except ImportError as e:
 # ===============================================
 
 COLLECTION_NAME = "database" 
-STORED_DIR = BASE_DIR / "data" / "stored_files"
+STORED_DIR = STORED_FILES_DIR
 
 def get_accurate_stats():
     """

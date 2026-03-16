@@ -8,16 +8,31 @@ function safeDecodeURIComponent(value: string): string {
   }
 }
 
-export function resolveKnowledgeBaseAssetUrl(src?: string): string {
+export function isValidKnowledgeBaseAssetPath(src?: string): boolean {
   if (!src) {
+    return false;
+  }
+
+  const normalized = safeDecodeURIComponent(src).trim();
+  if (!normalized) {
+    return false;
+  }
+
+  return !normalized.includes('...') && !normalized.includes('…');
+}
+
+export function resolveKnowledgeBaseAssetUrl(src?: string): string {
+  if (!isValidKnowledgeBaseAssetPath(src)) {
     return '';
   }
 
-  if (/^(https?:)?\/\//.test(src) || src.startsWith('data:') || src.startsWith('blob:')) {
-    return src;
+  const safeSrc = (src ?? '').trim();
+
+  if (/^(https?:)?\/\//.test(safeSrc) || safeSrc.startsWith('data:') || safeSrc.startsWith('blob:')) {
+    return safeSrc;
   }
 
-  const normalizedPath = safeDecodeURIComponent(src)
+  const normalizedPath = safeDecodeURIComponent(safeSrc)
     .replace(/^\.?\//, '')
     .replace(/^data\/stored_files\//, '');
 
