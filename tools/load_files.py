@@ -1047,9 +1047,13 @@ def load_and_store_file(
 
     # @shengwanying：20260306修改：逐条存入：向量用child，Content用parent
     # @luxinrong：20260309新增：表格独立存储，包含上下文信息
-    for chunk in chunks:
+    total_chunk_count = len(chunks)
+    for chunk_index, chunk in enumerate(chunks):
         chunk_meta = final_meta.copy()
         chunk_meta['child_content'] = chunk['child']  # 把子chunk也存进payload
+        chunk_meta['chunk_index'] = chunk_index
+        chunk_meta['chunk_count'] = total_chunk_count
+        chunk_meta['chunk_type'] = 'table' if chunk.get('is_table') else 'text'
 
         # 表格特殊处理：添加表格标记和上下文
         if chunk.get('is_table'):
@@ -1189,9 +1193,13 @@ def _process_single_file(args):
 
         # 逐条存入：向量用child，Content用parent
         # @luxinrong：20260309新增：表格独立存储，包含上下文信息
-        for chunk in chunks:
+        total_chunk_count = len(chunks)
+        for chunk_index, chunk in enumerate(chunks):
             chunk_meta = final_meta.copy()
             chunk_meta['child_content'] = chunk['child']
+            chunk_meta['chunk_index'] = chunk_index
+            chunk_meta['chunk_count'] = total_chunk_count
+            chunk_meta['chunk_type'] = 'table' if chunk.get('is_table') else 'text'
 
             # 表格特殊处理：添加表格标记和上下文
             if chunk.get('is_table'):

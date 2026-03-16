@@ -1,4 +1,5 @@
 import sys
+import re
 from loguru import logger
 from typing import List, Optional, Any, Dict
 
@@ -21,6 +22,15 @@ class DatabaseToolkit(BaseToolkit):
     DEFAULT_MAX_TOTAL_CHARS = 12000
     DEFAULT_MAX_CHARS_PER_CHUNK = 3200
     TABLE_QUERY_HINTS = ("表", "表格", "议程", "清单", "名单", "名录", "统计", "汇总")
+    NUMERIC_QUERY_HINTS = (
+        "多少", "多大", "参数", "电压", "电流", "容量", "功率", "温度",
+        "压力", "频率", "比率", "百分比", "阈值", "上限", "下限", "范围",
+        "数值", "系数", "等级", "尺寸", "长度",
+    )
+    NUMERIC_CONTENT_RE = re.compile(
+        r"(\d+(?:\.\d+)?)\s*(kV|V|A|mA|MW|kW|W|Hz|%|℃|°C|mm|cm|m|km|kg|t|MPa|kPa|年|月|日|h|min|s|次|项|条|章)?",
+        re.IGNORECASE,
+    )
 
     def __init__(self):
         super().__init__()
@@ -199,6 +209,124 @@ class DatabaseToolkit(BaseToolkit):
             return False
         return any(token in query for token in cls.TABLE_QUERY_HINTS)
 
+    @classmethod
+    def _is_numeric_like_query(cls, query: str) -> bool:
+        query = (query or "").strip()
+        if not query:
+            return False
+        if cls.NUMERIC_CONTENT_RE.search(query):
+            return True
+        return any(token in query for token in cls.NUMERIC_QUERY_HINTS)
+
+    @classmethod
+    def _hit_parent_key(cls, hit: Dict[str, Any]) -> str:
+        payload = hit.get("payload", {}) or {}
+        source = str(payload.get("Original_file", ""))
+        content = payload.get("Content", "") or payload.get("content", "")
+        return f"{source}::{content}"
+
+    @classmethod
+    def _hit_has_numeric_content(cls, hit: Dict[str, Any]) -> bool:
+        payload = hit.get("payload", {}) or {}
+        metadata = payload.get("metadata", {}) or {}
+        text = (
+            metadata.get("child_content")
+            or payload.get("child_content")
+            or payload.get("Content")
+            or payload.get("content")
+            or ""
+        )
+        if not isinstance(text, str):
+            text = str(text)
+        return bool(cls.NUMERIC_CONTENT_RE.search(text))
+
+    @classmethod
+    def _apply_query_type_bias(cls, hits: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+        if not hits:
+            return []
+
+        is_table_query = cls._is_table_like_query(query)
+        is_numeric_query = cls._is_numeric_like_query(query)
+
+        if not is_table_query and not is_numeric_query:
+            return hits
+
+        adjusted: List[Dict[str, Any]] = []
+        for hit in hits:
+            h = dict(hit)
+            payload = h.get("payload", {}) or {}
+            metadata = payload.get("metadata", {}) or {}
+            score = float(h.get("score", 0.0))
+
+            if is_table_query and (payload.get("is_table") or metadata.get("is_table")):
+                score += 0.18
+            if is_numeric_query and cls._hit_has_numeric_content(h):
+                score += 0.12
+
+            h["score"] = score
+            adjusted.append(h)
+
+        adjusted.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
+        return adjusted
+
+    @classmethod
+    def _dedupe_by_parent(cls, hits: List[Dict[str, Any]], max_per_parent: int = 1) -> List[Dict[str, Any]]:
+        if not hits:
+            return []
+
+        kept: List[Dict[str, Any]] = []
+        parent_counts: Dict[str, int] = {}
+
+        for hit in hits:
+            parent_key = cls._hit_parent_key(hit)
+            current = parent_counts.get(parent_key, 0)
+            if current >= max_per_parent:
+                continue
+            parent_counts[parent_key] = current + 1
+            kept.append(hit)
+
+        return kept
+
+    def _expand_neighbor_context(self, hit: Dict[str, Any], neighbor_window: int = 1) -> Dict[str, Any]:
+        payload = hit.get("payload", {}) or {}
+        metadata = payload.get("metadata", {}) or {}
+
+        if payload.get("is_table") or metadata.get("is_table"):
+            return hit
+
+        file_tag = payload.get("Original_file")
+        chunk_index = metadata.get("chunk_index")
+        if not file_tag or not isinstance(chunk_index, int):
+            return hit
+
+        neighbors = self.db.get_adjacent_chunks(
+            file_tag=file_tag,
+            chunk_index=chunk_index,
+            window=neighbor_window,
+        )
+        if len(neighbors) <= 1:
+            return hit
+
+        ordered_contents: List[str] = []
+        for neighbor in neighbors:
+            neighbor_payload = neighbor.get("payload", {}) or {}
+            content = neighbor_payload.get("Content", "") or neighbor_payload.get("content", "")
+            if not isinstance(content, str):
+                content = str(content)
+            content = content.strip()
+            if content:
+                ordered_contents.append(content)
+
+        if not ordered_contents:
+            return hit
+
+        expanded = dict(hit)
+        expanded_payload = dict(payload)
+        expanded_payload["Content"] = "\n".join(ordered_contents)
+        expanded_payload["neighbor_expanded"] = True
+        expanded["payload"] = expanded_payload
+        return expanded
+
     def _select_full_chunk_hits(
         self,
         hits: List[Dict[str, Any]],
@@ -278,6 +406,8 @@ class DatabaseToolkit(BaseToolkit):
         full_chunk_limit: int = DEFAULT_FINAL_FULL_CHUNKS,
         max_total_chars: int = DEFAULT_MAX_TOTAL_CHARS,
         max_chars_per_chunk: int = DEFAULT_MAX_CHARS_PER_CHUNK,
+        max_per_parent: int = 1,
+        neighbor_window: int = 1,
     ) -> str:
         """
         Hybrid retrieval within local database.
@@ -380,6 +510,12 @@ class DatabaseToolkit(BaseToolkit):
                     : int(candidate_top_k)
                 ]
 
+        hits = self._apply_query_type_bias(hits, query)
+        hits = self._dedupe_by_parent(hits, max_per_parent=max_per_parent)
+
+        if neighbor_window > 0:
+            hits = [self._expand_neighbor_context(hit, neighbor_window=neighbor_window) for hit in hits]
+
         hits = self._select_full_chunk_hits(
             hits,
             full_chunk_limit=full_chunk_limit,
@@ -393,14 +529,21 @@ class DatabaseToolkit(BaseToolkit):
         formatted_results = []
         for hit in hits:
             payload = hit.get("payload", {}) or {}
+            metadata = payload.get("metadata", {}) or {}
             source = payload.get("Original_file", "Unknown Source")
             content = payload.get("Content", "") or payload.get("content", "")
             score = float(hit.get("score", 0.0))
 
             # 表格上下文恢复（可选）
-            if restore_table_context and payload.get("is_table"):
-                context_before = payload.get("context_before", "")
-                context_after = payload.get("context_after", "")
+            if restore_table_context and (payload.get("is_table") or metadata.get("is_table")):
+                context_before = (
+                    payload.get("context_before", "")
+                    or metadata.get("context_before", "")
+                )
+                context_after = (
+                    payload.get("context_after", "")
+                    or metadata.get("context_after", "")
+                )
                 if context_before or context_after:
                     # 合并上下文
                     content = f"{context_before}\n{content}\n{context_after}".strip()

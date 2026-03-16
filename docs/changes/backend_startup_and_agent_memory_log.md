@@ -131,6 +131,49 @@
 - 后端重启后，旧登录态不会再继续“无感复活”。
 - 前端刷新时会以当前 token 的实时校验结果为准，而不是直接相信上一次保存在本地的已登录状态。
 
+### 7. 长 PDF 检索增强：父块去重、邻接补全、问题类型路由
+
+涉及文件：
+
+- `tools/load_files.py`
+- `tools/qdrant.py`
+- `tools/database_toolkit.py`
+
+具体改动：
+
+- 入库时为每个 chunk 新增 metadata：
+  - `chunk_index`
+  - `chunk_count`
+  - `chunk_type`
+- 检索阶段新增 `max_per_parent=1` 约束：
+  - 当多个子索引命中同一个父块时，最终只保留一个父块结果。
+- 新增邻接补全能力：
+  - `QdrantDB.get_file_chunks()`
+  - `QdrantDB.get_adjacent_chunks()`
+  - 对普通文本命中结果，会按同文件的 `chunk_index` 自动补充相邻 chunk 内容。
+- 新增问题类型路由增强：
+  - 数值问题优先提升含数字/单位的 chunk；
+  - 表格问题优先提升表格块；
+  - 普通问答继续走现有 hybrid 检索主链路。
+- 同时修正了表格 metadata 的读取方式：
+  - 检索层现在会同时兼容 payload 顶层和 `payload.metadata` 中的 `is_table/context_before/context_after`。
+
+效果：
+
+- 大 PDF 中多个子 chunk 指向同一父块时，不会再重复占满返回结果。
+- 对长文档的正文问答，命中后能补齐前后相邻上下文，减少“只命中局部碎片导致答偏”的情况。
+- 对参数类问题和表格类问题，召回结果会更偏向真正含数值或表格结构的证据块。
+
+注意：
+
+- 邻接补全依赖 `chunk_index` metadata。
+- 只有在本次改动之后重新入库的文档，才能完整启用邻接补全。
+- 旧库中的历史数据如果没有 `chunk_index`，仍然可以使用：
+  - 父块去重
+  - 数值问题优先
+  - 表格问题优先
+  但邻接补全效果会受限。
+
 ### 2. Agent 接入 CAMEL Long-Term Memory
 
 涉及文件：
