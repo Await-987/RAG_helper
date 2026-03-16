@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     # Storage paths
     STORAGE_DIR: Path = PROJECT_ROOT / "data" / "stored_files"
     MINERU_OUTPUT_DIR: Path = PROJECT_ROOT / "data" / "mineru_output"
+    AGENT_MEMORY_DIR: Path = PROJECT_ROOT / os.getenv("AGENT_MEMORY_DIR", "data/agent_memory")
 
     # Model settings (from environment)
     OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")
@@ -52,6 +53,13 @@ class Settings(BaseSettings):
     # Reranker settings
     RERANKER_PATH: Optional[str] = os.getenv("reranker_path")
     RERANKER_DEVICE: Optional[str] = os.getenv("RERANKER_DEVICE")
+
+    # Agent memory settings
+    AGENT_MEMORY_ENABLED: bool = os.getenv("AGENT_MEMORY_ENABLED", "true").lower() == "true"
+    AGENT_MEMORY_TOKEN_LIMIT: int = int(os.getenv("AGENT_MEMORY_TOKEN_LIMIT", "12000"))
+    AGENT_MEMORY_RETRIEVE_LIMIT: int = int(os.getenv("AGENT_MEMORY_RETRIEVE_LIMIT", "6"))
+    AGENT_MEMORY_KEEP_RATE: float = float(os.getenv("AGENT_MEMORY_KEEP_RATE", "0.9"))
+    MEMORY_TOKEN_COUNTER_MODEL: str = os.getenv("MEMORY_TOKEN_COUNTER_MODEL", "GPT_4O_MINI")
 
     # Table summary model settings
     TABLE_SUMMARY_MODEL_PATH: Optional[str] = os.getenv("TABLE_SUMMARY_MODEL_PATH")

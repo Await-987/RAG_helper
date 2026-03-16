@@ -118,11 +118,30 @@ def get_database_toolkit():
 
     print("Initializing DatabaseToolkit...")
     _database_toolkit_cache = DatabaseToolkit()
-    # Warmup lexical index
-    _database_toolkit_cache.warmup_lexical_index()
     print("  DatabaseToolkit initialized!")
 
     return _database_toolkit_cache
+
+
+def init_backend_startup() -> None:
+    """
+    Initialize backend resources during FastAPI startup.
+
+    This eagerly warms up components that are otherwise initialized on first
+    request, reducing latency for file management and lexical retrieval.
+    """
+    print("[STARTUP] Initializing backend resources...")
+
+    file_service = get_file_service()
+    database_toolkit = get_database_toolkit()
+
+    print("[STARTUP] Warming up lexical index and reranker...")
+    database_toolkit.warmup_lexical_index()
+
+    print("[STARTUP] Warming up file management...")
+    file_service.warmup()
+
+    print("[STARTUP] Backend resources ready")
 
 
 def init_table_summary_model():
@@ -215,6 +234,21 @@ def cleanup_table_summary_model():
     gc.collect()
 
     print("[INFO] Table summary model released")
+
+
+def cleanup_database_toolkit():
+    """Close the shared DatabaseToolkit instance if it was initialized."""
+    global _database_toolkit_cache
+
+    if _database_toolkit_cache is None:
+        return
+
+    try:
+        _database_toolkit_cache.close()
+    except Exception as e:
+        print(f"[WARNING] Failed to close DatabaseToolkit: {e}")
+    finally:
+        _database_toolkit_cache = None
 
 
 # ==================== Service Dependencies ====================

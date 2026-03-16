@@ -28,6 +28,23 @@ class FileService:
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self.collection_name = settings.COLLECTION_NAME
 
+    def warmup(self) -> None:
+        """
+        Warm up file-management dependencies used by the backend.
+
+        This ensures storage directories exist and primes the file/database
+        status query so the first file-list request is fast.
+        """
+        from tools.file_manager_ui import MINERU_OUTPUT_DIR, get_local_files_with_db_status
+
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        MINERU_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+        file_info_list, total_chunks = get_local_files_with_db_status(self.storage_dir)
+        logger.info(
+            f"文件管理预热完成: {len(file_info_list)} 个文件条目, {total_chunks} 个切片"
+        )
+
     def get_file_list(
         self,
         page: int = 1,

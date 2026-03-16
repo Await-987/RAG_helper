@@ -2,10 +2,11 @@ import os
 import streamlit as st
 from dotenv import load_dotenv
 from camel.models import ModelFactory
+from camel.models.stub_model import StubTokenCounter
 from camel.types import ModelPlatformType, ModelType
 from camel.embeddings import SentenceTransformerEncoder
+from camel.utils import OpenAITokenCounter
 from pathlib import Path
-# from camel.models.stub_model import StubTokenCounter
 
 load_dotenv()
 
@@ -188,7 +189,7 @@ def backend_model():
         model_type=model_name,
         api_key=api_key,
         url=url,
-        # token_counter=StubTokenCounter()
+        token_counter=_build_token_counter(),
     )
 
 
@@ -201,13 +202,34 @@ def stream_model():
         model_type=model_name,
         api_key=api_key,
         url=url,
-        # token_counter=StubTokenCounter(),
+        token_counter=_build_token_counter(),
         model_config_dict={
                 "stream": True,
                 "stream_options": {"include_usage": True},
                 "max_tokens": 4000,
             },
     )
+
+
+def _build_token_counter():
+    """
+    Build a token counter that works in restricted environments.
+
+    CAMEL's OpenAI-compatible backend may trigger a tiktoken encoding download on
+    first use. If that fails in the current environment, fall back to
+    StubTokenCounter so ChatAgent initialization can still proceed.
+    """
+    counter_model_name = os.getenv("MEMORY_TOKEN_COUNTER_MODEL", "GPT_4O_MINI")
+    model_type = getattr(ModelType, counter_model_name, ModelType.GPT_4O_MINI)
+
+    try:
+        counter = OpenAITokenCounter(model_type)
+        # Force-load encoding early so we can detect restricted-network failures.
+        counter.count_tokens_from_messages([])
+        return counter
+    except Exception as e:
+        print(f"[WARNING] OpenAITokenCounter unavailable, fallback to StubTokenCounter: {e}")
+        return StubTokenCounter()
 
 """
 @qiaoyu 2026-01-26 注释掉改为在线 embedding 版本：

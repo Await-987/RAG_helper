@@ -33,8 +33,9 @@ async def lifespan(app: FastAPI):
     print(f"Debug mode: {settings.DEBUG}")
     print("=" * 60)
 
-    # Note: Database toolkit will be initialized lazily on first use
-    # to avoid locking issues if Qdrant is already in use by Streamlit
+    from app.dependencies import init_backend_startup
+
+    init_backend_startup()
     print("Application ready!")
 
     yield
@@ -42,7 +43,8 @@ async def lifespan(app: FastAPI):
     # Shutdown
     print("Shutting down application...")
     # Cleanup resources if needed
-    from app.dependencies import cleanup_table_summary_model
+    from app.dependencies import cleanup_database_toolkit, cleanup_table_summary_model
+    cleanup_database_toolkit()
     cleanup_table_summary_model()
     print("Application shutdown complete.")
 

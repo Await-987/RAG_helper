@@ -33,6 +33,7 @@ async def stream_chat(
     return StreamingResponse(
         chat_service.stream_chat(
             message=request.message,
+            username=current_user["username"],
             session_id=request.session_id
         ),
         media_type="text/event-stream",
@@ -55,7 +56,7 @@ async def clear_session(
 
     - **session_id**: Session ID to clear
     """
-    success = chat_service.clear_session(session_id)
+    success = chat_service.clear_session(current_user["username"], session_id)
 
     if not success:
         raise HTTPException(

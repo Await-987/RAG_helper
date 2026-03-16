@@ -130,6 +130,12 @@ curl http://localhost:8000/api/v1/auth/me \
 | `MODEL_NAME` | 模型名称 | qwq32b |
 | `conan_path` | Embedding 模型路径 | - |
 | `reranker_path` | Reranker 模型路径 | - |
+| `AGENT_MEMORY_ENABLED` | 是否启用 CAMEL 长期记忆 | true |
+| `AGENT_MEMORY_DIR` | Agent memory 持久化目录 | `data/agent_memory` |
+| `AGENT_MEMORY_TOKEN_LIMIT` | Agent memory 上下文 token 上限 | 12000 |
+| `AGENT_MEMORY_RETRIEVE_LIMIT` | 语义记忆召回条数 | 6 |
+| `AGENT_MEMORY_KEEP_RATE` | 历史消息衰减系数 | 0.9 |
+| `MEMORY_TOKEN_COUNTER_MODEL` | CAMEL token counter 使用的模型枚举 | GPT_4O_MINI |
 
 ## 核心改造点
 
@@ -153,7 +159,7 @@ def get_embedding_model():
 
 ### 2. 会话管理
 
-新增 `SessionManager` 类管理 ChatAgent 实例：
+新增 `SessionManager` 类管理 ChatAgent 实例，并为每个会话挂载 CAMEL `LongtermAgentMemory`（若当前运行环境支持）。每轮对话结束后会把 memory 快照保存到 `data/agent_memory/`，同一个 `session_id` 重建时自动恢复：
 
 ```python
 class SessionManager:

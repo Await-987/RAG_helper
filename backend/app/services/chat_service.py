@@ -4,7 +4,9 @@ Chat service with session management.
 import sys
 import uuid
 import json
+import re
 from pathlib import Path
+from contextlib import suppress
 from datetime import datetime
 from typing import Dict, Optional, Generator, Any, Tuple
 from loguru import logger
@@ -30,12 +32,78 @@ class SessionManager:
     def __init__(self):
         self._sessions: Dict[str, ChatAgent] = {}
         self._session_metadata: Dict[str, dict] = {}
+        settings.AGENT_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 
-    def get_or_create(self, session_id: Optional[str] = None) -> Tuple[str, ChatAgent]:
+    @staticmethod
+    def _sanitize_path_component(value: str) -> str:
+        sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", value or "")
+        return sanitized or "unknown"
+
+    def _get_user_memory_dir(self, username: str) -> Path:
+        user_dir = settings.AGENT_MEMORY_DIR / self._sanitize_path_component(username)
+        user_dir.mkdir(parents=True, exist_ok=True)
+        return user_dir
+
+    def _get_memory_path(self, username: str, session_id: str) -> Path:
+        return self._get_user_memory_dir(username) / f"{session_id}.json"
+
+    def _build_agent_memory(self):
+        """
+        Build a CAMEL long-term memory for each chat session.
+
+        Falls back to ChatAgent's default memory if the current runtime does not
+        expose the required CAMEL memory APIs.
+        """
+        if not settings.AGENT_MEMORY_ENABLED:
+            logger.info("Agent memory disabled by configuration")
+            return None
+
+        try:
+            from app.dependencies import get_embedding_model
+            from agents.backend_model import _build_token_counter
+            from camel.memories import (
+                ChatHistoryBlock,
+                LongtermAgentMemory,
+                ScoreBasedContextCreator,
+                VectorDBBlock,
+            )
+        except Exception as exc:
+            logger.warning(f"CAMEL memory module unavailable, falling back to default memory: {exc}")
+            return None
+
+        try:
+            context_creator = ScoreBasedContextCreator(
+                token_counter=_build_token_counter(),
+                token_limit=settings.AGENT_MEMORY_TOKEN_LIMIT,
+            )
+            embedding_model = get_embedding_model()
+
+            memory = LongtermAgentMemory(
+                context_creator=context_creator,
+                chat_history_block=ChatHistoryBlock(
+                    keep_rate=settings.AGENT_MEMORY_KEEP_RATE,
+                ),
+                vector_db_block=VectorDBBlock(embedding=embedding_model),
+                retrieve_limit=settings.AGENT_MEMORY_RETRIEVE_LIMIT,
+            )
+
+            logger.info(
+                "Initialized CAMEL long-term memory | token_limit={} retrieve_limit={} keep_rate={}",
+                settings.AGENT_MEMORY_TOKEN_LIMIT,
+                settings.AGENT_MEMORY_RETRIEVE_LIMIT,
+                settings.AGENT_MEMORY_KEEP_RATE,
+            )
+            return memory
+        except Exception as exc:
+            logger.warning(f"Failed to initialize CAMEL long-term memory, fallback to default memory: {exc}")
+            return None
+
+    def get_or_create(self, username: str, session_id: Optional[str] = None) -> Tuple[str, ChatAgent]:
         """
         Get or create a ChatAgent for the given session.
 
         Args:
+            username: Authenticated username that owns the session
             session_id: Optional session ID. If None, creates a new session.
 
         Returns:
@@ -44,13 +112,20 @@ class SessionManager:
         if session_id is None:
             session_id = str(uuid.uuid4())
 
+        existing_metadata = self._session_metadata.get(session_id)
+        if existing_metadata and existing_metadata.get("username") != username:
+            raise PermissionError(f"Session '{session_id}' does not belong to user '{username}'")
+
         if session_id not in self._sessions:
             logger.info(f"Creating new chat session: {session_id}")
             self._sessions[session_id] = self._create_chat_agent()
+            self._restore_session_memory(username, session_id, self._sessions[session_id])
             self._session_metadata[session_id] = {
+                "username": username,
                 "created_at": datetime.now(),
                 "message_count": 0,
-                "last_activity": datetime.now()
+                "last_activity": datetime.now(),
+                "memory_enabled": bool(getattr(self._sessions[session_id], "memory", None)),
             }
 
         # Update last activity
@@ -94,12 +169,15 @@ class SessionManager:
         # Create stream model
         from agents import stream_model
 
+        agent_memory = self._build_agent_memory()
+
         return ChatAgent(
             system_message=BaseMessage.make_assistant_message(
                 role_name="Chat Agent",
                 content=system_message,
             ),
             model=stream_model(),
+            memory=agent_memory,
             tools=[*database_toolkit.get_tools()],
             message_window_size=12,
             summarize_threshold=20,
@@ -107,7 +185,40 @@ class SessionManager:
             stream_accumulate=False
         )
 
-    def clear_session(self, session_id: str) -> bool:
+    def _restore_session_memory(self, username: str, session_id: str, chat_agent: ChatAgent) -> None:
+        """Restore persisted memory for an existing session ID if available."""
+        memory_path = self._get_memory_path(username, session_id)
+        if not memory_path.exists():
+            return
+
+        if not hasattr(chat_agent, "load_memory_from_path"):
+            logger.warning("ChatAgent does not support load_memory_from_path, skip memory restore")
+            return
+
+        try:
+            chat_agent.load_memory_from_path(str(memory_path))
+            logger.info(f"Restored agent memory from {memory_path}")
+        except Exception as exc:
+            logger.warning(f"Failed to restore agent memory from {memory_path}: {exc}")
+
+    def save_session_memory(self, username: str, session_id: str) -> None:
+        """Persist a session memory snapshot to disk."""
+        chat_agent = self._sessions.get(session_id)
+        if chat_agent is None:
+            return
+
+        if not hasattr(chat_agent, "save_memory"):
+            logger.warning("ChatAgent does not support save_memory, skip persistence")
+            return
+
+        memory_path = self._get_memory_path(username, session_id)
+        try:
+            chat_agent.save_memory(str(memory_path))
+            logger.debug(f"Saved agent memory to {memory_path}")
+        except Exception as exc:
+            logger.warning(f"Failed to save agent memory to {memory_path}: {exc}")
+
+    def clear_session(self, username: str, session_id: str) -> bool:
         """
         Clear a session and its ChatAgent.
 
@@ -117,10 +228,28 @@ class SessionManager:
         Returns:
             True if session was cleared, False if not found
         """
+        metadata = self._session_metadata.get(session_id)
+        if metadata and metadata.get("username") != username:
+            logger.warning(
+                "User '{}' attempted to clear session '{}' owned by '{}'",
+                username,
+                session_id,
+                metadata.get("username"),
+            )
+            return False
+
         if session_id in self._sessions:
+            chat_agent = self._sessions[session_id]
+            if hasattr(chat_agent, "memory") and hasattr(chat_agent.memory, "clear"):
+                try:
+                    chat_agent.memory.clear()
+                except Exception as exc:
+                    logger.warning(f"Failed to clear chat memory for session {session_id}: {exc}")
             del self._sessions[session_id]
             if session_id in self._session_metadata:
                 del self._session_metadata[session_id]
+            with suppress(FileNotFoundError):
+                self._get_memory_path(username, session_id).unlink()
             logger.info(f"Session cleared: {session_id}")
             return True
         return False
@@ -157,7 +286,9 @@ class ChatService:
             memory_context = ""
             if hasattr(chat_agent, "memory") and hasattr(chat_agent.memory, "get_context"):
                 context = chat_agent.memory.get_context()
-                if isinstance(context, str):
+                if isinstance(context, tuple):
+                    memory_context = str(context[0])
+                elif isinstance(context, str):
                     memory_context = context
                 else:
                     memory_context = str(context)
@@ -184,6 +315,7 @@ class ChatService:
     def stream_chat(
         self,
         message: str,
+        username: str,
         session_id: Optional[str] = None
     ) -> Generator[str, None, None]:
         """
@@ -191,6 +323,7 @@ class ChatService:
 
         Args:
             message: User message
+            username: Authenticated username
             session_id: Optional session ID
 
         Yields:
@@ -198,7 +331,7 @@ class ChatService:
         """
         try:
             # Get or create session
-            session_id, chat_agent = self.session_manager.get_or_create(session_id)
+            session_id, chat_agent = self.session_manager.get_or_create(username, session_id)
 
             # Increment message count
             self.session_manager.increment_message_count(session_id)
@@ -259,6 +392,8 @@ class ChatService:
                     full_response = "抱歉，我无法生成回复。"
 
             # Send done event
+            self.session_manager.save_session_memory(username, session_id)
+
             yield self._format_sse("done", {
                 "reasoning": full_reasoning,
                 "content": full_response,
@@ -280,6 +415,6 @@ class ChatService:
         """Format data as SSE event"""
         return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
-    def clear_session(self, session_id: str) -> bool:
+    def clear_session(self, username: str, session_id: str) -> bool:
         """Clear a chat session"""
-        return self.session_manager.clear_session(session_id)
+        return self.session_manager.clear_session(username, session_id)
