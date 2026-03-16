@@ -1,9 +1,29 @@
 import { useEffect, useRef, useState } from 'react';
 import { useChatStore, createMessage } from '@/stores';
 import { chatApi } from '@/api';
-import { Send, Loader2, Trash2 } from 'lucide-react';
+import { Send, Loader2, Trash2, MessageSquare } from 'lucide-react';
 import { MessageItem } from '@/components/Chat';
 import { StreamingMessage } from '@/components/Chat';
+import type { ChatMessage, ChatSessionSummary } from '@/types';
+
+function normalizeMessage(message: ChatMessage | {
+  role: 'user' | 'assistant';
+  content: string;
+  reasoning?: string | null;
+  timestamp: string;
+}): ChatMessage {
+  if ('id' in message) {
+    return message;
+  }
+
+  return {
+    id: `${message.role}-${message.timestamp}-${message.content.slice(0, 12)}`,
+    role: message.role,
+    content: message.content,
+    reasoning: message.reasoning || undefined,
+    timestamp: new Date(message.timestamp),
+  };
+}
 
 export function ChatPage() {
   const {
@@ -19,16 +39,65 @@ export function ChatPage() {
     setSessionId,
     setLoading,
     clearMessages,
+    setMessages,
   } = useChatStore();
 
   const [input, setInput] = useState('');
+  const [sessions, setSessions] = useState<ChatSessionSummary[]>([]);
+  const [isSessionsLoading, setIsSessionsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  const loadSessions = async (preferredSessionId?: string | null) => {
+    setIsSessionsLoading(true);
+    try {
+      const data = await chatApi.listSessions();
+      setSessions(data.sessions);
+
+      const targetSessionId = preferredSessionId ?? sessionId;
+      if (!targetSessionId) {
+        return;
+      }
+
+      const hasTarget = data.sessions.some((item) => item.session_id === targetSessionId);
+      if (!hasTarget) {
+        if (targetSessionId === sessionId) {
+          clearMessages();
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load sessions:', error);
+    } finally {
+      setIsSessionsLoading(false);
+    }
+  };
+
+  const openSession = async (targetSessionId: string) => {
+    if (isLoading || targetSessionId === sessionId) {
+      return;
+    }
+
+    try {
+      setLoading(true);
+      clearStreaming();
+      const detail = await chatApi.getSessionDetail(targetSessionId);
+      setSessionId(detail.session_id);
+      setMessages(detail.messages.map(normalizeMessage));
+    } catch (error) {
+      console.error('Failed to load session detail:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Auto scroll to bottom
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamingContent, streamingReasoning]);
+
+  useEffect(() => {
+    loadSessions();
+  }, []);
 
   // Listen for new chat event
   useEffect(() => {
@@ -97,8 +166,12 @@ export function ChatPage() {
               event.reasoning || assistantReasoning
             );
             addMessage(assistantMessage);
+            if (event.session_id) {
+              setSessionId(event.session_id);
+            }
             clearStreaming();
             setLoading(false);
+            loadSessions(event.session_id || sessionId);
             completed = true;
             break;
 
@@ -110,6 +183,7 @@ export function ChatPage() {
             addMessage(errorMessage);
             clearStreaming();
             setLoading(false);
+            loadSessions(sessionId);
             completed = true;
             break;
         }
@@ -120,6 +194,7 @@ export function ChatPage() {
         addMessage(createMessage('assistant', finalContent, assistantReasoning || undefined));
         clearStreaming();
         setLoading(false);
+        loadSessions(sessionId);
       }
     } catch (error: any) {
       const errorMessage = createMessage(
@@ -142,13 +217,6 @@ export function ChatPage() {
   };
 
   const handleNewChat = async () => {
-    if (sessionId) {
-      try {
-        await chatApi.clearSession(sessionId);
-      } catch (error) {
-        console.error('Failed to clear session:', error);
-      }
-    }
     clearMessages();
     clearStreaming();
     setLoading(false);
@@ -156,83 +224,154 @@ export function ChatPage() {
     inputRef.current?.focus();
   };
 
+  const handleDeleteSession = async (targetSessionId: string) => {
+    try {
+      await chatApi.clearSession(targetSessionId);
+      if (targetSessionId === sessionId) {
+        clearMessages();
+      }
+      await loadSessions(targetSessionId === sessionId ? null : sessionId);
+    } catch (error) {
+      console.error('Failed to delete session:', error);
+    }
+  };
+
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b border-dark-border bg-dark-card">
-        <h1 className="text-xl font-bold text-white">智能设计助手</h1>
-        <button
-          onClick={handleNewChat}
-          className="btn btn-secondary flex items-center gap-2"
-          title="开始新对话"
-        >
-          <Trash2 size={18} />
-          <span className="hidden sm:inline">清空对话</span>
-        </button>
-      </div>
+    <div className="flex h-full">
+      <div className="hidden lg:flex w-80 border-r border-dark-border bg-dark-card flex-col">
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-2">
+          {isSessionsLoading && (
+            <div className="text-sm text-gray-500 px-2 py-3">正在加载历史对话...</div>
+          )}
 
-      {/* Messages area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
-        {messages.length === 0 && !isLoading && (
-          <div className="flex flex-col items-center justify-center h-full text-gray-400">
-            <div className="w-20 h-20 rounded-full bg-dark-hover flex items-center justify-center text-4xl mb-4">
-              💬
+          {!isSessionsLoading && sessions.length === 0 && (
+            <div className="text-sm text-gray-500 px-2 py-3">暂无历史对话</div>
+          )}
+
+          {sessions.map((item) => (
+            <div
+              key={item.session_id}
+              className={`group rounded-xl border transition-colors ${
+                item.session_id === sessionId
+                  ? 'border-primary-600 bg-primary-900/20'
+                  : 'border-dark-border bg-dark-bg hover:bg-dark-hover'
+              }`}
+            >
+              <button
+                onClick={() => openSession(item.session_id)}
+                className="w-full text-left px-3 py-3"
+              >
+                <div className="flex items-start gap-3">
+                  <MessageSquare size={18} className="mt-0.5 text-gray-400" />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium text-gray-100">
+                      {item.title}
+                    </div>
+                    <div className="mt-1 text-xs text-gray-500">
+                      {new Date(item.updated_at).toLocaleString()}
+                    </div>
+                    <div className="mt-1 text-xs text-gray-500">
+                      {item.message_count} 条消息
+                    </div>
+                  </div>
+                </div>
+              </button>
+              <div className="px-3 pb-3">
+                <button
+                  onClick={() => handleDeleteSession(item.session_id)}
+                  className="text-xs text-red-400 hover:text-red-300 flex items-center gap-1"
+                >
+                  <Trash2 size={14} />
+                  删除
+                </button>
+              </div>
             </div>
-            <p className="text-lg font-medium">开始新对话</p>
-            <p className="text-sm mt-2">输入您的问题，我将基于知识库为您解答</p>
-          </div>
-        )}
-
-        {messages.map((msg) => (
-          <MessageItem key={msg.id} message={msg} />
-        ))}
-
-        {/* Streaming message */}
-        {(streamingContent || streamingReasoning || isLoading) && (
-          <StreamingMessage
-            content={streamingContent}
-            reasoning={streamingReasoning}
-            isLoading={isLoading && !streamingContent && !streamingReasoning}
-          />
-        )}
-
-        <div ref={messagesEndRef} />
+          ))}
+        </div>
       </div>
 
-      {/* Input area */}
-      <div className="p-4 border-t border-dark-border bg-dark-card">
-        <form onSubmit={handleSubmit} className="flex gap-3">
-          <div className="flex-1 relative">
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="输入您的问题... (Enter 发送, Shift+Enter 换行)"
-              className="input-field resize-none pr-12 min-h-[52px] max-h-[200px]"
-              rows={1}
-              disabled={isLoading}
-              style={{
-                height: 'auto',
-                minHeight: '52px',
-              }}
-            />
+      <div className="flex-1 flex flex-col h-full">
+        <div className="flex items-center justify-between p-4 border-b border-dark-border bg-dark-card">
+          <div>
+            <h1 className="text-xl font-bold text-white">智能设计助手</h1>
+            <p className="text-xs text-gray-500 mt-1">
+              {sessionId ? `当前会话：${sessionId}` : '未选择历史会话'}
+            </p>
           </div>
-          <button
-            type="submit"
-            disabled={!input.trim() || isLoading}
-            className="btn btn-primary h-[52px] px-6 flex items-center justify-center"
-          >
-            {isLoading ? (
-              <Loader2 size={20} className="animate-spin" />
-            ) : (
-              <Send size={20} />
+          <div className="flex items-center gap-2">
+            {sessionId && (
+              <button
+                onClick={() => handleDeleteSession(sessionId)}
+                className="btn btn-secondary flex items-center gap-2"
+                title="删除当前会话"
+              >
+                <Trash2 size={18} />
+                <span className="hidden sm:inline">删除会话</span>
+              </button>
             )}
-          </button>
-        </form>
-        <p className="text-xs text-gray-500 mt-2 text-center">
-          基于知识库检索的回答，所有信息可溯源
-        </p>
+          </div>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+          {messages.length === 0 && !isLoading && (
+            <div className="flex flex-col items-center justify-center h-full text-gray-400">
+              <div className="w-20 h-20 rounded-full bg-dark-hover flex items-center justify-center text-4xl mb-4">
+                💬
+              </div>
+              <p className="text-lg font-medium">开始新对话</p>
+              <p className="text-sm mt-2">输入您的问题，我将基于知识库为您解答</p>
+            </div>
+          )}
+
+          {messages.map((msg) => (
+            <MessageItem key={msg.id} message={msg} />
+          ))}
+
+          {(streamingContent || streamingReasoning || isLoading) && (
+            <StreamingMessage
+              content={streamingContent}
+              reasoning={streamingReasoning}
+              isLoading={isLoading && !streamingContent && !streamingReasoning}
+            />
+          )}
+
+          <div ref={messagesEndRef} />
+        </div>
+
+        <div className="p-4 border-t border-dark-border bg-dark-card">
+          <form onSubmit={handleSubmit} className="flex gap-3">
+            <div className="flex-1 relative">
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="输入您的问题... (Enter 发送, Shift+Enter 换行)"
+                className="input-field resize-none pr-12 min-h-[52px] max-h-[200px]"
+                rows={1}
+                disabled={isLoading}
+                style={{
+                  height: 'auto',
+                  minHeight: '52px',
+                }}
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={!input.trim() || isLoading}
+              className="btn btn-primary h-[52px] px-6 flex items-center justify-center"
+            >
+              {isLoading ? (
+                <Loader2 size={20} className="animate-spin" />
+              ) : (
+                <Send size={20} />
+              )}
+            </button>
+          </form>
+          <p className="text-xs text-gray-500 mt-2 text-center">
+            基于知识库检索的回答，所有信息可溯源
+          </p>
+        </div>
       </div>
     </div>
   );

@@ -39,9 +39,26 @@ class ChatResponse(BaseModel):
 class SessionInfo(BaseModel):
     """Session information schema"""
     session_id: str
+    title: str
     created_at: datetime
+    updated_at: datetime
     message_count: int
     last_activity: datetime
+    username: Optional[str] = None
+
+
+class SessionListResponse(BaseModel):
+    """Session list response schema"""
+    sessions: List[SessionInfo]
+
+
+class SessionDetailResponse(BaseModel):
+    """Session detail response schema"""
+    session_id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    messages: List[ChatMessage]
 
 
 class ClearSessionResponse(BaseModel):

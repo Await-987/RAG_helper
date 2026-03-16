@@ -2,8 +2,11 @@
 User management service.
 """
 import sys
+import re
+import shutil
 from pathlib import Path
 from typing import List, Tuple, Optional
+from loguru import logger
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
@@ -11,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from tools.user_auth import UserAuth, UserRole
+from app.config import settings
 from app.schemas.user import User, UserCreate, UserResponse, UserListResponse
 
 
@@ -19,6 +23,39 @@ class UserService:
 
     def __init__(self):
         self.user_auth = UserAuth()
+
+    @staticmethod
+    def _sanitize_path_component(value: str) -> str:
+        sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "_", value or "")
+        return sanitized or "unknown"
+
+    def _cleanup_user_runtime_data(self, username: str) -> None:
+        """
+        Remove persisted chat artifacts and in-memory sessions for a deleted user.
+        """
+        safe_username = self._sanitize_path_component(username)
+
+        for root_dir in (settings.AGENT_MEMORY_DIR, settings.CHAT_SESSION_DIR):
+            user_dir = root_dir / safe_username
+            if user_dir.exists():
+                shutil.rmtree(user_dir, ignore_errors=True)
+                logger.info(f"已清理用户运行时数据目录: {user_dir}")
+
+        try:
+            from app.dependencies import get_chat_service
+
+            chat_service = get_chat_service()
+            session_ids = [
+                session_id
+                for session_id, metadata in chat_service.session_manager._session_metadata.items()
+                if metadata.get("username") == username
+            ]
+            for session_id in session_ids:
+                chat_service.session_manager.clear_session(username, session_id)
+            if session_ids:
+                logger.info(f"已清理用户活跃会话: {username}, 共 {len(session_ids)} 个")
+        except Exception as exc:
+            logger.warning(f"清理用户活跃会话失败 {username}: {exc}")
 
     def get_all_users(self) -> UserListResponse:
         """
@@ -105,10 +142,15 @@ class UserService:
         Returns:
             Tuple of (success, message)
         """
-        return self.user_auth.delete_user(
+        success, message = self.user_auth.delete_user(
             username=username,
             operator=operator
         )
+
+        if success:
+            self._cleanup_user_runtime_data(username)
+
+        return success, message
 
     def change_password(self, username: str, old_password: str, new_password: str) -> Tuple[bool, str]:
         """

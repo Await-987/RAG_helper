@@ -1,6 +1,6 @@
 .env
 .env.*
-
+.json
 .claude
 .claude/
 __pycache__/
@@ -62,7 +62,8 @@ frontend/.cache/
 data/storages/*
 #  .gitkeep
 !data/storages/.gitkeep
-
+data/chat_sessions
+data/agent_memory
 #  models/Conan-embedding-v1/
 models/Conan-embedding-v1/*
 #  .gitkeep

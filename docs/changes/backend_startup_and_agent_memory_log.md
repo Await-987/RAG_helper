@@ -11,6 +11,32 @@
 
 ## 已完成改动
 
+### 0. 多轮对话工具复用问题修正
+
+涉及文件：
+
+- `backend/app/services/chat_service.py`
+- `docs/changes/backend_startup_and_agent_memory_log.md`
+
+问题现象：
+
+- Agent 在第一轮调用 `search_database` 后，后续多轮追问容易直接依据上一次搜索到的内容回答，不再重新调用工具。
+
+原因分析：
+
+- 后端当前实际使用的 system prompt 约束不够强，只要求“事实性问题必须调用工具”，但没有把“每轮事实追问都必须重新检索”写成硬规则。
+- 接入 memory 后，历史回答、历史检索结果和摘要会继续出现在上下文中，模型容易把这些旧证据误判为“本轮已足够回答”的依据。
+
+修正内容：
+
+- 强化后端实际使用的 system prompt。
+- 明确规定：
+  - 每一轮事实性问题都必须调用 `search_database`；
+  - 历史对话只允许用于指代消解、补全主体、改写 `query` 和 `intent_description`；
+  - 历史回答、历史检索结果、历史摘要都不能直接作为本轮证据；
+  - 即使上一轮刚检索过，只要本轮继续追问事实、参数、条件、范围、差异、是否、多少等内容，也必须重新检索；
+  - 只有在“本轮调用工具后仍无结果”时，才允许回答知识库中未找到相关信息。
+
 ### 1. 后端启动阶段预热
 
 涉及文件：
@@ -31,6 +57,51 @@
   - 确保 `mineru_output` 目录存在；
   - 提前执行一次文件列表与数据库切片统计，建立文件管理所需缓存。
 - 服务关闭时增加 `cleanup_database_toolkit()`，释放共享数据库工具。
+
+### 4. 历史对话功能
+
+涉及文件：
+
+- `backend/app/config.py`
+- `backend/app/schemas/chat.py`
+- `backend/app/services/chat_service.py`
+- `backend/app/api/v1/chat.py`
+- `frontend/src/types/chat.ts`
+- `frontend/src/stores/chatStore.ts`
+- `frontend/src/api/chat.ts`
+- `frontend/src/pages/Chat.tsx`
+
+具体改动：
+
+- 新增后端会话转录持久化目录 `data/chat_sessions/<username>/`。
+- 每轮聊天会把用户消息和助手消息写入 transcript 文件。
+- 新增后端接口：
+  - `GET /api/v1/chat/sessions`：获取当前用户的历史会话列表；
+  - `GET /api/v1/chat/session/{session_id}`：获取单个历史会话详情；
+  - 现有 `DELETE /api/v1/chat/session/{session_id}` 同时删除内存会话、memory 快照和 transcript。
+- transcript 与 memory 一样按用户隔离，避免不同用户互相看到历史会话。
+- 前端聊天页新增历史对话列表：
+  - 左侧展示当前用户的历史会话；
+  - 点击会话可恢复历史消息；
+  - 支持新建对话；
+  - 支持删除单个历史会话。
+- 新对话不再自动清除旧会话，而是保留为历史记录，更接近 GPT 类产品的交互方式。
+- 清理重复入口后，前端仅保留一个全局“新对话”按钮，避免聊天页出现多个相同操作入口。
+
+### 5. 删除用户时统一清理本地对话与记忆
+
+涉及文件：
+
+- `backend/app/services/user_service.py`
+- `docs/changes/backend_startup_and_agent_memory_log.md`
+
+具体改动：
+
+- 管理员删除用户成功后，会自动清理该用户的运行时数据：
+  - `data/agent_memory/<username>/`
+  - `data/chat_sessions/<username>/`
+- 如果该用户当前还有活跃会话在后端内存中，也会同步清理对应 session。
+- 这样用户被删除后，本地对话历史、memory 快照和活跃会话状态都会统一回收，避免残留孤儿数据。
 
 ### 2. Agent 接入 CAMEL Long-Term Memory
 

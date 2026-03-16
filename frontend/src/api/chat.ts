@@ -1,4 +1,9 @@
-import type { ChatRequest, SSEEvent } from '@/types';
+import type {
+  ChatRequest,
+  ChatSessionDetailResponse,
+  ChatSessionListResponse,
+  SSEEvent,
+} from '@/types';
 
 const API_BASE_URL = '/api/v1';
 
@@ -120,5 +125,35 @@ export const chatApi = {
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
+  },
+
+  listSessions: async (): Promise<ChatSessionListResponse> => {
+    const token = localStorage.getItem('access_token');
+    const response = await fetch(`${API_BASE_URL}/chat/sessions`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return response.json();
+  },
+
+  getSessionDetail: async (sessionId: string): Promise<ChatSessionDetailResponse> => {
+    const token = localStorage.getItem('access_token');
+    const response = await fetch(`${API_BASE_URL}/chat/session/${sessionId}`, {
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+
+    return response.json();
   },
 };

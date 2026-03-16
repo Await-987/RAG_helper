@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 from contextlib import suppress
 from datetime import datetime
-from typing import Dict, Optional, Generator, Any, Tuple
+from typing import Dict, Optional, Generator, Any, Tuple, List
 from loguru import logger
 
 # Add project root to path
@@ -20,7 +20,7 @@ from camel.agents.chat_agent import ChatAgent
 from camel.messages.base import BaseMessage
 
 from app.config import settings
-from app.schemas.chat import ChatStreamChunk
+from app.schemas.chat import ChatMessage
 
 
 class SessionManager:
@@ -33,6 +33,7 @@ class SessionManager:
         self._sessions: Dict[str, ChatAgent] = {}
         self._session_metadata: Dict[str, dict] = {}
         settings.AGENT_MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        settings.CHAT_SESSION_DIR.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def _sanitize_path_component(value: str) -> str:
@@ -44,8 +45,122 @@ class SessionManager:
         user_dir.mkdir(parents=True, exist_ok=True)
         return user_dir
 
+    def _get_user_session_dir(self, username: str) -> Path:
+        user_dir = settings.CHAT_SESSION_DIR / self._sanitize_path_component(username)
+        user_dir.mkdir(parents=True, exist_ok=True)
+        return user_dir
+
     def _get_memory_path(self, username: str, session_id: str) -> Path:
         return self._get_user_memory_dir(username) / f"{session_id}.json"
+
+    def _get_session_path(self, username: str, session_id: str) -> Path:
+        return self._get_user_session_dir(username) / f"{session_id}.json"
+
+    def _load_session_transcript(self, username: str, session_id: str) -> Optional[dict]:
+        session_path = self._get_session_path(username, session_id)
+        if not session_path.exists():
+            return None
+        try:
+            return json.loads(session_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning(f"Failed to load session transcript from {session_path}: {exc}")
+            return None
+
+    def _save_session_transcript(self, username: str, session_id: str, transcript: dict) -> None:
+        session_path = self._get_session_path(username, session_id)
+        session_path.write_text(
+            json.dumps(transcript, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _session_title_from_message(self, message: str) -> str:
+        text = (message or "").strip().replace("\n", " ")
+        if not text:
+            return "新对话"
+        return text[:40]
+
+    def _ensure_session_transcript(self, username: str, session_id: str, first_user_message: Optional[str] = None) -> dict:
+        existing = self._load_session_transcript(username, session_id)
+        if existing is not None:
+            return existing
+
+        now = datetime.now().isoformat()
+        transcript = {
+            "session_id": session_id,
+            "username": username,
+            "title": self._session_title_from_message(first_user_message or ""),
+            "created_at": now,
+            "updated_at": now,
+            "messages": [],
+        }
+        self._save_session_transcript(username, session_id, transcript)
+        return transcript
+
+    def append_transcript_message(
+        self,
+        username: str,
+        session_id: str,
+        *,
+        role: str,
+        content: str,
+        reasoning: Optional[str] = None,
+    ) -> None:
+        transcript = self._ensure_session_transcript(
+            username,
+            session_id,
+            first_user_message=content if role == "user" else None,
+        )
+
+        if role == "user" and not transcript.get("messages"):
+            transcript["title"] = self._session_title_from_message(content)
+
+        transcript["messages"].append(
+            {
+                "role": role,
+                "content": content,
+                "reasoning": reasoning,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
+        transcript["updated_at"] = datetime.now().isoformat()
+        self._save_session_transcript(username, session_id, transcript)
+
+    def list_sessions(self, username: str) -> List[dict]:
+        user_dir = self._get_user_session_dir(username)
+        sessions: List[dict] = []
+
+        for session_file in user_dir.glob("*.json"):
+            try:
+                transcript = json.loads(session_file.read_text(encoding="utf-8"))
+            except Exception as exc:
+                logger.warning(f"Failed to parse session transcript {session_file}: {exc}")
+                continue
+
+            messages = transcript.get("messages", [])
+            created_at = transcript.get("created_at") or datetime.now().isoformat()
+            updated_at = transcript.get("updated_at") or created_at
+            sessions.append(
+                {
+                    "session_id": transcript.get("session_id", session_file.stem),
+                    "title": transcript.get("title") or "新对话",
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                    "message_count": len(messages),
+                    "last_activity": updated_at,
+                    "username": username,
+                }
+            )
+
+        sessions.sort(key=lambda item: item["updated_at"], reverse=True)
+        return sessions
+
+    def get_session_detail(self, username: str, session_id: str) -> Optional[dict]:
+        transcript = self._load_session_transcript(username, session_id)
+        if transcript is None:
+            return None
+        if transcript.get("username") and transcript.get("username") != username:
+            return None
+        return transcript
 
     def _build_agent_memory(self):
         """
@@ -143,21 +258,42 @@ class SessionManager:
         只允许基于知识库内容回答，知识库是唯一事实来源。
 
         回答规则：
-        1. 事实性问题必须调用 `search_database`。
-        2. 工具返回的是已筛选的高相关完整原文 chunk，优先基于这些原文作答；证据不足时再补充一次检索，不要一次索取大量证据。
-        3. 不得编造标准条文、技术参数、职责分工、流程结论。检索不到时明确说明“当前知识库中未找到相关信息”或“现有资料不足以确认结论”。
-        4. 回答必须标注来源；多来源时明确说明来自多个文件。
-        5. 可以整理、压缩、结构化原文，但不得引入知识库中不存在的新事实。
-        6. 回答保持客观、克制、专业，避免“通常来说”“一般认为”“业内普遍”等无来源表述。
-        7. 图片和表格链接是证据的一部分，必须逐字符原样保留，例如 `![表格](mineru_output/xxx.jpg)`。
-        8. 严禁改写图片路径或文件名中的任何字符；不得补全、简写、纠正、翻译、清洗标题，也不得自作主张替换括号内文字。工具返回什么路径，就必须输出什么路径。
-        9. 如果同一证据同时有表格文本和图片链接，允许同时保留两者，但图片链接仍必须原样输出。
-        10. 公式使用 LaTeX；表格使用 Markdown；复杂表格优先保留原图链接。
+        1. 每一轮事实性问题都必须调用 `search_database`，严禁跳过检索直接基于历史回答。
+        2. 多轮对话中的历史信息只允许用于理解指代、补全主体、改写 query 和 intent_description；历史回答、历史检索结果、历史摘要都不能直接当作本轮证据。
+        3. 即使上一轮刚检索过，只要本轮用户继续追问事实、参数、条件、范围、原因、差异、是否、能否、多少、哪一条、哪一项等内容，也必须重新调用 `search_database`。
+        4. 严禁基于历史检索结果直接做肯定回答或否定回答，必须以本轮新检索得到的内容为准。
+        5. 工具返回的是已筛选的高相关完整原文 chunk，优先基于这些原文作答；证据不足时再补充一次检索，不要一次索取大量证据。
+        6. 不得编造标准条文、技术参数、职责分工、流程结论。只有在本轮调用工具后仍然没有获得相关信息时，才可以回答“当前知识库中未找到相关信息”或“现有资料不足以确认结论”。
+        7. 回答必须标注来源；多来源时明确说明来自多个文件。
+        8. 可以整理、压缩、结构化原文，但不得引入知识库中不存在的新事实。
+        9. 回答保持客观、克制、专业，避免“通常来说”“一般认为”“业内普遍”等无来源表述。
+        10. 图片和表格链接是证据的一部分，必须逐字符原样保留，例如 `![表格](mineru_output/xxx.jpg)`。
+        11. 严禁改写图片路径或文件名中的任何字符；不得补全、简写、纠正、翻译、清洗标题，也不得自作主张替换括号内文字。工具返回什么路径，就必须输出什么路径。
+        12. 如果同一证据同时有表格文本和图片链接，允许同时保留两者，但图片链接仍必须原样输出。
+        13. 公式使用 LaTeX；表格使用 Markdown；复杂表格优先保留原图链接。
 
-        检索规则：
-        1. query 只保留 3-8 个核心关键词，保留专业术语、标准编号、数值条件和单位。
-        2. 不要把用户原句整体原样传给工具。
-        3. 优先少量高相关证据，避免无关证据堆积。
+        调用 `search_database` 时，必须同时传入以下两个参数，严禁缺漏：
+
+        * 参数 1: `query` (用于召回)
+          - 动作：将用户提问精炼为 3-8 个核心关键词。
+          - 约束：必须保留原说法中的所有数字、单位、百分比、范围等数值信息；保留标准编号、专业术语。
+          - 约束：优先少量高相关证据，避免无关证据堆积。
+          - 约束：若当前提问包含代词（如“它”、“这个”、“其”、“该标准”等）或属于对前文的追问，必须结合上下文语义，将被省略的主体对象补全到检索 query 中。
+          - 禁止：严禁将用户原句整体原样传给工具。
+
+        * 参数 2: `intent_description` (用于重排)
+          - 动作：基于对话历史，改写为一个完整的自然语言问句，最接近用户的真实意图。
+          - 原则：消除所有模糊代词，将“它”、“该标准”等还原为具体名称，补全被省略的背景主体。
+          - 约束：必须是一个完整句子或疑问句，而不是关键词列表。
+          - 目标：用最接近用户真实意图的完整表述，精确匹配语义最相关的文本模块。
+
+        改写示例：
+        * 用户第一轮：“500kV变压器的绝缘等级是多少？”
+        * query: "500kV 变压器 绝缘等级"
+        * intent_description: "500kV变压器的绝缘等级是多少？"
+        * 用户第二轮（追问）：“那它的能效呢？”
+        * query: "500kV 变压器 能效"
+        * intent_description: "500kV变压器的能效要求是多少？"
 
         总目标：
         只输出能被知识库原文直接支撑、且来源清晰可追溯的答案。
@@ -229,12 +365,21 @@ class SessionManager:
             True if session was cleared, False if not found
         """
         metadata = self._session_metadata.get(session_id)
+        transcript = self._load_session_transcript(username, session_id)
         if metadata and metadata.get("username") != username:
             logger.warning(
                 "User '{}' attempted to clear session '{}' owned by '{}'",
                 username,
                 session_id,
                 metadata.get("username"),
+            )
+            return False
+        if transcript and transcript.get("username") and transcript.get("username") != username:
+            logger.warning(
+                "User '{}' attempted to clear persisted session '{}' owned by '{}'",
+                username,
+                session_id,
+                transcript.get("username"),
             )
             return False
 
@@ -250,7 +395,17 @@ class SessionManager:
                 del self._session_metadata[session_id]
             with suppress(FileNotFoundError):
                 self._get_memory_path(username, session_id).unlink()
+            with suppress(FileNotFoundError):
+                self._get_session_path(username, session_id).unlink()
             logger.info(f"Session cleared: {session_id}")
+            return True
+
+        if transcript is not None:
+            with suppress(FileNotFoundError):
+                self._get_memory_path(username, session_id).unlink()
+            with suppress(FileNotFoundError):
+                self._get_session_path(username, session_id).unlink()
+            logger.info(f"Persisted session cleared: {session_id}")
             return True
         return False
 
@@ -333,6 +488,13 @@ class ChatService:
             # Get or create session
             session_id, chat_agent = self.session_manager.get_or_create(username, session_id)
 
+            self.session_manager.append_transcript_message(
+                username,
+                session_id,
+                role="user",
+                content=message,
+            )
+
             # Increment message count
             self.session_manager.increment_message_count(session_id)
 
@@ -392,6 +554,13 @@ class ChatService:
                     full_response = "抱歉，我无法生成回复。"
 
             # Send done event
+            self.session_manager.append_transcript_message(
+                username,
+                session_id,
+                role="assistant",
+                content=full_response,
+                reasoning=full_reasoning or None,
+            )
             self.session_manager.save_session_memory(username, session_id)
 
             yield self._format_sse("done", {
@@ -418,3 +587,11 @@ class ChatService:
     def clear_session(self, username: str, session_id: str) -> bool:
         """Clear a chat session"""
         return self.session_manager.clear_session(username, session_id)
+
+    def list_sessions(self, username: str) -> List[dict]:
+        """List persisted chat sessions for the current user."""
+        return self.session_manager.list_sessions(username)
+
+    def get_session_detail(self, username: str, session_id: str) -> Optional[dict]:
+        """Get persisted session detail for the current user."""
+        return self.session_manager.get_session_detail(username, session_id)

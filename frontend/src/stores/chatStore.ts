@@ -3,6 +3,7 @@ import type { ChatMessage, ChatState } from '@/types';
 
 interface ChatStore extends ChatState {
   addMessage: (message: ChatMessage) => void;
+  setMessages: (messages: ChatMessage[]) => void;
   updateStreamingContent: (content: string) => void;
   updateStreamingReasoning: (reasoning: string) => void;
   clearStreaming: () => void;
@@ -26,6 +27,13 @@ export const useChatStore = create<ChatStore>((set) => ({
       streamingContent: '',
       streamingReasoning: '',
     })),
+
+  setMessages: (messages) =>
+    set({
+      messages,
+      streamingContent: '',
+      streamingReasoning: '',
+    }),
 
   updateStreamingContent: (content) =>
     set({ streamingContent: content }),

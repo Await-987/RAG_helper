@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     STORAGE_DIR: Path = PROJECT_ROOT / "data" / "stored_files"
     MINERU_OUTPUT_DIR: Path = PROJECT_ROOT / "data" / "mineru_output"
     AGENT_MEMORY_DIR: Path = PROJECT_ROOT / os.getenv("AGENT_MEMORY_DIR", "data/agent_memory")
+    CHAT_SESSION_DIR: Path = PROJECT_ROOT / os.getenv("CHAT_SESSION_DIR", "data/chat_sessions")
 
     # Model settings (from environment)
     OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY")

@@ -6,6 +6,32 @@ export interface ChatMessage {
   timestamp: Date;
 }
 
+export interface ChatSessionSummary {
+  session_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  last_activity: string;
+}
+
+export interface ChatSessionListResponse {
+  sessions: ChatSessionSummary[];
+}
+
+export interface ChatSessionDetailResponse {
+  session_id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  messages: Array<{
+    role: 'user' | 'assistant';
+    content: string;
+    reasoning?: string | null;
+    timestamp: string;
+  }>;
+}
+
 export interface ChatRequest {
   message: string;
   session_id?: string;

@@ -4,7 +4,15 @@ Chat API routes with SSE streaming.
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 
-from app.schemas.chat import ChatRequest, ChatResponse, ClearSessionResponse
+from app.schemas.chat import (
+    ChatRequest,
+    ChatResponse,
+    ClearSessionResponse,
+    SessionDetailResponse,
+    SessionInfo,
+    SessionListResponse,
+    ChatMessage,
+)
 from app.services import ChatService
 from app.dependencies import get_chat_service, get_current_user
 
@@ -68,4 +76,38 @@ async def clear_session(
         success=True,
         message=f"Session '{session_id}' cleared successfully",
         session_id=session_id
+    )
+
+
+@router.get("/sessions", response_model=SessionListResponse)
+async def list_sessions(
+    current_user: dict = Depends(get_current_user),
+    chat_service: ChatService = Depends(get_chat_service)
+):
+    """List persisted chat sessions for the current user."""
+    sessions = chat_service.list_sessions(current_user["username"])
+    return SessionListResponse(sessions=[SessionInfo(**session) for session in sessions])
+
+
+@router.get("/session/{session_id}", response_model=SessionDetailResponse)
+async def get_session_detail(
+    session_id: str,
+    current_user: dict = Depends(get_current_user),
+    chat_service: ChatService = Depends(get_chat_service)
+):
+    """Get persisted session detail for the current user."""
+    session = chat_service.get_session_detail(current_user["username"], session_id)
+    if session is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session '{session_id}' not found"
+        )
+
+    messages = [ChatMessage(**message) for message in session.get("messages", [])]
+    return SessionDetailResponse(
+        session_id=session["session_id"],
+        title=session.get("title") or "新对话",
+        created_at=session["created_at"],
+        updated_at=session.get("updated_at") or session["created_at"],
+        messages=messages,
     )
