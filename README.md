@@ -603,6 +603,8 @@ SECRET_KEY=change-me
 conan_path=models/bge-base-zh-v1.5
 reranker_path=models/bge-reranker-base
 TABLE_SUMMARY_MODEL_PATH=models/Qwen2.5-1.5B-Instruct
+MINERU_MODELS_DIR_PIPELINE=models/mineru/OpenDataLab/PDF-Extract-Kit-1___0
+MINERU_MODELS_DIR_VLM=models/mineru/OpenDataLab/mineru2.5/OpenDataLab/MinerU2___5-2509-1___2B
 INITIAL_ADMIN_USERNAME=admin
 INITIAL_ADMIN_PASSWORD=change-this-admin-password
 ```
@@ -622,6 +624,7 @@ NVIDIA_DRIVER_CAPABILITIES=compute,utility
 - `BACKEND_WORKERS` 默认固定为 `1`，这是为了避免本地会话状态和本地向量存储在多进程下产生不一致
 - 仅当 `.user/users.json` 不存在时，`INITIAL_ADMIN_USERNAME` / `INITIAL_ADMIN_PASSWORD` 才会用于初始化首个管理员
 - 不再内置默认管理员口令
+- MinerU 的模型目录支持通过 `MINERU_MODELS_DIR_PIPELINE` / `MINERU_MODELS_DIR_VLM` 在 `.env` 中统一覆盖
 - `NVIDIA_DRIVER_CAPABILITIES` 需要包含 `utility`，这样容器内才能执行 `nvidia-smi`
 
 建议在首次 Docker 部署前手动创建持久化目录：

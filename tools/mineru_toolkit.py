@@ -8,21 +8,41 @@ absolute_path = Path(__file__).absolute().parent.parent
 mineru_path = absolute_path / "config" / "mineru.json"
 
 
+def _resolve_path_value(value: str) -> str:
+    """Resolve a path against project root when it is not absolute."""
+    candidate = Path(value)
+    if candidate.is_absolute():
+        return str(candidate)
+    return str((absolute_path / candidate).resolve())
+
+
 def _resolve_mineru_config_paths(config_path: Path) -> Path:
-    """Resolve MinerU model paths against project root so cwd does not matter."""
+    """Resolve MinerU model paths against project root and allow env overrides."""
     with config_path.open("r", encoding="utf-8") as f:
         config = json.load(f)
 
     models_dir = config.get("models-dir", {})
     changed = False
+    env_overrides = {
+        "pipeline": os.getenv("MINERU_MODELS_DIR_PIPELINE", "").strip(),
+        "vlm": os.getenv("MINERU_MODELS_DIR_VLM", "").strip(),
+    }
+
+    for key, env_value in env_overrides.items():
+        if not env_value:
+            continue
+        resolved_env_value = _resolve_path_value(env_value)
+        if models_dir.get(key) != resolved_env_value:
+            models_dir[key] = resolved_env_value
+            changed = True
+
     for key, value in list(models_dir.items()):
         if not value:
             continue
-        candidate = Path(value)
-        if candidate.is_absolute():
-            continue
-        models_dir[key] = str((absolute_path / candidate).resolve())
-        changed = True
+        resolved_value = _resolve_path_value(value)
+        if value != resolved_value:
+            models_dir[key] = resolved_value
+            changed = True
 
     if not changed:
         return config_path
