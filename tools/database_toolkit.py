@@ -1,4 +1,4 @@
-import sys
+﻿import sys
 import re
 from loguru import logger
 from typing import List, Optional, Any, Dict, Callable
@@ -38,7 +38,7 @@ class DatabaseToolkit(BaseToolkit):
         self.db = QdrantDB(input=qdrant_init)
         self._reranker = None  # lazy-load
         self._index_warmed_up = False  # 索引预热标志
-        # 由 ChatService 注入的回调，签名: (session_id: str) -> Optional[set]
+        # 由 ChatService 注入的回调，签名: (session_id: str) -> set
         self._get_seen_keys_fn: Optional[Callable[[str], Optional[set]]] = None
         # 当前请求的 session_id（由 stream_chat 在调用前设置）
         self._current_session_id: Optional[str] = None
@@ -64,13 +64,9 @@ class DatabaseToolkit(BaseToolkit):
         return self._get_seen_keys_fn(self._current_session_id)
 
     def warmup_lexical_index(self):
-        """
-        预热词汇索引和 reranker 模型，避免首次搜索时长时间等待。
-        应在服务启动时调用。
-        """
+        """预热词汇索引和 reranker 模型，避免首次搜索时长时间等待。"""
         if self._index_warmed_up:
             return
-
         logger.info("🔥 开始预热词汇索引...")
         try:
             self.db._maybe_build_lex_index(force=False)
@@ -78,7 +74,6 @@ class DatabaseToolkit(BaseToolkit):
             logger.info("✅ 词汇索引预热完成")
         except Exception as e:
             logger.warning(f"⚠️ 词汇索引预热失败: {e}")
-
         logger.info("🔥 开始预热 Reranker 模型...")
         try:
             self._get_reranker()
@@ -102,10 +97,6 @@ class DatabaseToolkit(BaseToolkit):
         return False
 
     def _get_reranker(self):
-        """
-        Optional reranker (cross-encoder). If not configured, returns None.
-        Controlled by env var `reranker_path`.
-        """
         if self._reranker is not None:
             return self._reranker
         try:
@@ -144,17 +135,18 @@ class DatabaseToolkit(BaseToolkit):
             kept = hits_sorted[:min_results]
         return kept[:max_results]
 
-    def _rerank(self, query: str, hits: List[Dict[str, Any]], intent_description: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Rerank by CrossEncoder if available.
-        We normalize rerank scores to 0~1 and overwrite hit['score'] for final sorting.
-        """
+    def _rerank(
+        self,
+        query: str,
+        hits: List[Dict[str, Any]],
+        intent_description: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Rerank by CrossEncoder if available."""
         reranker = self._get_reranker()
         if reranker is None or not hits:
             return hits
 
         rerank_text = intent_description if intent_description else query
-
         pairs = []
         valid_hits = []
         for h in hits:
@@ -194,7 +186,7 @@ class DatabaseToolkit(BaseToolkit):
         out = sorted(valid_hits, key=lambda x: float(x.get("score", 0.0)), reverse=True) + rest
 
         # 父子chunk架构去重：同一父chunk只保留分数最高的那条
-        seen_content = set()
+        seen_content: set = set()
         deduped = []
         for h in out:
             payload = h.get("payload", {}) or {}
@@ -261,42 +253,39 @@ class DatabaseToolkit(BaseToolkit):
         return bool(cls.NUMERIC_CONTENT_RE.search(text))
 
     @classmethod
-    def _apply_query_type_bias(cls, hits: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+    def _apply_query_type_bias(
+        cls, hits: List[Dict[str, Any]], query: str
+    ) -> List[Dict[str, Any]]:
         if not hits:
             return []
-
         is_table_query = cls._is_table_like_query(query)
         is_numeric_query = cls._is_numeric_like_query(query)
-
         if not is_table_query and not is_numeric_query:
             return hits
-
         adjusted: List[Dict[str, Any]] = []
         for hit in hits:
             h = dict(hit)
             payload = h.get("payload", {}) or {}
             metadata = payload.get("metadata", {}) or {}
             score = float(h.get("score", 0.0))
-
             if is_table_query and (payload.get("is_table") or metadata.get("is_table")):
                 score += 0.18
             if is_numeric_query and cls._hit_has_numeric_content(h):
                 score += 0.12
-
             h["score"] = score
             adjusted.append(h)
-
         adjusted.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
         return adjusted
 
     @classmethod
-    def _dedupe_by_parent(cls, hits: List[Dict[str, Any]], max_per_parent: int = 1) -> List[Dict[str, Any]]:
+    def _dedupe_by_parent(
+        cls, hits: List[Dict[str, Any]], max_per_parent: int = 1
+    ) -> List[Dict[str, Any]]:
+        """同一父文档内只保留得分最高的 max_per_parent 条。"""
         if not hits:
             return []
-
         kept: List[Dict[str, Any]] = []
         parent_counts: Dict[str, int] = {}
-
         for hit in hits:
             parent_key = cls._hit_parent_key(hit)
             current = parent_counts.get(parent_key, 0)
@@ -304,10 +293,12 @@ class DatabaseToolkit(BaseToolkit):
                 continue
             parent_counts[parent_key] = current + 1
             kept.append(hit)
-
         return kept
 
-    def _expand_neighbor_context(self, hit: Dict[str, Any], neighbor_window: int = 1) -> Dict[str, Any]:
+    def _expand_neighbor_context(
+        self, hit: Dict[str, Any], neighbor_window: int = 1
+    ) -> Dict[str, Any]:
+        """将命中 chunk 的相邻 chunk 内容合并，扩展上下文窗口。"""
         payload = hit.get("payload", {}) or {}
         metadata = payload.get("metadata", {}) or {}
 
@@ -328,50 +319,56 @@ class DatabaseToolkit(BaseToolkit):
             return hit
 
         ordered_contents: List[str] = []
-
-        ordered_contents: List[str] = []
         for neighbor in neighbors:
             neighbor_payload = neighbor.get("payload", {}) or {}
-            content = neighbor_payload.get("Content", "") or neighbor_payload.get("content", "")
-            if not isinstance(content, str):
-                content = str(content)
-            content = content.strip()
-            if content:
-                ordered_contents.append(content)
+            c = neighbor_payload.get("Content", "") or neighbor_payload.get("content", "")
+            if not isinstance(c, str):
+                c = str(c)
+            c = c.strip()
+            if c:
+                ordered_contents.append(c)
 
         if not ordered_contents:
             return hit
 
         expanded = dict(hit)
         expanded_payload = dict(payload)
-        expanded_payload["Content"] = "
-".join(ordered_contents)
+        expanded_payload["Content"] = "\n".join(ordered_contents)
         expanded_payload["neighbor_expanded"] = True
         expanded["payload"] = expanded_payload
         return expanded
 
-    def _filter_seen_turn_evidence(self, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """过滤本 session 内已返回过的证据块，seen_keys 由 ChatService 管理。"""
+    def _filter_seen_turn_evidence(
+        self, hits: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        过滤本 session 内已返回过的证据块。
+        seen_keys 由 ChatService 管理，通过注入的回调读取。
+        """
         seen_keys = self._get_seen_keys()
         if seen_keys is None:
-            _log_search("⚠️ seen_keys为None，跳过去重")
+            _log_search("\u26a0\ufe0f seen_keys \u4e3a None\uff0c\u8df3\u8fc7\u53bb\u91cd")
             return hits
 
-        _log_search(f"🔍 _filter_seen_turn_evidence: seen_keys len={len(seen_keys)}, hits={len(hits)}")
+        _log_search(
+            f"\U0001f50d _filter_seen_turn_evidence: seen_keys={len(seen_keys)}, hits={len(hits)}"
+        )
         fresh_hits: List[Dict[str, Any]] = []
         for hit in hits:
-            evidence_key = self._hit_evidence_key(hit)
-            if evidence_key in seen_keys:
-                _log_search(f"  [重复] {evidence_key[:60]}")
+            key = self._hit_evidence_key(hit)
+            if key in seen_keys:
+                _log_search(f"  [\u91cd\u590d] {key[:80]}")
                 continue
             fresh_hits.append(hit)
 
-        if fresh_hits:
-            for hit in fresh_hits:
-                seen_keys.add(self._hit_evidence_key(hit))
-                _log_search(f"  [新增] {self._hit_evidence_key(hit)[:60]}")
+        for hit in fresh_hits:
+            seen_keys.add(self._hit_evidence_key(hit))
+            _log_search(f"  [\u65b0\u589e] {self._hit_evidence_key(hit)[:80]}")
 
-        _log_search(f"📊 去重结果: 新增{len(fresh_hits)}条, 重复{len(hits)-len(fresh_hits)}条")
+        _log_search(
+            f"\U0001f4ca \u53bb\u91cd\u7ed3\u679c: \u65b0\u589e {len(fresh_hits)} \u6761, "
+            f"\u91cd\u590d {len(hits) - len(fresh_hits)} \u6761"
+        )
         return fresh_hits
 
     def _select_full_chunk_hits(
@@ -382,9 +379,9 @@ class DatabaseToolkit(BaseToolkit):
         max_total_chars: int,
         max_chars_per_chunk: int,
     ) -> List[Dict[str, Any]]:
+        """\u4fdd\u7559\u6700\u9ad8\u7f6e\u4fe1\u5ea6\u7684\u82e5\u5e72\u6761\uff0c\u63a7\u5236\u603b\u5b57\u7b26\u9884\u7b97\u3002"""
         selected: List[Dict[str, Any]] = []
         total_chars = 0
-
         for hit in hits:
             if len(selected) >= full_chunk_limit:
                 break
@@ -400,28 +397,32 @@ class DatabaseToolkit(BaseToolkit):
                 continue
             selected.append(hit)
             total_chars += content_chars
-
         if not selected and hits:
             selected = hits[:1]
-
         _log_search(
-            f"🧠 证据收缩: 候选 {len(hits)} 条 -> 完整原文 {len(selected)} 条, "
-            f"总字符预算 {max_total_chars}, 单条上限 {max_chars_per_chunk}"
+            f"\U0001f9e0 \u8bc1\u636e\u6536\u7f29: \u5019\u9009 {len(hits)} \u6761 -> \u5b8c\u6574\u539f\u6587 {len(selected)} \u6761, "
+            f"\u603b\u5b57\u7b26\u9884\u7b97 {max_total_chars}, \u5355\u6761\u4e0a\u9650 {max_chars_per_chunk}"
         )
         return selected
 
-    def search_database(self, query: str, intent_description: Optional[str] = None, **kwargs) -> str:
-        """检索本地电力系统知识库的工具。
-        Agent-friendly entrypoint：仅需传入 query 和 intent_description。
+    def search_database(
+        self,
+        query: str,
+        intent_description: Optional[str] = None,
+        **kwargs,
+    ) -> str:
+        """\u68c0\u7d22\u672c\u5730\u7535\u529b\u7cfb\u7edf\u77e5\u8bc6\u5e93\u7684\u5de5\u5177\u3002
 
         Args:
-            query: 简化后的搜索query（3-8个核心关键词，用于向量检索）
-            intent_description: 用户真实意图的完整描述（用于重排序，消除代词、补全背景主体）
+            query: \u7b80\u5316\u540e\u7684\u641c\u7d22 query\uff083-8 \u4e2a\u6838\u5fc3\u5173\u952e\u8bcd\uff09
+            intent_description: \u7528\u6237\u771f\u5b9e\u610f\u56fe\u7684\u5b8c\u6574\u63cf\u8ff0\uff08\u7528\u4e8e\u91cd\u6392\u5e8f\uff09
 
         Returns:
-            格式化的搜索结果字符串
+            \u683c\u5f0f\u5316\u7684\u641c\u7d22\u7ed3\u679c\u5b57\u7b26\u4e32
         """
-        return self._search_database(query=query, intent_description=intent_description, **kwargs)
+        return self._search_database(
+            query=query, intent_description=intent_description, **kwargs
+        )
 
     def _search_database(
         self,
@@ -443,6 +444,7 @@ class DatabaseToolkit(BaseToolkit):
         max_per_parent: int = 1,
         neighbor_window: int = 1,
     ) -> str:
+        # ===== \u53c2\u6570\u9632\u5fa1 =====
         if alpha is None: alpha = 0.75
         if max_results is None: max_results = 12
         if candidate_top_k is None: candidate_top_k = self.DEFAULT_CANDIDATE_LIMIT
@@ -463,59 +465,79 @@ class DatabaseToolkit(BaseToolkit):
             max_chars_per_chunk = max(max_chars_per_chunk, 2400)
             restore_table_context = True
 
-        _log_search(f"\n{"="*60}")
-        _log_search(f"🔍 [搜索工具被调用]")
-        _log_search(f"   query: '{query[:80]}{"..." if len(query) > 80 else ''}'") 
-        if intent_description:
-            _log_search(f"   intent: '{intent_description[:80]}{"..." if len(intent_description) > 80 else ''}'") 
-        _log_search(f"   hybrid={use_hybrid}, rerank={use_rerank}, dynamic={dynamic_topk}, alpha={alpha}")
-        _log_search(f"{"="*60}\n")
-
         if dynamic_topk:
             max_results = max(int(max_results), candidate_top_k)
 
+        sep = "=" * 60
+        _log_search("\n" + sep)
+        _log_search("\U0001f50d [\u641c\u7d22\u5de5\u5177\u88ab\u8c03\u7528]")
+        q_preview = query[:80] + ("..." if len(query) > 80 else "")
+        _log_search(f"   query: '{q_preview}'")
+        if intent_description:
+            i_preview = intent_description[:80] + ("..." if len(intent_description) > 80 else "")
+            _log_search(f"   intent: '{i_preview}'")
+        _log_search(
+            f"   hybrid={use_hybrid}, rerank={use_rerank}, "
+            f"dynamic={dynamic_topk}, alpha={alpha}"
+        )
+        _log_search(sep + "\n")
+
         if not query or not query.strip():
+            logger.warning("\u26a0\ufe0f \u641c\u7d22 query \u4e3a\u7a7a")
             return "No results from the vector database."
 
+        # Step 1: \u68c0\u7d22
         if use_hybrid:
+            _log_search("\U0001f4ca \u6267\u884c\u6df7\u5408\u641c\u7d22 (vector + BM25)...")
             hits = self.db.hybrid_search(
                 query=query, top_k=candidate_top_k, alpha=alpha,
-                dynamic_topk=False, score_threshold=score_threshold, max_results=max_results,
+                dynamic_topk=False, score_threshold=score_threshold,
+                max_results=max_results,
             )
         else:
+            _log_search("\U0001f4ca \u6267\u884c\u7eaf\u5411\u91cf\u641c\u7d22...")
             hits = self.db.search(query=query, top_k=candidate_top_k)
 
         if not hits:
             return "No results from the vector database."
 
+        # Step 2: Rerank + \u52a8\u6001\u9600\u5024
         if use_rerank:
+            _log_search("\U0001f504 \u6267\u884c\u91cd\u6392\u5e8f (reranker)...")
             hits = self._rerank(query, hits, intent_description=intent_description)
             if dynamic_topk:
                 hits = DatabaseToolkit._apply_dynamic_cut(
-                    hits=hits, min_results=int(top_k), max_results=int(candidate_top_k),
+                    hits=hits, min_results=int(top_k),
+                    max_results=int(candidate_top_k),
                     score_threshold=score_threshold,
                 )
         else:
-            hits = sorted(hits, key=lambda h: float(h.get("score", 0.0)), reverse=True)[:int(candidate_top_k)]
+            hits = sorted(
+                hits, key=lambda h: float(h.get("score", 0.0)), reverse=True
+            )[:int(candidate_top_k)]
 
+        # Step 3-6: \u540e\u5904\u7406
         hits = self._apply_query_type_bias(hits, query)
         hits = self._dedupe_by_parent(hits, max_per_parent=max_per_parent)
-
         if neighbor_window > 0:
-            hits = [self._expand_neighbor_context(hit, neighbor_window=neighbor_window) for hit in hits]
-
+            hits = [
+                self._expand_neighbor_context(hit, neighbor_window=neighbor_window)
+                for hit in hits
+            ]
         hits = self._select_full_chunk_hits(
             hits, full_chunk_limit=full_chunk_limit,
             max_total_chars=max_total_chars, max_chars_per_chunk=max_chars_per_chunk,
         )
 
+        # Step 7: Session \u7ea7\u53bb\u91cd
         hits = self._filter_seen_turn_evidence(hits)
         if not hits:
-            _log_search("♻️ 本轮后续检索未发现新增证据，已过滤重复结果")
+            _log_search("\u267b\ufe0f \u672c\u8f6e\u540e\u7eed\u68c0\u7d22\u672a\u53d1\u73b0\u65b0\u589e\u8bc1\u636e")
             return "No new results from the vector database in this turn."
 
-        _log_search(f"✅ 搜索完成: 最终返回 {len(hits)} 条完整原文结果")
+        _log_search(f"\u2705 \u641c\u7d22\u5b8c\u6210: \u6700\u7ec8\u8fd4\u56de {len(hits)} \u6761\u7ed3\u679c")
 
+        # Step 8: \u683c\u5f0f\u5316\u8f93\u51fa
         formatted_results = []
         for hit in hits:
             payload = hit.get("payload", {}) or {}
@@ -524,39 +546,47 @@ class DatabaseToolkit(BaseToolkit):
             content = payload.get("Content", "") or payload.get("content", "")
             score = float(hit.get("score", 0.0))
 
-            if restore_table_context and (payload.get("is_table") or metadata.get("is_table")):
-                context_before = payload.get("context_before", "") or metadata.get("context_before", "")
-                context_after = payload.get("context_after", "") or metadata.get("context_after", "")
-                if context_before or context_after:
-                    content = f"{context_before}
-{content}
-{context_after}".strip()
+            if restore_table_context and (
+                payload.get("is_table") or metadata.get("is_table")
+            ):
+                ctx_before = (
+                    payload.get("context_before", "")
+                    or metadata.get("context_before", "")
+                )
+                ctx_after = (
+                    payload.get("context_after", "")
+                    or metadata.get("context_after", "")
+                )
+                if ctx_before or ctx_after:
+                    content = (ctx_before + "\n" + content + "\n" + ctx_after).strip()
 
             content = DatabaseToolkit._truncate_text(content, max_chars_per_chunk)
             formatted_results.append(
-                f"File: {source}
-Content: 
----
-{content}
----
-Confidence: {score:.4f}"
+                "File: " + source + "\n"
+                + "Content: \n---\n" + content + "\n---\n"
+                + "Confidence: " + f"{score:.4f}"
             )
 
-        _log_search(f"📋 [搜索结果摘要] 共 {len(formatted_results)} 条")
+        _log_search("\n" + sep)
+        _log_search(f"\U0001f4cb [\u641c\u7d22\u7ed3\u679c\u6458\u8981] \u5171 {len(formatted_results)} \u6761")
         for i, hit in enumerate(hits[:5], 1):
             payload = hit.get("payload", {}) or {}
             source = payload.get("Original_file", "Unknown")
             content = payload.get("Content", "") or payload.get("content", "")
             score = float(hit.get("score", 0.0))
-            file_name = source.split("\\")[-1] if "\\" in source else source.split("/")[-1]
-            content_clean = content.replace("
-", " ").strip()[:100] + ("..." if len(content) > 100 else "")
-            _log_search(f"   [{i}] 📄 {file_name} | 🎯 {score:.4f} | {content_clean}")
-        _log_search(f"{"="*60}\n")
+            file_name = (
+                source.split("\\")[-1] if "\\" in source else source.split("/")[-1]
+            )
+            content_preview = content.replace("\n", " ").strip()[:100]
+            if len(content) > 100:
+                content_preview += "..."
+            _log_search(f"   [{i}] \U0001f4c4 {file_name} | \U0001f3af {score:.4f}")
+            _log_search(f"       {content_preview}")
+        if len(hits) > 5:
+            _log_search(f"   ... \u8fd8\u67096 {len(hits) - 5} \u6761")
+        _log_search(sep + "\n")
 
-        return "
-
-".join(formatted_results)
+        return "\n\n".join(formatted_results)
 
     def get_tools(self) -> List[FunctionTool]:
         return [FunctionTool(self.search_database)]

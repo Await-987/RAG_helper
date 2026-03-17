@@ -1,4 +1,4 @@
-﻿"""
+"""
 Chat service with session management.
 """
 import sys
@@ -1513,7 +1513,7 @@ class ChatService:
         """
         try:
             # Get or create session
-            session_id, chat_agent, is_newly_created = self.session_manager.get_or_create(username, session_id)
+            session_id, chat_agent = self.session_manager.get_or_create(username, session_id)
             # Ensure this session has a seen_keys set in ChatService
             self.get_session_seen_keys(session_id)  # lazy-create if needed
             seen_count = len(self._session_seen_keys.get(session_id, set()))
