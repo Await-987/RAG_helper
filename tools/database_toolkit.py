@@ -15,7 +15,7 @@ def _log_search(msg: str):
     sys.stdout.flush()
 
 
-_turn_seen_evidence_keys: ContextVar[Optional[set[str]]] = ContextVar(
+_turn_seen_evidence_keys: ContextVar[Optional[set]] = ContextVar(
     "turn_seen_evidence_keys",
     default=None,
 )
@@ -27,7 +27,7 @@ class DatabaseToolkit(BaseToolkit):
     DEFAULT_CANDIDATE_LIMIT = 20
     DEFAULT_FINAL_FULL_CHUNKS = 4
     DEFAULT_MAX_TOTAL_CHARS = 12000
-    DEFAULT_MAX_CHARS_PER_CHUNK = 3200
+    DEFAULT_MAX_CHARS_PER_CHUNK = 4000  # 父chunk 2000字以上，留足余量
     TABLE_QUERY_HINTS = ("表", "表格", "议程", "清单", "名单", "名录", "统计", "汇总")
     NUMERIC_QUERY_HINTS = (
         "多少", "多大", "参数", "电压", "电流", "容量", "功率", "温度",
@@ -45,6 +45,22 @@ class DatabaseToolkit(BaseToolkit):
         self.db = QdrantDB(input=qdrant_init)
         self._reranker = None  # lazy-load
         self._index_warmed_up = False  # 索引预热标志
+        
+        # 20260317修复：用实例变量存储seen_keys，彻底放弃ContextVar
+        # 这样不会被异步Task的新Context所影响
+        self._current_session_seen_keys: Optional[set] = None
+
+    def set_session_seen_keys(self, seen_keys: Optional[set]) -> None:
+        """
+        设置当前session的去重集合（由stream_chat在请求开始时调用）。
+        这比ContextVar更可靠，因为不受异步Task的Context隔离影响。
+        """
+        self._current_session_seen_keys = seen_keys
+        logger.info(f"🔧 DatabaseToolkit.set_session_seen_keys() 已设置 (内容数={len(seen_keys) if seen_keys else 0})")
+
+    def get_session_seen_keys(self) -> Optional[set]:
+        """获取当前session的去重集合"""
+        return self._current_session_seen_keys
 
     def warmup_lexical_index(self):
         """
@@ -80,12 +96,27 @@ class DatabaseToolkit(BaseToolkit):
             self.db.close()
 
     def begin_turn(self) -> None:
-        """Start per-turn evidence dedup state."""
-        _turn_seen_evidence_keys.set(set())
+        """
+        初始化跨会话去重状态（仅供兼容性调用）。
+        
+        20260317修复：已改为Agent实例级去重。
+        - 在stream_chat中，通过 `chat_agent.seen_evidence_keys` 存储会话内累积的去重状态
+        - 不再需要显式调用begin_turn()清空（因为不清空就能持续累积）
+        - 此方法保留但不建议调用，除非有特殊初始化需求
+        """
+        if _turn_seen_evidence_keys.get() is None:
+            _turn_seen_evidence_keys.set(set())
 
     def end_turn(self) -> None:
-        """Clear per-turn evidence dedup state."""
-        _turn_seen_evidence_keys.set(None)
+        """
+        清除跨轮次去重状态（已弃用）。
+        
+        20260317修复：已改为Agent实例级去重。
+        - seen_keys现已绑定到Agent实例（chat_agent.seen_evidence_keys）
+        - 不再需要显式清空（Agent对象的生命周期就是去重状态的生命周期）
+        - 此方法已弃用，不应调用
+        """
+        pass  # Do nothing - seen_keys is now managed by Agent instance
 
     def __enter__(self):
         return self
@@ -234,25 +265,6 @@ class DatabaseToolkit(BaseToolkit):
         return any(token in query for token in cls.NUMERIC_QUERY_HINTS)
 
     @classmethod
-    def _hit_parent_key(cls, hit: Dict[str, Any]) -> str:
-        payload = hit.get("payload", {}) or {}
-        source = str(payload.get("Original_file", ""))
-        content = payload.get("Content", "") or payload.get("content", "")
-        return f"{source}::{content}"
-
-    @classmethod
-    def _hit_evidence_key(cls, hit: Dict[str, Any]) -> str:
-        payload = hit.get("payload", {}) or {}
-        metadata = payload.get("metadata", {}) or {}
-        source = str(payload.get("Original_file", ""))
-        page = metadata.get("page") or payload.get("page") or ""
-        chunk_index = metadata.get("chunk_index")
-        content = payload.get("Content", "") or payload.get("content", "")
-        if isinstance(chunk_index, int):
-            return f"{source}::page={page}::chunk={chunk_index}"
-        return f"{source}::{content}"
-
-    @classmethod
     def _hit_has_numeric_content(cls, hit: Dict[str, Any]) -> bool:
         payload = hit.get("payload", {}) or {}
         metadata = payload.get("metadata", {}) or {}
@@ -269,6 +281,7 @@ class DatabaseToolkit(BaseToolkit):
 
     @classmethod
     def _apply_query_type_bias(cls, hits: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+        """对表格命中 +0.18、数值内容命中 +0.12，提升相关结果的排名。"""
         if not hits:
             return []
 
@@ -297,81 +310,57 @@ class DatabaseToolkit(BaseToolkit):
         return adjusted
 
     @classmethod
-    def _dedupe_by_parent(cls, hits: List[Dict[str, Any]], max_per_parent: int = 1) -> List[Dict[str, Any]]:
-        if not hits:
-            return []
-
-        kept: List[Dict[str, Any]] = []
-        parent_counts: Dict[str, int] = {}
-
-        for hit in hits:
-            parent_key = cls._hit_parent_key(hit)
-            current = parent_counts.get(parent_key, 0)
-            if current >= max_per_parent:
-                continue
-            parent_counts[parent_key] = current + 1
-            kept.append(hit)
-
-        return kept
-
-    def _expand_neighbor_context(self, hit: Dict[str, Any], neighbor_window: int = 1) -> Dict[str, Any]:
+    def _hit_evidence_key(cls, hit: Dict[str, Any]) -> str:
+        """生成用于跨轮次去重的唯一 key。"""
         payload = hit.get("payload", {}) or {}
         metadata = payload.get("metadata", {}) or {}
-
-        if payload.get("is_table") or metadata.get("is_table"):
-            return hit
-
-        file_tag = payload.get("Original_file")
+        source = str(payload.get("Original_file", ""))
+        page = metadata.get("page") or payload.get("page") or ""
         chunk_index = metadata.get("chunk_index")
-        if not file_tag or not isinstance(chunk_index, int):
-            return hit
-
-        neighbors = self.db.get_adjacent_chunks(
-            file_tag=file_tag,
-            chunk_index=chunk_index,
-            window=neighbor_window,
-        )
-        if len(neighbors) <= 1:
-            return hit
-
-        ordered_contents: List[str] = []
-        for neighbor in neighbors:
-            neighbor_payload = neighbor.get("payload", {}) or {}
-            content = neighbor_payload.get("Content", "") or neighbor_payload.get("content", "")
-            if not isinstance(content, str):
-                content = str(content)
-            content = content.strip()
-            if content:
-                ordered_contents.append(content)
-
-        if not ordered_contents:
-            return hit
-
-        expanded = dict(hit)
-        expanded_payload = dict(payload)
-        expanded_payload["Content"] = "\n".join(ordered_contents)
-        expanded_payload["neighbor_expanded"] = True
-        expanded["payload"] = expanded_payload
-        return expanded
+        content = payload.get("Content", "") or payload.get("content", "")
+        if isinstance(chunk_index, int):
+            return f"{source}::page={page}::chunk={chunk_index}"
+        return f"{source}::{content}"
 
     def _filter_seen_turn_evidence(self, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        seen_keys = _turn_seen_evidence_keys.get()
+        seen_keys = self.get_session_seen_keys()
+        _log_search(f"🔍 _filter_seen_turn_evidence: seen_keys={type(seen_keys).__name__}, len={len(seen_keys) if seen_keys else 0}")
         if seen_keys is None:
+            _log_search("⚠️ seen_keys为None，跳过去重（session未初始化）")
             return hits
 
-        fresh_hits: List[Dict[str, Any]] = []
+        _log_search(f"📝 当前seen_keys中的内容数: {len(seen_keys)}, 待检查的hit数: {len(hits)}")
+        
+        all_hits: List[Dict[str, Any]] = []
+        duplicate_count = 0
+        new_count = 0
+        
         for hit in hits:
             evidence_key = self._hit_evidence_key(hit)
+            
+            payload = hit.get("payload", {}) or {}
+            raw_content = payload.get("Content", "") or payload.get("content", "")
+            # 替换换行符并截取前50字
+            content_preview = str(raw_content).replace("\n", " ").strip()[:50] + "..."
+            
             if evidence_key in seen_keys:
-                continue
-            fresh_hits.append(hit)
-
-        if fresh_hits:
-            for hit in fresh_hits:
-                seen_keys.add(self._hit_evidence_key(hit))
-            return fresh_hits
-
-        return []
+                duplicate_count += 1
+                hit['payload'] = hit.get('payload') or {}
+                hit['payload']['_is_duplicate'] = True
+                all_hits.append(hit)
+                # 使用已经定义好的 content_preview
+                _log_search(f"  [重复] {evidence_key[:60]}... | 内容: {content_preview}")
+            else:
+                new_count += 1
+                hit['payload'] = hit.get('payload') or {}
+                hit['payload']['_is_duplicate'] = False
+                all_hits.append(hit)
+                seen_keys.add(evidence_key)
+                # 使用已经定义好的 content_preview
+                _log_search(f"  [新增] {evidence_key[:60]}... | 内容: {content_preview}")
+        
+        _log_search(f"📊 去重结果: 新增{new_count}条, 重复{duplicate_count}条")
+        return all_hits
 
     def _select_full_chunk_hits(
         self,
@@ -416,7 +405,7 @@ class DatabaseToolkit(BaseToolkit):
         )
         return selected
 
-    def search_database(self, query: str, intent_description: Optional[str] = None, **kwargs) -> str:
+    def search_database(self, query: str, intent_description: Optional[str] = None, seen_keys: Optional[set] = None, **kwargs) -> str:
         """检索本地电力系统知识库的工具。
         Agent-friendly entrypoint：仅需传入 query 和 intent_description。
         
@@ -425,72 +414,67 @@ class DatabaseToolkit(BaseToolkit):
             intent_description: 用户真实意图的完整描述（用于重排序，消除代词、补全背景主体）
                 应该是一个完整的自然语言句子，最接近用户的真实意图。
                 如果为None，重排序将使用query。建议总是传入意图描述以获得更好的重排准确性。
+            seen_keys: 本会话内已返回过的证据块的去重集合（可选）
+                如果为None，则优先使用set_session_seen_keys()设置的值。
+                这个参数确保无论Agent直接调用还是间接调用都能获取见_keys。
         
         Returns:
             格式化的搜索结果字符串
         
         Note:
             其他参数（如 top_k、max_results 等）使用默认值，无需传入。
+            
+        20260317修复：彻底放弃ContextVar，改用DatabaseToolkit实例变量
         """
+        # 核心修复：优先使用参数传入的见_keys，其次用instance变量
+        # 这样既支持显式参数，也支持Agent直接调用
+        if seen_keys is None:
+            seen_keys = self.get_session_seen_keys()
+        else:
+            # 参数显式传入时，同步到instance变量，确保多次调用一致
+            self.set_session_seen_keys(seen_keys)
+        
         return self._search_database(query=query, intent_description=intent_description, **kwargs)
 
     def _search_database(
         self,
         query: str,
         intent_description: Optional[str] = None,
-        top_k: int = 8,
         *,
-        # ---- new knobs (all optional; keep old usage compatible) ----
         use_hybrid: bool = True,
         use_rerank: bool = True,
-        dynamic_topk: bool = True,
         score_threshold: Optional[float] = None,
-        max_results: int = 12,
         alpha: float = 0.75,
-        restore_table_context: bool = False,  # 是否恢复表格上下文
-        candidate_top_k: int = DEFAULT_CANDIDATE_LIMIT,
-        full_chunk_limit: int = DEFAULT_FINAL_FULL_CHUNKS,
+        restore_table_context: bool = False,
         max_total_chars: int = DEFAULT_MAX_TOTAL_CHARS,
         max_chars_per_chunk: int = DEFAULT_MAX_CHARS_PER_CHUNK,
-        max_per_parent: int = 1,
-        neighbor_window: int = 1,
     ) -> str:
         """
-        Hybrid retrieval within local database.
-
-        - use_hybrid=True: vector + keyword (BM25-like) fusion
-        - use_rerank=True: optional cross-encoder rerank (if env `reranker_path` set)
-        - dynamic_topk=True: return all chunks above threshold (capped by max_results)
-          score_threshold is on normalized score (0~1). If None, an adaptive threshold is used.
-        - restore_table_context=True: 检索到表格时，合并上下文返回
+        简化流水线：
+          1. 混合检索 20 条候选
+          2. 子 chunk 向量 rerank（cross-encoder）
+          3. rerank 内部父 chunk 去重（已有逻辑）
+          4. 动态阈值筛选，保留 5-10 条
+          5. 单条字数截断 + 总字数守卫
+          6. 直接输出，不再经过 _select_full_chunk_hits
         """
-        # ===== 参数默认值处理 =====
-        # 如果 LLM 传入 None，使用默认值
+        CANDIDATE_K  = 20   # 固定检索条数
+        MIN_FINAL    = 5    # 动态筛选下限
+        MAX_FINAL    = 10   # 动态筛选上限
+
+        # ===== None 防御 =====
         if alpha is None:
             alpha = 0.75
-        if max_results is None:
-            max_results = 12
-        if candidate_top_k is None:
-            candidate_top_k = self.DEFAULT_CANDIDATE_LIMIT
-        if full_chunk_limit is None:
-            full_chunk_limit = self.DEFAULT_FINAL_FULL_CHUNKS
         if max_total_chars is None:
             max_total_chars = self.DEFAULT_MAX_TOTAL_CHARS
         if max_chars_per_chunk is None:
             max_chars_per_chunk = self.DEFAULT_MAX_CHARS_PER_CHUNK
+        max_total_chars = max(12000, int(max_total_chars))
+        max_chars_per_chunk = max(4000, int(max_chars_per_chunk))
 
-        top_k = max(1, int(top_k))
-        candidate_top_k = max(top_k, int(candidate_top_k))
-        full_chunk_limit = max(1, min(int(full_chunk_limit), top_k))
-        max_results = max(top_k, int(max_results))
-        max_total_chars = max(1000, int(max_total_chars))
-        max_chars_per_chunk = max(500, int(max_chars_per_chunk))
-
-        # 表格/议程类问题对证据长度敏感，避免模型传入过小预算导致表格被截断。
+        # 表格类问题单条预算再放宽（表格可能超 4000 字）
         if self._is_table_like_query(query):
-            full_chunk_limit = max(full_chunk_limit, min(top_k, 5))
-            max_total_chars = max(max_total_chars, 8000)
-            max_chars_per_chunk = max(max_chars_per_chunk, 2400)
+            max_chars_per_chunk = max(max_chars_per_chunk, 6000)
             restore_table_context = True
 
         # ===== 搜索开始日志 =====
@@ -500,7 +484,8 @@ class DatabaseToolkit(BaseToolkit):
         if intent_description:
             _log_search(f"   intent_description: '{intent_description[:80]}{'...' if len(intent_description) > 80 else ''}'")
         _log_search(
-            f"   配置: hybrid={use_hybrid}, rerank={use_rerank}, dynamic={dynamic_topk}, alpha={alpha}"
+            f"   配置: hybrid={use_hybrid}, rerank={use_rerank}, alpha={alpha}, "
+            f"candidate={CANDIDATE_K}, final={MIN_FINAL}~{MAX_FINAL}"
         )
         _log_search(
             f"   预算: max_total_chars={max_total_chars}, "
@@ -509,97 +494,116 @@ class DatabaseToolkit(BaseToolkit):
         )
         _log_search(f"{'='*60}\n")
 
-        # 放在 search_database() 开头，参数校正
-        if dynamic_topk:
-            max_results = max(int(max_results), candidate_top_k)
-
         if not query or not query.strip():
             logger.warning("⚠️ 搜索 query 为空，返回无结果")
             return "No results from the vector database."
 
-        # 1) hybrid or vector-only
+        # ===== Step 1: 检索 20 条 =====
         if use_hybrid:
-            _log_search(f"📊 执行混合搜索 (vector + keyword BM25)...")
+            _log_search(f"📊 执行混合搜索 (vector + keyword BM25), top_k={CANDIDATE_K}...")
             hits = self.db.hybrid_search(
                 query=query,
-                top_k=candidate_top_k,
+                top_k=CANDIDATE_K,
                 alpha=alpha,
                 dynamic_topk=False,
                 score_threshold=score_threshold,
-                max_results=max_results,
+                max_results=CANDIDATE_K,
             )
         else:
-            _log_search(f"📊 执行纯向量搜索...")
-            hits = self.db.search(query=query, top_k=candidate_top_k)
+            _log_search(f"📊 执行纯向量搜索, top_k={CANDIDATE_K}...")
+            hits = self.db.search(query=query, top_k=CANDIDATE_K)
 
         if not hits:
             return "No results from the vector database."
 
-        # 2) rerank (optional)
+        # ===== Step 2: 子 chunk rerank（内含父 chunk 去重） =====
         if use_rerank:
-            _log_search(f"🔄 执行重排序 (reranker)...")
+            _log_search(f"🔄 执行子 chunk rerank...")
             hits = self._rerank(query, hits, intent_description=intent_description)
 
-            # 3) dynamic threshold cut should use final scores (after rerank)
-            if dynamic_topk:
-                _log_search(
-                    f"✂️ 执行动态阈值过滤 (min_results={top_k}, max_results={candidate_top_k})..."
-                )
-                hits = DatabaseToolkit._apply_dynamic_cut(
-                    hits=hits,
-                    min_results=int(top_k),
-                    max_results=int(candidate_top_k),
-                    score_threshold=score_threshold,
-                )
-            else:
-                hits = sorted(hits, key=lambda h: float(h.get("score", 0.0)), reverse=True)[
-                    : int(candidate_top_k)
-                ]
-
-        hits = self._apply_query_type_bias(hits, query)
-        hits = self._dedupe_by_parent(hits, max_per_parent=max_per_parent)
-
-        if neighbor_window > 0:
-            hits = [self._expand_neighbor_context(hit, neighbor_window=neighbor_window) for hit in hits]
-
-        hits = self._select_full_chunk_hits(
-            hits,
-            full_chunk_limit=full_chunk_limit,
-            max_total_chars=max_total_chars,
-            max_chars_per_chunk=max_chars_per_chunk,
-        )
+        # ===== Step 3: 本轮去重（在筛选之前，避免浪费 quota） =====
         hits = self._filter_seen_turn_evidence(hits)
-        if not hits:
-            _log_search("♻️ 本轮后续检索未发现新增证据，已过滤重复结果")
-            return "No new results from the vector database in this turn."
+        
+        # 检查是否有新增内容（不只是重复内容）
+        has_new_content = any(not hit.get('payload', {}).get('_is_duplicate', False) for hit in hits)
+        if not has_new_content:
+            if hits:
+                # 有搜到结果，但全是重复
+                _log_search(f"♻️ 会话去重：{len(hits)}条结果全部为重复，已标记占位符")
+                # 注意：这里不return，让占位符继续显示给Agent
+            else:
+                # 真的没有找到任何结果
+                _log_search("❌ 向量数据库未返回任何结果")
+                return "No results from the vector database."
+        
+        _log_search(f"   新内容: {sum(1 for h in hits if not h.get('payload', {}).get('_is_duplicate', False))} 条, 重复内容占位: {sum(1 for h in hits if h.get('payload', {}).get('_is_duplicate', False))} 条")
 
-        _log_search(f"✅ 搜索完成: 最终返回 {len(hits)} 条完整原文结果")
+        # ===== Step 4: 动态阈值筛选，保留 5-10 条（仅对新内容筛选，重复占位符不计quota） =====
+        # 分离新内容和重复内容
+        new_hits = [h for h in hits if not h.get('payload', {}).get('_is_duplicate', False)]
+        duplicate_hits = [h for h in hits if h.get('payload', {}).get('_is_duplicate', False)]
+        
+        _log_search(f"✂️ 执行动态阈值过滤 (只对{len(new_hits)}条新内容，忽略{len(duplicate_hits)}条重复占位)...")
+        new_hits = DatabaseToolkit._apply_dynamic_cut(
+            hits=new_hits,
+            min_results=MIN_FINAL,
+            max_results=MAX_FINAL,
+            score_threshold=score_threshold,
+            auto_delta=0.30,  # 放宽：rerank 分布集中时避免过度裁剪
+        )
+        
+        # 重新合并：新内容在前，重复占位在后（这样Agent优先看新信息）
+        hits = new_hits + duplicate_hits
 
-        # 4) format output
+        # ===== Step 5: 分数偏置（表格/数值类型提权） =====
+        hits = self._apply_query_type_bias(hits, query)
+
+        _log_search(f"✅ 搜索完成: 最终返回 {len(hits)} 条结果")
+
+        # ===== Step 6: 格式化输出，字数截断 + 总字数守卫 =====
         formatted_results = []
-        for hit in hits:
+        total_chars_used = 0
+        for hit_idx, hit in enumerate(hits):
             payload = hit.get("payload", {}) or {}
-            metadata = payload.get("metadata", {}) or {}
             source = payload.get("Original_file", "Unknown Source")
-            content = payload.get("Content", "") or payload.get("content", "")
+            is_duplicate = payload.get("_is_duplicate", False)
             score = float(hit.get("score", 0.0))
 
-            # 表格上下文恢复（可选）
-            if restore_table_context and (payload.get("is_table") or metadata.get("is_table")):
-                context_before = (
-                    payload.get("context_before", "")
-                    or metadata.get("context_before", "")
+            if is_duplicate:
+                # 重复的hit：显示占位符而不是完整内容
+                result_str = (
+                    f"File: {source}\n"
+                    f"Content: \n---\n"
+                    f"【占位符】本条信息已在之前的对话中详细提供过（置信度: {score:.4f}），"
+                    f"请基于历史对话记录进行参考。\n"
+                    f"---\n"
+                    f"Confidence: {score:.4f}"
                 )
-                context_after = (
-                    payload.get("context_after", "")
-                    or metadata.get("context_after", "")
-                )
+                formatted_results.append(result_str)
+                continue  # 占位符不计入total_chars_used，避免字数超限
+
+            content = payload.get("Content", "") or payload.get("content", "")
+
+            # 先截断 content 本体
+            content = DatabaseToolkit._truncate_text(content, max_chars_per_chunk)
+
+            # 再合并表格上下文（context 本身不截断，保留完整）
+            if restore_table_context and (payload.get("is_table") or (payload.get("metadata", {}) or {}).get("is_table")):
+                metadata = payload.get("metadata", {}) or {}
+                context_before = payload.get("context_before", "") or metadata.get("context_before", "")
+                context_after = payload.get("context_after", "") or metadata.get("context_after", "")
                 if context_before or context_after:
-                    # 合并上下文
                     content = f"{context_before}\n{content}\n{context_after}".strip()
                     _log_search(f"   📊 表格上下文已恢复 (前{len(context_before)}字 + 后{len(context_after)}字)")
 
-            content = DatabaseToolkit._truncate_text(content, max_chars_per_chunk)
+            # 总字数守卫：已够 MIN_FINAL 条才允许 break，否则强制收录
+            if total_chars_used + len(content) > max_total_chars:
+                if hit_idx < MIN_FINAL:
+                    _log_search(f"   ⚠️ 第{hit_idx + 1}条超预算，但未达最小返回数 {MIN_FINAL}，强制收录")
+                else:
+                    _log_search(f"   ⚠️ 总字数已达上限 {max_total_chars}，停止收录")
+                    break
+            total_chars_used += len(content)
 
             result_str = (
                 f"File: {source}\n"
