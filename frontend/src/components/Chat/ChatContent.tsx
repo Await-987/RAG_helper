@@ -6,7 +6,7 @@ import remarkGfm from 'remark-gfm';
 import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
 import type { ChatContentBlock } from '@/types';
-import { parseChatContentBlocks } from './markdown';
+import { extractRenderableTableFromFencedCode, normalizeChatMarkdown, parseChatContentBlocks } from './markdown';
 
 import 'katex/dist/katex.min.css';
 
@@ -99,6 +99,8 @@ export function ChatContent({ content, blocks: providedBlocks, suppressImages = 
     <div className="markdown-content">
       {blocks.map((block, index) => {
         const key = `${block.type}-${index}`;
+        const tableContent = block.type === 'code' ? extractRenderableTableFromFencedCode(block.content) : null;
+        const normalizedTableContent = block.type === 'table' ? normalizeChatMarkdown(block.content) : null;
 
         if (block.type === 'math') {
           return (
@@ -114,7 +116,21 @@ export function ChatContent({ content, blocks: providedBlocks, suppressImages = 
           );
         }
 
-        if (block.type === 'table' || block.type === 'code') {
+        if (block.type === 'table' || tableContent) {
+          return (
+            <div key={key} className="chat-block-shell">
+              <ReactMarkdown
+                remarkPlugins={[remarkMath, remarkGfm]}
+                rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: 'ignore' }], rehypeRaw]}
+                components={components}
+              >
+                {tableContent ?? normalizedTableContent ?? block.content}
+              </ReactMarkdown>
+            </div>
+          );
+        }
+
+        if (block.type === 'code') {
           return (
             <div key={key} className="chat-block-shell">
               <ReactMarkdown

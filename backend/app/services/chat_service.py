@@ -212,6 +212,33 @@ def _is_table_separator(line: str) -> bool:
     return bool(cells) and all(re.match(r"^:?-{3,}:?$", cell) for cell in cells)
 
 
+def _extract_table_from_fenced_code_block(content: str) -> Optional[str]:
+    stripped = content.strip()
+    match = re.fullmatch(r"```([A-Za-z0-9_-]+)?\s*\n([\s\S]*?)\n```", stripped)
+    if not match:
+        return None
+
+    language = (match.group(1) or "").strip().lower()
+    if language and language not in {"markdown", "md"}:
+        return None
+
+    inner = (match.group(2) or "").strip()
+    if not inner:
+        return None
+
+    non_empty_lines = [line.strip() for line in inner.split("\n") if line.strip()]
+    if not non_empty_lines:
+        return None
+
+    if re.match(r"^<table[\s>]", non_empty_lines[0], re.IGNORECASE):
+        return inner
+
+    if len(non_empty_lines) >= 2 and _is_table_row(non_empty_lines[0]) and _is_table_separator(non_empty_lines[1]):
+        return inner
+
+    return None
+
+
 def _build_content_blocks(content: str) -> List[ChatContentBlock]:
     normalized = _normalize_latex_delimiters(_normalize_line_endings(content)).strip()
     if not normalized:
@@ -253,7 +280,12 @@ def _build_content_blocks(content: str) -> List[ChatContentBlock]:
                 if lines[index].strip().startswith("```"):
                     break
                 index += 1
-            blocks.append(ChatContentBlock(type="code", content="\n".join(code_lines)))
+            code_content = "\n".join(code_lines)
+            table_content = _extract_table_from_fenced_code_block(code_content)
+            if table_content:
+                blocks.append(ChatContentBlock(type="table", content=table_content))
+            else:
+                blocks.append(ChatContentBlock(type="code", content=code_content))
             index += 1
             continue
 
@@ -701,6 +733,7 @@ class SessionManager:
 
         表格格式要求：
         - 只允许输出标准 Markdown 表格，表头、分隔行、数据行必须完整连续
+        - 严禁使用 ```markdown、``` 或任何代码块包裹表格；表格必须直接输出为 Markdown 表格本体
         - 严禁把同一个表格拆成多段零散文本、项目符号或多次重复的表头
         - 复杂表格如果难以稳定转成标准 Markdown，优先保留原图链接，不要输出损坏表格
 
