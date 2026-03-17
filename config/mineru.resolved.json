@@ -30,8 +30,9 @@
         }
     },
     "models-dir": {
-        "pipeline": "D:\\run\\run\\models\\mineru\\OpenDataLab\\PDF-Extract-Kit-1___0",
-        "vlm": "D:\\run\\run\\models\\mineru\\OpenDataLab\\mineru2.5\\OpenDataLab\\MinerU2___5-2509-1___2B"
+        "pipeline": "/home/ubuntu/rag_project/rag/models/mineru/OpenDataLab/PDF-Extract-Kit-1___0",
+        "vlm": "/home/ubuntu/rag_project/rag/models/mineru/OpenDataLab/mineru2.5/OpenDataLab/MinerU2___5-2509-1___2B"
+
     },
     "config_version": "1.3.0"
 }
