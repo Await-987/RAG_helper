@@ -110,7 +110,7 @@ backend/
 # 1. 登录获取 Token
 curl -X POST http://localhost:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"admin123"}'
+  -d '{"username":"<your_admin_username>","password":"<your_admin_password>"}'
 
 # 2. 使用 Token 访问受保护接口
 curl http://localhost:8000/api/v1/auth/me \

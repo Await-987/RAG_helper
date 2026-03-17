@@ -74,6 +74,8 @@ services:
         no_proxy: "${no_proxy:-}"
     # 固定后端容器名。
     container_name: rag-backend
+    # 申请宿主机全部 NVIDIA GPU，供模型推理与 nvidia-smi 使用。
+    gpus: all
     # 只有当依赖服务可用后，才启动 backend。
     depends_on:
       # 依赖 Redis 健康通过。
@@ -124,6 +126,10 @@ services:
       REDIS_SOCKET_TIMEOUT_SEC: "${REDIS_SOCKET_TIMEOUT_SEC:-5}"
       # Redis 建连超时时间。
       REDIS_SOCKET_CONNECT_TIMEOUT_SEC: "${REDIS_SOCKET_CONNECT_TIMEOUT_SEC:-5}"
+      # 暴露全部 GPU 给容器。
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      # 包含 utility 能力，容器内才能使用 nvidia-smi。
+      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
     # 仅在内部网络暴露 8000，不直接映射到宿主机。
     expose:
       # FastAPI 服务端口。

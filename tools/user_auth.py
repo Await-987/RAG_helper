@@ -32,23 +32,47 @@ class UserAuth:
         """确保数据目录存在"""
         DATA_DIR.mkdir(parents=True, exist_ok=True)
 
+    def _build_initial_users_payload(self) -> Dict:
+        """构建首次启动时的用户数据。"""
+        bootstrap_username = os.getenv("INITIAL_ADMIN_USERNAME", "").strip()
+        bootstrap_password = os.getenv("INITIAL_ADMIN_PASSWORD", "").strip()
+
+        payload = {
+            "users": [],
+            "version": "1.0"
+        }
+
+        if not bootstrap_username and not bootstrap_password:
+            logger.warning(
+                "未检测到初始管理员环境变量，已创建空用户文件。"
+                "请设置 INITIAL_ADMIN_USERNAME / INITIAL_ADMIN_PASSWORD 后重启，或手动写入首个管理员账户。"
+            )
+            return payload
+
+        if not bootstrap_username or not bootstrap_password:
+            logger.warning(
+                "INITIAL_ADMIN_USERNAME / INITIAL_ADMIN_PASSWORD 需要同时设置，当前未创建初始管理员账户。"
+            )
+            return payload
+
+        if len(bootstrap_password) < 6:
+            logger.warning("INITIAL_ADMIN_PASSWORD 长度至少需要 6 位，当前未创建初始管理员账户。")
+            return payload
+
+        payload["users"].append({
+            "username": bootstrap_username,
+            "password_hash": self._hash_password(bootstrap_password),
+            "role": UserRole.ADMIN,
+            "created_at": datetime.now().isoformat(),
+            "last_login": None
+        })
+        logger.info(f"已根据环境变量初始化管理员账户: {bootstrap_username}")
+        return payload
+
     def _ensure_users_file(self):
-        """确保用户文件存在，并创建默认管理员账户"""
+        """确保用户文件存在，并按环境变量初始化首个管理员账户"""
         if not USERS_FILE.exists():
-            default_users = {
-                "users": [
-                    {
-                        "username": "admin",
-                        "password_hash": self._hash_password("admin123"),
-                        "role": UserRole.ADMIN,
-                        "created_at": datetime.now().isoformat(),
-                        "last_login": None
-                    }
-                ],
-                "version": "1.0"
-            }
-            self._save_users(default_users)
-            logger.info("已创建默认用户文件，默认管理员: admin/admin123")
+            self._save_users(self._build_initial_users_payload())
 
     def _load_users(self) -> Dict:
         """加载用户数据"""

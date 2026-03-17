@@ -603,6 +603,8 @@ SECRET_KEY=change-me
 conan_path=models/bge-base-zh-v1.5
 reranker_path=models/bge-reranker-base
 TABLE_SUMMARY_MODEL_PATH=models/Qwen2.5-1.5B-Instruct
+INITIAL_ADMIN_USERNAME=admin
+INITIAL_ADMIN_PASSWORD=change-this-admin-password
 ```
 
 可选覆盖项：
@@ -610,12 +612,17 @@ TABLE_SUMMARY_MODEL_PATH=models/Qwen2.5-1.5B-Instruct
 ```env
 APP_PORT=8080
 BACKEND_WORKERS=1
+NVIDIA_VISIBLE_DEVICES=all
+NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ```
 
 说明：
 
 - `APP_PORT` 是宿主机对外端口，默认 `8080`
 - `BACKEND_WORKERS` 默认固定为 `1`，这是为了避免本地会话状态和本地向量存储在多进程下产生不一致
+- 仅当 `.user/users.json` 不存在时，`INITIAL_ADMIN_USERNAME` / `INITIAL_ADMIN_PASSWORD` 才会用于初始化首个管理员
+- 不再内置默认管理员口令
+- `NVIDIA_DRIVER_CAPABILITIES` 需要包含 `utility`，这样容器内才能执行 `nvidia-smi`
 
 建议在首次 Docker 部署前手动创建持久化目录：
 
@@ -666,6 +673,36 @@ mkdir -p \
 ```bash
 docker compose up -d --build
 ```
+
+如果你需要在容器里直接使用 GPU 并执行 `nvidia-smi`，启动前请确认宿主机已经安装 NVIDIA Container Toolkit；当前 `backend` 服务已经在 Compose 中申请 `gpus: all`，并默认注入：
+
+```env
+NVIDIA_VISIBLE_DEVICES=all
+NVIDIA_DRIVER_CAPABILITIES=compute,utility
+```
+
+推荐把首次管理员初始化和 GPU 相关变量一起写入 `.env`：
+
+```env
+INITIAL_ADMIN_USERNAME=admin
+INITIAL_ADMIN_PASSWORD=change-this-admin-password
+NVIDIA_VISIBLE_DEVICES=all
+NVIDIA_DRIVER_CAPABILITIES=compute,utility
+```
+
+推荐启动命令：
+
+```bash
+docker compose up -d --build
+```
+
+启动后可直接验证：
+
+```bash
+docker compose exec backend nvidia-smi
+```
+
+如果 `nvidia-smi` 能在 `backend` 容器内正常输出 GPU 信息，说明 GPU 透传已经生效。
 
 当你修改了 [`Dockerfile.backend`](/home/ubuntu/rag_project/rag/Dockerfile.backend)、[`Dockerfile.frontend`](/home/ubuntu/rag_project/rag/Dockerfile.frontend)、[`requirements.txt`](/home/ubuntu/rag_project/rag/requirements.txt)、[`backend/requirements.txt`](/home/ubuntu/rag_project/rag/backend/requirements.txt) 之后，都应继续使用 `--build` 触发镜像重建。
 

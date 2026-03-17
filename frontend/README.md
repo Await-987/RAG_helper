@@ -116,6 +116,7 @@ src/
 
 开发模式下，Vite 会自动代理 `/api` 请求到后端 `http://localhost:8000`。
 
-## 默认账号
+## 首次管理员初始化
 
-- 管理员: admin / admin123
+- 不再内置默认管理员口令
+- 首次部署时请通过 `INITIAL_ADMIN_USERNAME` 和 `INITIAL_ADMIN_PASSWORD` 初始化首个管理员

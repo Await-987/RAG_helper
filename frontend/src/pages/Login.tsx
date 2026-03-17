@@ -97,7 +97,7 @@ export function LoginPage() {
 
           {/* Footer */}
           <div className="mt-6 text-center text-sm text-gray-500">
-            <p>默认管理员账号: admin / admin123</p>
+            <p>请联系管理员获取账号与初始密码</p>
           </div>
         </div>
       </div>
