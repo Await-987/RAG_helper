@@ -56,6 +56,7 @@ export function ChatPage() {
   const streamingReasoningRef = useRef('');
   const streamingFlushHandleRef = useRef<number | null>(null);
   const streamingDoneRef = useRef(false);
+  const wasStreamingRef = useRef(false);
 
   const scheduleStreamingFlush = () => {
     if (streamingFlushHandleRef.current !== null) {
@@ -137,8 +138,11 @@ export function ChatPage() {
 
   // Auto scroll to bottom
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, streamingContent, streamingReasoning]);
+    const isStreaming = Boolean(streamingContent || streamingReasoning || isLoading);
+    const behavior: ScrollBehavior = isStreaming || wasStreamingRef.current ? 'auto' : 'smooth';
+    messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+    wasStreamingRef.current = isStreaming;
+  }, [messages, streamingContent, streamingReasoning, isLoading]);
 
   useEffect(() => {
     loadSessions();
@@ -296,7 +300,7 @@ export function ChatPage() {
   };
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full min-h-0">
       <div className="hidden lg:flex w-80 border-r border-dark-border bg-dark-card flex-col">
         <div className="flex-1 overflow-y-auto custom-scrollbar p-3 space-y-2">
           {isSessionsLoading && (
@@ -349,7 +353,7 @@ export function ChatPage() {
         </div>
       </div>
 
-      <div className="flex-1 flex flex-col h-full">
+      <div className="flex-1 flex h-full min-h-0 flex-col">
         <div className="flex items-center justify-between p-4 border-b border-dark-border bg-dark-card">
           <div>
             <h1 className="text-xl font-bold text-white">智能设计助手</h1>
@@ -371,7 +375,7 @@ export function ChatPage() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 custom-scrollbar">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 custom-scrollbar">
           {messages.length === 0 && !isLoading && (
             <div className="flex flex-col items-center justify-center h-full text-gray-400">
               <div className="w-20 h-20 rounded-full bg-dark-hover flex items-center justify-center text-4xl mb-4">

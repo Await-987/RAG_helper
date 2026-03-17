@@ -1,39 +1,78 @@
-FROM python:3.10-slim
+# 使用固定 patch 版本的 Python slim-bookworm 作为基础镜像，减少上游变更导致的构建不稳定。
+FROM python:3.10.16-slim-bookworm
 
+# 构建阶段接收大写 HTTP 代理变量。
+ARG HTTP_PROXY
+# 构建阶段接收大写 HTTPS 代理变量。
+ARG HTTPS_PROXY
+# 构建阶段接收大写 NO_PROXY 变量。
+ARG NO_PROXY
+# 构建阶段接收小写 http_proxy 变量。
+ARG http_proxy
+# 构建阶段接收小写 https_proxy 变量。
+ARG https_proxy
+# 构建阶段接收小写 no_proxy 变量。
+ARG no_proxy
+
+# 避免 apt 在构建时弹出交互式提示。
 ENV DEBIAN_FRONTEND=noninteractive
+# 禁止 Python 生成 .pyc 文件。
 ENV PYTHONDONTWRITEBYTECODE=1
+# 让 Python 标准输出实时刷新。
 ENV PYTHONUNBUFFERED=1
+# 关闭 pip 本地缓存，减小镜像体积。
 ENV PIP_NO_CACHE_DIR=1
+# 把 /app 加进 Python 路径，方便按包导入项目模块。
 ENV PYTHONPATH=/app
 
+# 设定镜像内工作目录。
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    curl \
-    git \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    poppler-utils \
-    tesseract-ocr \
-    tesseract-ocr-chi-sim \
+# 安装系统级依赖，包括编译工具、OCR、PDF 处理和 OpenCV 运行库。
+RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" \
+    http_proxy="${http_proxy:-$HTTP_PROXY}" https_proxy="${https_proxy:-$HTTPS_PROXY}" no_proxy="${no_proxy:-$NO_PROXY}" \
+    && apt-get update && apt-get install -y \
+        build-essential \
+        curl \
+        git \
+        libgl1 \
+        libglib2.0-0 \
+        poppler-utils \
+        tesseract-ocr \
+        tesseract-ocr-chi-sim \
     && rm -rf /var/lib/apt/lists/*
 
+# 复制主依赖清单到临时目录。
 COPY requirements.txt /tmp/requirements.txt
+# 复制后端附加依赖清单到临时目录。
 COPY backend/requirements.txt /tmp/backend-requirements.txt
 
-RUN pip install --upgrade pip setuptools wheel \
-    && pip install --extra-index-url https://download.pytorch.org/whl/cu128 -r /tmp/requirements.txt \
-    && pip install -r /tmp/backend-requirements.txt
+# 安装 Python 依赖，包含主依赖和后端依赖。
+RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" \
+    http_proxy="${http_proxy:-$HTTP_PROXY}" https_proxy="${https_proxy:-$HTTPS_PROXY}" no_proxy="${no_proxy:-$NO_PROXY}" \
+    && pip install --upgrade pip setuptools wheel \
+    && pip install --extra-index-url https://download.pytorch.org/whl/cu128 \
+        -r /tmp/requirements.txt \
+        -r /tmp/backend-requirements.txt
 
+# 复制 agents 目录。
 COPY agents ./agents
+# 复制 backend 目录。
 COPY backend ./backend
+# 复制 config 目录。
 COPY config ./config
+# 复制 run 目录。
 COPY run ./run
+# 复制 scripts 目录。
 COPY scripts ./scripts
+# 复制 tests 目录，便于镜像内诊断或自检。
 COPY tests ./tests
+# 复制 tools 目录。
 COPY tools ./tools
+# 复制共享路径入口模块。
+COPY storage_paths.py ./
 
+# 预创建运行时会用到的目录，避免首次启动时路径不存在。
 RUN mkdir -p \
     /app/data/lex_index \
     /app/data/qdrant \
@@ -43,12 +82,16 @@ RUN mkdir -p \
     /app/data/stored_files \
     /app/data/agent_memory \
     /app/data/chat_sessions \
+    /app/backend/context_files \
     /app/models \
     /app/.user
 
+# 声明后端监听端口。
 EXPOSE 8000
 
+# 定义后端容器健康检查逻辑。
 HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=5 \
     CMD curl -fsS http://localhost:8000/health || exit 1
 
+# 启动 FastAPI 后端，并允许通过 BACKEND_WORKERS 控制 worker 数。
 CMD ["sh", "-c", "python backend/run.py --host 0.0.0.0 --port 8000 --workers ${BACKEND_WORKERS:-1}"]

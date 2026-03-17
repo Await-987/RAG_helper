@@ -19,6 +19,11 @@
 }
 
 @layer base {
+  html {
+    height: 100%;
+    overflow: hidden;
+  }
+
   :root {
     font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     line-height: 1.5;
@@ -31,11 +36,14 @@
   }
 
   body {
-    @apply bg-dark-bg text-gray-100 min-h-screen m-0;
+    @apply bg-dark-bg text-gray-100 m-0;
+    height: 100%;
+    overflow: hidden;
   }
 
   #root {
-    @apply min-h-screen;
+    height: 100%;
+    overflow: hidden;
   }
 }
 

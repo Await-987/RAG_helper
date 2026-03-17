@@ -258,9 +258,15 @@ data/
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
+pip install --upgrade pip setuptools wheel
 pip install -r requirements.txt
 pip install -r backend/requirements.txt
 ```
+
+说明：
+
+- 根目录 [`requirements.txt`](/home/ubuntu/rag_project/rag/requirements.txt) 已包含主工程依赖和后端运行时依赖
+- [`backend/requirements.txt`](/home/ubuntu/rag_project/rag/backend/requirements.txt) 用于和 Docker 镜像安装链路保持一致，建议继续安装
 
 ### 6.2 前端环境
 
@@ -447,6 +453,50 @@ npm run dev -- --host 0.0.0.0 --port 3000
 3. 启动 `backend`
 4. 启动 `frontend`
 
+推荐先把 `.env` 切到服务模式：
+
+```env
+QDRANT_MODE=server
+QDRANT_URL=http://127.0.0.1:6333
+REDIS_URL=redis://127.0.0.1:6379/0
+SHARED_STORAGE_ROOT=data
+```
+
+四个终端分别执行：
+
+终端 1，启动 `redis`：
+
+```bash
+mkdir -p /home/ubuntu/rag_project/rag/data/redis
+redis-server --port 6379 --appendonly yes --dir /home/ubuntu/rag_project/rag/data/redis
+```
+
+终端 2，启动 `qdrant`：
+
+```bash
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
+export NO_PROXY=127.0.0.1,localhost
+export no_proxy=127.0.0.1,localhost
+mkdir -p /home/ubuntu/rag_project/rag/data/qdrant
+QDRANT__STORAGE__STORAGE_PATH=/home/ubuntu/rag_project/rag/data/qdrant /home/ubuntu/qdrant-src/target/release/qdrant
+```
+
+终端 3，启动 `backend`：
+
+```bash
+cd /home/ubuntu/rag_project/rag
+source .venv/bin/activate
+python backend/run.py --host 0.0.0.0 --port 8000
+```
+
+终端 4，启动 `frontend`：
+
+```bash
+cd /home/ubuntu/rag_project/rag/frontend
+npm install
+npm run dev -- --host 0.0.0.0 --port 3000
+```
+
 验证命令：
 
 ```bash
@@ -567,6 +617,32 @@ BACKEND_WORKERS=1
 - `APP_PORT` 是宿主机对外端口，默认 `8080`
 - `BACKEND_WORKERS` 默认固定为 `1`，这是为了避免本地会话状态和本地向量存储在多进程下产生不一致
 
+建议在首次 Docker 部署前手动创建持久化目录：
+
+```bash
+mkdir -p \
+  data/qdrant \
+  data/redis \
+  data/lex_index \
+  data/stored_files \
+  data/content_lists \
+  data/exported_chunks \
+  data/agent_memory \
+  data/chat_sessions \
+  models \
+  .user
+```
+
+如果你此前在宿主机本地手动启动过：
+
+- `redis-server`
+- `qdrant`
+- `python backend/run.py`
+- `npm run dev`
+
+建议先停掉这些本地进程，再启动 Docker。  
+原因是 `data/` 会被容器直接挂载，本地进程和容器不要同时占用同一套数据目录。
+
 ### 9.4.3 外部挂载约定
 
 当前只需要把下面 3 个顶层目录作为宿主机持久化挂载：
@@ -585,8 +661,81 @@ BACKEND_WORKERS=1
 
 ### 9.4.4 启动命令
 
+最简单的标准命令：
+
 ```bash
 docker compose up -d --build
+```
+
+当你修改了 [`Dockerfile.backend`](/home/ubuntu/rag_project/rag/Dockerfile.backend)、[`Dockerfile.frontend`](/home/ubuntu/rag_project/rag/Dockerfile.frontend)、[`requirements.txt`](/home/ubuntu/rag_project/rag/requirements.txt)、[`backend/requirements.txt`](/home/ubuntu/rag_project/rag/backend/requirements.txt) 之后，都应继续使用 `--build` 触发镜像重建。
+
+如果你的环境拉取基础镜像或执行 `pip install / npm ci / git clone` 时网络不稳定，推荐使用本项目当前验证过的回退方式：
+
+```bash
+DOCKER_BUILDKIT=0 docker compose up -d --build
+```
+
+如果你只想先构建镜像，再单独启动容器：
+
+```bash
+DOCKER_BUILDKIT=0 docker compose build --no-cache
+docker compose up -d
+```
+
+#### 9.4.4.1 使用宿主机代理构建镜像
+
+如果你宿主机上已经开了 HTTP 代理，例如：
+
+```bash
+export http_proxy=http://127.0.0.1:7897
+export https_proxy=http://127.0.0.1:7897
+```
+
+那么构建 Docker 镜像前，建议同时导出大小写两套变量：
+
+```bash
+export HTTP_PROXY=http://127.0.0.1:7897
+export HTTPS_PROXY=http://127.0.0.1:7897
+export NO_PROXY=localhost,127.0.0.1,qdrant,redis,backend,web
+
+export http_proxy=http://127.0.0.1:7897
+export https_proxy=http://127.0.0.1:7897
+export no_proxy=localhost,127.0.0.1,qdrant,redis,backend,web
+```
+
+本项目当前 Compose 已经做了两件事：
+
+- `build` 阶段会把这些代理变量透传给 `apt-get`、`pip install`、`npm ci`
+- 运行阶段不会再把代理写进 `backend` 容器环境，避免模型请求被错误转发到 `127.0.0.1:7897`
+
+如果你已经构建完成，且后续不再需要 Docker 构建联网，可以在宿主机清掉这些变量：
+
+```bash
+unset HTTP_PROXY HTTPS_PROXY NO_PROXY
+unset http_proxy https_proxy no_proxy
+```
+
+#### 9.4.4.2 按服务重建
+
+如果你只改了前端代码，不需要整套重建，只重建 `web` 即可：
+
+```bash
+DOCKER_BUILDKIT=0 docker compose build --no-cache web
+docker compose up -d web
+```
+
+如果你只改了后端代码或后端依赖，只重建 `backend`：
+
+```bash
+DOCKER_BUILDKIT=0 docker compose build --no-cache backend
+docker compose up -d --force-recreate backend
+```
+
+如果你同时改了前后端：
+
+```bash
+DOCKER_BUILDKIT=0 docker compose build --no-cache backend web
+docker compose up -d --force-recreate backend web
 ```
 
 查看状态：
@@ -605,6 +754,12 @@ docker compose logs -f web
 docker compose down
 ```
 
+如果只是想重启容器但保留数据目录：
+
+```bash
+docker compose restart
+```
+
 ### 9.4.5 访问地址
 
 - 主应用：`http://localhost:8080`
@@ -614,18 +769,135 @@ docker compose down
 
 如果你设置了 `APP_PORT`，把上面的 `8080` 替换掉即可。
 
-### 9.4.6 方案特性
+### 9.4.6 Windows 部署
+
+Windows 可以部署这套多容器架构，但建议区分两种方式理解：
+
+- 推荐方式：`Windows + Docker Desktop + WSL2`
+- 可运行但不推荐：`Windows 原生目录 + Docker Desktop`
+
+#### 9.4.6.1 推荐方式：Docker Desktop + WSL2
+
+更稳的做法是：
+
+1. 安装 Docker Desktop
+2. 打开 WSL2 backend
+3. 安装一个 Linux 发行版，例如 Ubuntu
+4. 在 Docker Desktop 里开启该 WSL 发行版的集成
+5. 把项目放在 WSL 的 Linux 文件系统中，例如：
+
+```bash
+/home/<your-user>/rag
+```
+
+为什么推荐 WSL2：
+
+- 当前项目依赖 Linux 风格路径和工具链
+- `data/`、`models/`、`.user/` 这些目录在 Linux 文件系统下读写更稳
+- Qdrant、Redis、OCR、PDF 解析、模型文件加载都更适合 Linux 文件系统
+- 如果项目直接放在 `C:\Users\...` 这类 Windows 路径下，挂载性能和兼容性通常更差
+
+WSL2 下的推荐命令流程：
+
+进入 WSL 终端后执行：
+
+```bash
+cd /home/<your-user>/rag
+mkdir -p \
+  data/qdrant \
+  data/redis \
+  data/lex_index \
+  data/stored_files \
+  data/content_lists \
+  data/exported_chunks \
+  data/agent_memory \
+  data/chat_sessions \
+  models \
+  .user
+```
+
+确认根目录 `.env` 已配置好模型地址、密钥和模型路径后，执行：
+
+```bash
+DOCKER_BUILDKIT=0 docker compose up -d --build
+```
+
+查看状态：
+
+```bash
+docker compose ps
+docker compose logs -f backend
+docker compose logs -f web
+```
+
+访问地址仍然是：
+
+- `http://localhost:8080`
+
+这里的 `localhost` 指 Windows 宿主机浏览器访问 Docker Desktop 暴露出来的端口。
+
+WSL2 下的目录建议：
+
+建议把以下目录长期保存在 WSL Linux 文件系统里：
+
+- `data/`
+- `models/`
+- `.user/`
+
+尤其是 `models/` 和 `data/qdrant/`，文件多且体积大，放在 WSL 内部磁盘通常更稳。
+
+WSL2 下的注意事项：
+
+- 不建议一边在 Windows 原生 Python 环境里手动跑后端，一边再用 Docker Desktop 跑同一套 `data/`
+- 如果宿主机需要代理，优先先确认 Docker Desktop 本身能正常拉镜像
+- 如果你已经在 WSL 中验证过 `DOCKER_BUILDKIT=0 docker compose up -d --build` 能成功，就继续沿用这一条
+- 如果修改了前端代码，只重建 `web`
+- 如果修改了后端代码或依赖，只重建 `backend`
+
+#### 9.4.6.2 可运行但不推荐：Windows 原生目录部署
+
+如果你不想用 WSL2，也可以直接在 Windows 上这样做：
+
+1. 安装 Docker Desktop
+2. 把项目放在 Windows 路径，例如：
+
+```text
+D:\rag
+```
+
+3. 用 PowerShell 进入项目目录
+4. 准备 `data/`、`models/`、`.user/`
+5. 执行：
+
+```powershell
+docker compose up -d --build
+```
+
+这种方式可以跑，但要明确它的局限：
+
+- `data/qdrant/`、`data/redis/`、`models/` 在 Windows 文件系统上的 IO 性能通常更差
+- 大量小文件、模型目录和向量库目录更容易拖慢容器
+- Windows 路径、权限和换行细节更容易引入兼容性问题
+- 如果后续涉及代理、镜像构建、OCR 或模型依赖排查，Windows 原生路径通常更难处理
+
+因此：
+
+- 临时验证功能，可以这样跑
+- 长期使用、多人共用、模型较大或数据量较大时，不建议这样部署
+
+### 9.4.7 方案特性
 
 - 前端静态资源由 Nginx 托管，启动更稳定，资源占用低
 - 外部只暴露一个端口，后端不直接对公网开放
 - `/api` 反向代理已关闭缓冲，兼容 SSE 流式输出
 - 向量库已切换为独立 `qdrant` 服务，不再依赖 backend 容器内的本地 embedded storage
 - 会话索引、标题、消息数和最近活跃时间已切到独立 `redis` 服务
+- Redis 容器当前默认使用 `redis:8-alpine`，与现有 `data/redis/` 持久化数据格式兼容性更稳
 - `data/`、`models/`、`.user/` 全部通过 bind mount 持久化
 - redis、backend 和 web 都带健康检查；backend 会在启动时自动等待 redis 并重试连接 qdrant
 - `init: true` 和 `restart: unless-stopped` 已开启，降低僵尸进程和意外退出影响
 
-### 9.4.7 为什么不推荐多进程后端
+### 9.4.8 为什么不推荐多进程后端
 
 当前后端包含：
 
@@ -811,7 +1083,50 @@ python3 run.py
 - 浏览器是否拿到旧 bundle
 - `/api/v1/auth/me` 是否异常
 
-### 15.2 文件存在但显示“未建库”
+### 15.2 Docker 构建时基础镜像或依赖拉取失败
+
+优先检查：
+
+- 是否直接使用了 `DOCKER_BUILDKIT=0 docker compose up -d --build`
+- 宿主机是否已经配置代理
+- `HTTP_PROXY/HTTPS_PROXY/http_proxy/https_proxy` 是否已导出
+- Docker 构建日志里失败的是哪一层：
+  - `FROM python/node/nginx`：通常是镜像源或 Docker daemon 网络问题
+  - `apt-get / pip install / npm ci / git clone`：通常是构建阶段代理问题
+
+推荐命令：
+
+```bash
+DOCKER_BUILDKIT=0 docker compose build --no-cache
+```
+
+### 15.3 Docker 运行中模型请求报 `Connection error`
+
+如果后端日志里出现：
+
+- `httpx.ConnectError`
+- `openai.APIConnectionError`
+- 或者显式显示正在连接 `127.0.0.1:7897`
+
+优先检查：
+
+- `docker compose exec backend env | grep -i proxy`
+- `backend` 运行时是否还带着宿主机代理变量
+- `.env` 中的 `url=` 是否是可从容器访问的模型地址
+
+当前项目的正确行为是：
+
+- 代理只用于 Docker `build`
+- `backend` 运行时不再注入 `HTTP_PROXY/http_proxy`
+
+如果你刚改过 Dockerfile 或 Compose，记得重建 `backend`：
+
+```bash
+DOCKER_BUILDKIT=0 docker compose build --no-cache backend
+docker compose up -d --force-recreate backend
+```
+
+### 15.4 文件存在但显示“未建库”
 
 优先检查：
 
@@ -820,7 +1135,25 @@ python3 run.py
 - 旧库是否还停留在 `data/storages`
 - 是否已经执行迁移脚本 `scripts/migrate_qdrant_local_to_server.py`
 
-### 15.3 图片或表格不显示
+### 15.5 Redis 容器启动失败，提示 `Can't handle RDB format version`
+
+这通常不是 Compose 配置错误，而是：
+
+- 你挂载的 `data/redis/` 里已有旧持久化数据
+- 当前 Redis 镜像版本太低，读不了已有数据格式
+
+当前仓库已经默认使用：
+
+- `redis:8-alpine`
+
+如果你本地仍然遇到这个问题，优先检查：
+
+- 是否已经重新 `docker compose up -d`
+- `docker compose logs --tail=100 redis`
+
+如果 Redis 中只是会话索引缓存，并且你接受重建，也可以清空 `data/redis/` 后再启动。
+
+### 15.6 图片或表格不显示
 
 优先检查：
 
@@ -829,7 +1162,20 @@ python3 run.py
 - 回答中的图片路径是否被模型改写
 - 浏览器是否仍在使用旧前端代码
 
-### 15.4 表格检索内容被截断
+### 15.7 聊天页底部出现大块黑色空白
+
+这通常是前端旧 bundle 仍在运行，或者 `web` 容器还没重建。
+
+优先处理：
+
+```bash
+DOCKER_BUILDKIT=0 docker compose build --no-cache web
+docker compose up -d web
+```
+
+然后浏览器强刷页面。
+
+### 15.8 表格检索内容被截断
 
 当前项目已对表格/议程/清单类 query 自动放宽检索预算。如果仍然截断，优先检查：
 
@@ -837,7 +1183,7 @@ python3 run.py
 - 表格切块是否正常
 - 原始文档在 MinerU 输出中是否已被截断
 
-### 15.5 Streamlit 和 FastAPI 是否能同时跑
+### 15.9 Streamlit 和 FastAPI 是否能同时跑
 
 可以，但不建议长期作为主运行方式。因为两套入口已经分化，后续维护更推荐以前后端分离架构为主。
 

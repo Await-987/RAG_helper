@@ -11,6 +11,11 @@ export function StreamingMessage({ content, reasoning, isLoading }: StreamingMes
   const showLoading = isLoading && !content && !reasoning;
   const hasReasoning = reasoning && reasoning.length > 0;
   const hasUnclosedTable = /<table\b/i.test(content) && !/<\/table>/i.test(content);
+  const reasoningPreview = reasoning
+    .replace(/!\[[^\]]*]\([^)]+\)/g, '')
+    .replace(/<img\b[^>]*>/gi, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
   const streamingPreview = content
     .replace(/!\[[^\]]*]\([^)]+\)/g, '')
     .replace(/<img\b[^>]*>/gi, '')
@@ -47,7 +52,11 @@ export function StreamingMessage({ content, reasoning, isLoading }: StreamingMes
                 <Loader2 size={14} className="animate-spin" />
                 <span>思考过程</span>
               </div>
-              <ChatContent content={reasoning} suppressImages />
+              {isLoading ? (
+                <div className="markdown-content whitespace-pre-wrap">{reasoningPreview}</div>
+              ) : (
+                <ChatContent content={reasoning} suppressImages />
+              )}
             </div>
           )}
 

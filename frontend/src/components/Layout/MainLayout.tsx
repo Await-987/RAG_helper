@@ -40,7 +40,7 @@ export function MainLayout({ children }: MainLayoutProps) {
   };
 
   return (
-    <div className="flex h-screen bg-dark-bg">
+    <div className="flex h-screen min-h-0 bg-dark-bg">
       {/* Mobile sidebar overlay */}
       {sidebarOpen && (
         <div
@@ -158,7 +158,7 @@ export function MainLayout({ children }: MainLayoutProps) {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 flex flex-col overflow-hidden">
+      <main className="flex-1 flex min-h-0 flex-col overflow-hidden">
         {/* Mobile header */}
         <header className="lg:hidden flex items-center justify-between p-4 bg-dark-card border-b border-dark-border">
           <button
@@ -172,7 +172,7 @@ export function MainLayout({ children }: MainLayoutProps) {
         </header>
 
         {/* Page content */}
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 min-h-0 overflow-hidden">
           {children}
         </div>
       </main>

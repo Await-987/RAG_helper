@@ -1,86 +1,207 @@
+# 定义本项目的所有容器服务。
 services:
+  # Redis：保存会话索引、标题、消息数等轻量状态。
   redis:
-    image: redis:7-alpine
+    # 使用 Redis 8 Alpine 镜像，兼容当前 data/redis 中的持久化格式。
+    image: redis:8-alpine
+    # 固定容器名，方便日志查看和排障。
     container_name: rag-redis
+    # 开启 AOF 持久化，避免仅使用内存。
     command: ["redis-server", "--appendonly", "yes"]
+    # 仅在 Compose 内部网络暴露 6379，不直接映射到宿主机。
     expose:
+      # Redis 默认服务端口。
       - "6379"
+    # 挂载宿主机目录，持久化 Redis 数据。
     volumes:
+      # 把宿主机 data/redis 映射到容器 /data。
       - ./data/redis:/data
+    # 健康检查：只有 ping 成功才视为服务可用。
     healthcheck:
+      # 使用 redis-cli ping 作为健康检查命令。
       test: ["CMD", "redis-cli", "ping"]
+      # 每 10 秒检查一次。
       interval: 10s
+      # 单次检查超时时间 5 秒。
       timeout: 5s
+      # 连续失败 5 次才标记 unhealthy。
       retries: 5
+      # 容器启动后先给 10 秒预热时间。
       start_period: 10s
+    # 容器异常退出后自动重启。
     restart: unless-stopped
 
+  # Qdrant：独立向量库服务，承载 embedding 检索数据。
   qdrant:
+    # 使用官方 Qdrant 镜像。
     image: qdrant/qdrant:latest
+    # 固定容器名，便于排查。
     container_name: rag-qdrant
+    # 仅在 Compose 内部网络暴露 6333。
     expose:
+      # Qdrant HTTP API 端口。
       - "6333"
+    # 挂载宿主机目录，持久化向量库。
     volumes:
+      # 把宿主机 data/qdrant 映射到容器 /qdrant/storage。
       - ./data/qdrant:/qdrant/storage
+    # 容器异常退出后自动重启。
     restart: unless-stopped
 
+  # Backend：FastAPI 服务，负责聊天、文件、检索与编排逻辑。
   backend:
+    # 构建后端镜像。
     build:
+      # 构建上下文使用项目根目录。
       context: .
+      # 指定后端镜像 Dockerfile。
       dockerfile: Dockerfile.backend
+      # 构建阶段使用宿主机网络，方便直接走宿主机代理。
+      network: host
+      # 向构建阶段透传代理参数。
+      args:
+        # 大写 HTTP 代理变量。
+        HTTP_PROXY: "${HTTP_PROXY:-}"
+        # 大写 HTTPS 代理变量。
+        HTTPS_PROXY: "${HTTPS_PROXY:-}"
+        # 不走代理的地址列表。
+        NO_PROXY: "${NO_PROXY:-}"
+        # 小写 HTTP 代理变量。
+        http_proxy: "${http_proxy:-}"
+        # 小写 HTTPS 代理变量。
+        https_proxy: "${https_proxy:-}"
+        # 小写 no_proxy 变量。
+        no_proxy: "${no_proxy:-}"
+    # 固定后端容器名。
     container_name: rag-backend
+    # 只有当依赖服务可用后，才启动 backend。
     depends_on:
+      # 依赖 Redis 健康通过。
       redis:
+        # 必须等 Redis healthy。
         condition: service_healthy
+      # 依赖 Qdrant 启动完成。
       qdrant:
+        # Qdrant 只要求 started。
         condition: service_started
+    # 从根目录 .env 加载业务环境变量。
     env_file:
+      # 读取 .env。
       - .env
+    # 挂载运行时目录，确保数据、模型、用户目录都在宿主机。
     volumes:
+      # 持久化 data 目录。
       - ./data:/app/data
+      # 持久化用户目录。
       - ./.user:/app/.user
+      # 持久化模型目录。
       - ./models:/app/models
+    # 写入容器运行时环境变量。
     environment:
+      # 让 Python 日志实时输出，不做缓冲。
       PYTHONUNBUFFERED: "1"
+      # 后端 worker 数，默认保持 1。
       BACKEND_WORKERS: "${BACKEND_WORKERS:-1}"
+      # 统一共享存储根目录。
       SHARED_STORAGE_ROOT: "data"
+      # 指定 Qdrant 使用 server 模式。
       QDRANT_MODE: "server"
+      # 指向 Compose 内部的 Qdrant 服务地址。
       QDRANT_URL: "http://qdrant:6333"
+      # 词汇索引缓存目录。
       QDRANT_LEXICAL_INDEX_DIR: "data/lex_index"
+      # Qdrant 请求超时时间。
+      QDRANT_TIMEOUT_SEC: "${QDRANT_TIMEOUT_SEC:-30}"
+      # Qdrant 初始化重试次数。
       QDRANT_INIT_RETRIES: "${QDRANT_INIT_RETRIES:-20}"
+      # Qdrant 初始化重试间隔。
       QDRANT_INIT_DELAY_SEC: "${QDRANT_INIT_DELAY_SEC:-3}"
+      # 指向 Compose 内部的 Redis 服务地址。
       REDIS_URL: "redis://redis:6379/0"
+      # Redis key 前缀。
       REDIS_PREFIX: "${REDIS_PREFIX:-rag}"
+      # Redis 读写超时时间。
+      REDIS_SOCKET_TIMEOUT_SEC: "${REDIS_SOCKET_TIMEOUT_SEC:-5}"
+      # Redis 建连超时时间。
+      REDIS_SOCKET_CONNECT_TIMEOUT_SEC: "${REDIS_SOCKET_CONNECT_TIMEOUT_SEC:-5}"
+    # 仅在内部网络暴露 8000，不直接映射到宿主机。
     expose:
+      # FastAPI 服务端口。
       - "8000"
+    # 开启 init，减少僵尸进程问题。
     init: true
+    # 停止容器时给 60 秒收尾时间。
     stop_grace_period: 60s
+    # 健康检查：后端 /health 可访问即视为健康。
     healthcheck:
+      # 通过 curl 请求本地健康检查接口。
       test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      # 每 30 秒检查一次。
       interval: 30s
+      # 单次检查 10 秒超时。
       timeout: 10s
+      # 连续失败 5 次才判定 unhealthy。
       retries: 5
+      # 给后端 90 秒冷启动时间。
       start_period: 90s
+    # 容器异常退出后自动重启。
     restart: unless-stopped
 
+  # Web：Nginx + 前端静态文件，对外统一提供入口。
   web:
+    # 构建前端镜像。
     build:
+      # 构建上下文使用项目根目录。
       context: .
+      # 指定前端镜像 Dockerfile。
       dockerfile: Dockerfile.frontend
+      # 构建阶段使用宿主机网络，方便使用代理。
+      network: host
+      # 构建阶段透传代理变量。
+      args:
+        # 大写 HTTP 代理变量。
+        HTTP_PROXY: "${HTTP_PROXY:-}"
+        # 大写 HTTPS 代理变量。
+        HTTPS_PROXY: "${HTTPS_PROXY:-}"
+        # 不走代理的地址列表。
+        NO_PROXY: "${NO_PROXY:-}"
+        # 小写 HTTP 代理变量。
+        http_proxy: "${http_proxy:-}"
+        # 小写 HTTPS 代理变量。
+        https_proxy: "${https_proxy:-}"
+        # 小写 no_proxy 变量。
+        no_proxy: "${no_proxy:-}"
+    # 固定前端容器名。
     container_name: rag-web
+    # 只有 backend healthy 后才启动 web。
     depends_on:
+      # 依赖后端服务。
       backend:
+        # 必须等 backend 健康通过。
         condition: service_healthy
+    # 对宿主机暴露端口，默认 8080 -> 80。
     ports:
+      # APP_PORT 可覆盖宿主机端口。
       - "${APP_PORT:-8080}:80"
+    # 写入 Nginx 运行环境变量。
     environment:
+      # 关闭 Nginx entrypoint 的冗长日志。
       NGINX_ENTRYPOINT_QUIET_LOGS: "1"
+    # 开启 init，减少僵尸进程问题。
     init: true
+    # 停止容器时给 15 秒收尾时间。
     stop_grace_period: 15s
+    # 健康检查：请求 /healthz 成功即视为健康。
     healthcheck:
+      # 使用 wget 检查 Nginx 健康接口。
       test: ["CMD-SHELL", "wget -q -O- http://localhost/healthz >/dev/null 2>&1 || exit 1"]
+      # 每 30 秒检查一次。
       interval: 30s
+      # 单次检查 5 秒超时。
       timeout: 5s
+      # 连续失败 3 次才判定 unhealthy。
       retries: 3
+      # 给 web 15 秒预热时间。
       start_period: 15s
+    # 容器异常退出后自动重启。
     restart: unless-stopped
