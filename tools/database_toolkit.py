@@ -1,6 +1,5 @@
 import sys
 import re
-from contextvars import ContextVar
 from loguru import logger
 from typing import List, Optional, Any, Dict
 
@@ -13,12 +12,6 @@ def _log_search(msg: str):
     logger.info(msg)
     print(msg)
     sys.stdout.flush()
-
-
-_turn_seen_evidence_keys: ContextVar[Optional[set]] = ContextVar(
-    "turn_seen_evidence_keys",
-    default=None,
-)
 
 
 class DatabaseToolkit(BaseToolkit):
@@ -46,22 +39,6 @@ class DatabaseToolkit(BaseToolkit):
         self._reranker = None  # lazy-load
         self._index_warmed_up = False  # 索引预热标志
         
-        # 20260317修复：用实例变量存储seen_keys，彻底放弃ContextVar
-        # 这样不会被异步Task的新Context所影响
-        self._current_session_seen_keys: Optional[set] = None
-
-    def set_session_seen_keys(self, seen_keys: Optional[set]) -> None:
-        """
-        设置当前session的去重集合（由stream_chat在请求开始时调用）。
-        这比ContextVar更可靠，因为不受异步Task的Context隔离影响。
-        """
-        self._current_session_seen_keys = seen_keys
-        logger.info(f"🔧 DatabaseToolkit.set_session_seen_keys() 已设置 (内容数={len(seen_keys) if seen_keys else 0})")
-
-    def get_session_seen_keys(self) -> Optional[set]:
-        """获取当前session的去重集合"""
-        return self._current_session_seen_keys
-
     def warmup_lexical_index(self):
         """
         预热词汇索引和 reranker 模型，避免首次搜索时长时间等待。
@@ -94,29 +71,6 @@ class DatabaseToolkit(BaseToolkit):
         """Close the database connection"""
         if hasattr(self, 'db'):
             self.db.close()
-
-    def begin_turn(self) -> None:
-        """
-        初始化跨会话去重状态（仅供兼容性调用）。
-        
-        20260317修复：已改为Agent实例级去重。
-        - 在stream_chat中，通过 `chat_agent.seen_evidence_keys` 存储会话内累积的去重状态
-        - 不再需要显式调用begin_turn()清空（因为不清空就能持续累积）
-        - 此方法保留但不建议调用，除非有特殊初始化需求
-        """
-        if _turn_seen_evidence_keys.get() is None:
-            _turn_seen_evidence_keys.set(set())
-
-    def end_turn(self) -> None:
-        """
-        清除跨轮次去重状态（已弃用）。
-        
-        20260317修复：已改为Agent实例级去重。
-        - seen_keys现已绑定到Agent实例（chat_agent.seen_evidence_keys）
-        - 不再需要显式清空（Agent对象的生命周期就是去重状态的生命周期）
-        - 此方法已弃用，不应调用
-        """
-        pass  # Do nothing - seen_keys is now managed by Agent instance
 
     def __enter__(self):
         return self
@@ -322,11 +276,10 @@ class DatabaseToolkit(BaseToolkit):
             return f"{source}::page={page}::chunk={chunk_index}"
         return f"{source}::{content}"
 
-    def _filter_seen_turn_evidence(self, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        seen_keys = self.get_session_seen_keys()
+    def _filter_seen_turn_evidence(self, hits: List[Dict[str, Any]], seen_keys: Optional[set]) -> List[Dict[str, Any]]:
         _log_search(f"🔍 _filter_seen_turn_evidence: seen_keys={type(seen_keys).__name__}, len={len(seen_keys) if seen_keys else 0}")
         if seen_keys is None:
-            _log_search("⚠️ seen_keys为None，跳过去重（session未初始化）")
+            _log_search("⚠️ seen_keys为None，跳过去重")
             return hits
 
         _log_search(f"📝 当前seen_keys中的内容数: {len(seen_keys)}, 待检查的hit数: {len(hits)}")
@@ -414,33 +367,22 @@ class DatabaseToolkit(BaseToolkit):
             intent_description: 用户真实意图的完整描述（用于重排序，消除代词、补全背景主体）
                 应该是一个完整的自然语言句子，最接近用户的真实意图。
                 如果为None，重排序将使用query。建议总是传入意图描述以获得更好的重排准确性。
-            seen_keys: 本会话内已返回过的证据块的去重集合（可选）
-                如果为None，则优先使用set_session_seen_keys()设置的值。
-                这个参数确保无论Agent直接调用还是间接调用都能获取见_keys。
+            seen_keys: 本会话内已返回过的证据块的去重集合（由调用方传入，不在toolkit内部存储）
         
         Returns:
             格式化的搜索结果字符串
         
         Note:
             其他参数（如 top_k、max_results 等）使用默认值，无需传入。
-            
-        20260317修复：彻底放弃ContextVar，改用DatabaseToolkit实例变量
         """
-        # 核心修复：优先使用参数传入的见_keys，其次用instance变量
-        # 这样既支持显式参数，也支持Agent直接调用
-        if seen_keys is None:
-            seen_keys = self.get_session_seen_keys()
-        else:
-            # 参数显式传入时，同步到instance变量，确保多次调用一致
-            self.set_session_seen_keys(seen_keys)
-        
-        return self._search_database(query=query, intent_description=intent_description, **kwargs)
+        return self._search_database(query=query, intent_description=intent_description, seen_keys=seen_keys, **kwargs)
 
     def _search_database(
         self,
         query: str,
         intent_description: Optional[str] = None,
         *,
+        seen_keys: Optional[set] = None,
         use_hybrid: bool = True,
         use_rerank: bool = True,
         score_threshold: Optional[float] = None,
@@ -522,7 +464,7 @@ class DatabaseToolkit(BaseToolkit):
             hits = self._rerank(query, hits, intent_description=intent_description)
 
         # ===== Step 3: 本轮去重（在筛选之前，避免浪费 quota） =====
-        hits = self._filter_seen_turn_evidence(hits)
+        hits = self._filter_seen_turn_evidence(hits, seen_keys)
         
         # 检查是否有新增内容（不只是重复内容）
         has_new_content = any(not hit.get('payload', {}).get('_is_duplicate', False) for hit in hits)

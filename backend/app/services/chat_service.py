@@ -1,4 +1,4 @@
-"""
+﻿"""
 Chat service with session management.
 """
 import sys
@@ -689,6 +689,7 @@ class SessionManager:
         12.1 严禁将真实图片路径缩写成 `...`、`…`、`xxx`、`示例路径` 等占位形式；如果无法原样输出完整路径，就不要输出该图片链接。
         13. 公式使用 LaTeX；表格使用 Markdown；复杂表格优先保留原图链接；非表格图片不要主动输出。
         14. 如果本轮发生二次或多次检索，后续检索应优先补充新增证据，例如补参数、补范围、补条件、补反例、补表格，不要重复消费已返回的同一批证据。
+        15. 工具返回的检索结果中，如果某条内容显示为【占位符】，说明该证据在本轮之前的对话中已经完整提供过，不需要再次引用原文；直接基于历史对话中已给出的内容作答，并说明"该信息已在之前的回答中提供"。不要因为出现占位符就认为检索失败或信息缺失。
 
         LaTeX 公式格式要求：
         - 行内公式必须写在同一行，禁止在 $...$ 中间换行
@@ -1006,55 +1007,47 @@ class ChatService:
         return any(re.search(pattern, text) for pattern in self.FACTUAL_QUERY_REGEXES)
 
     def _get_intent_router(self) -> ChatAgent:
-        if self._intent_router is None:
-            from agents import backend_model
+        from agents import backend_model
 
-            self._intent_router = ChatAgent(
-                system_message=BaseMessage.make_assistant_message(
-                    role_name="Intent Router",
-                    content=(
-                        "你是一个对话路由器。你的任务是判断当前用户问题在本轮回答前是否必须强制检索知识库。"
-                        "如果问题需要基于文档、标准、流程、定义、参数、条件、范围、职责、原因、区别、是否、多少等事实性内容回答，"
-                        "则 needs_search=true。"
-                        "如果只是寒暄、闲聊、改写、润色、总结用户刚刚提供的文本、表达偏好、纯主观建议，"
-                        "则 needs_search=false。"
-                        "必须结合最近对话上下文理解代词和追问。"
-                    ),
+        return ChatAgent(
+            system_message=BaseMessage.make_assistant_message(
+                role_name="Intent Router",
+                content=(
+                    "你是一个对话路由器。你的任务是判断当前用户问题在本轮回答前是否必须强制检索知识库。"
+                    "如果问题需要基于文档、标准、流程、定义、参数、条件、范围、职责、原因、区别、是否、多少等事实性内容回答，"
+                    "则 needs_search=true。"
+                    "如果只是寒暄、闲聊、改写、润色、总结用户刚刚提供的文本、表达偏好、纯主观建议，"
+                    "则 needs_search=false。"
+                    "必须结合最近对话上下文理解代词和追问。"
                 ),
-                model=backend_model(),
-                tools=[],
-                summarize_threshold=None,
-            )
-        else:
-            self._intent_router.reset()
-        return self._intent_router
+            ),
+            model=backend_model(),
+            tools=[],
+            summarize_threshold=None,
+        )
 
     def _get_search_rewriter(self) -> ChatAgent:
-        if self._search_rewriter is None:
-            from agents import backend_model
+        from agents import backend_model
 
-            self._search_rewriter = ChatAgent(
-                system_message=BaseMessage.make_assistant_message(
-                    role_name="Search Rewriter",
-                    content=(
-                        "你是一个知识库检索改写器。你的任务是结合最近对话上下文，"
-                        "把当前用户追问改写成适合检索的 query 和 intent_description。"
-                        "你必须解决代词、简称、追问、省略主语等问题，把被省略的主体补全。"
-                        "如果当前问题明显是在追问上一轮某个标准、文件、设备、流程、制度、表格、章节，"
-                        "必须把该主体完整补回 query 和 intent_description。"
-                        "expanded_queries 最多给 2 条，只能用于补充别名、简称、表号、同义表达或缺失维度；"
-                        "严禁给出无关扩展，严禁泛化到别的文档。"
-                        "如果用户明确在问'涉及的表/附表/表格/图片/图表/明细表'，"
-                        "expanded_queries 应优先补充表号、清单表、投标报价表、附表等检索词。"
-                    ),
+        return ChatAgent(
+            system_message=BaseMessage.make_assistant_message(
+                role_name="Search Rewriter",
+                content=(
+                    "你是一个知识库检索改写器。你的任务是结合最近对话上下文，"
+                    "把当前用户追问改写成适合检索的 query 和 intent_description。"
+                    "你必须解决代词、简称、追问、省略主语等问题，把被省略的主体补全。"
+                    "如果当前问题明显是在追问上一轮某个标准、文件、设备、流程、制度、表格、章节，"
+                    "必须把该主体完整补回 query 和 intent_description。"
+                    "expanded_queries 最多给 2 条，只能用于补充别名、简称、表号、同义表达或缺失维度；"
+                    "严禁给出无关扩展，严禁泛化到别的文档。"
+                    "如果用户明确在问'涉及的表/附表/表格/图片/图表/明细表'，"
+                    "expanded_queries 应优先补充表号、清单表、投标报价表、附表等检索词。"
                 ),
-                model=backend_model(),
-                tools=[],
-                summarize_threshold=None,
-            )
-        else:
-            self._search_rewriter.reset()
-        return self._search_rewriter
+            ),
+            model=backend_model(),
+            tools=[],
+            summarize_threshold=None,
+        )
 
     def _route_requires_search(self, username: str, session_id: str, message: str) -> bool:
         transcript = self.session_manager.get_session_detail(username, session_id) or {}
@@ -1475,16 +1468,11 @@ class ChatService:
         try:
             # Get or create session
             session_id, chat_agent, is_newly_created = self.session_manager.get_or_create(username, session_id)
-            from app.dependencies import get_database_toolkit
-            database_toolkit = get_database_toolkit()
-
             if not hasattr(chat_agent, "seen_evidence_keys"):
                 chat_agent.seen_evidence_keys = set()
                 logger.info(f"🆕 初始化chat_agent.seen_evidence_keys (agent_id={id(chat_agent)})")
             else:
                 logger.info(f"♻️ 复用已有chat_agent.seen_evidence_keys (agent_id={id(chat_agent)}, 已有{len(chat_agent.seen_evidence_keys)}条记录)")
-
-            database_toolkit.set_session_seen_keys(chat_agent.seen_evidence_keys)
 
             self.session_manager.append_transcript_message(
                 username,
