@@ -288,6 +288,21 @@ cd ..
 - 用 Docker 起这两个服务
 - 或者在系统里单独安装它们并本地启动
 
+如果你要在本机完整跑通：
+
+- `redis`
+- `qdrant`
+- `backend`
+- `frontend`
+
+推荐顺序是：
+
+1. 安装 Python / Node.js 依赖
+2. 安装 `redis-server`
+3. 编译或安装 `qdrant`
+4. 准备 `.env`
+5. 分四个终端分别启动服务
+
 ## 7. 环境变量与配置模式
 
 在项目根目录创建 `.env`。
@@ -446,6 +461,87 @@ npm run dev -- --host 0.0.0.0 --port 3000
 - redis
 - 完整服务链
 
+下面这套流程默认面向 Ubuntu / Debian，并且是不使用 Docker 的完整本地联调。
+
+#### 9.2.1 安装 Python 与前端依赖
+
+```bash
+cd /home/ubuntu/rag_project/rag
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip setuptools wheel
+pip install -r requirements.txt
+pip install -r backend/requirements.txt
+
+cd /home/ubuntu/rag_project/rag/frontend
+npm install
+```
+
+#### 9.2.2 安装 Redis
+
+```bash
+sudo apt-get update
+sudo apt-get install -y redis
+```
+
+验证：
+
+```bash
+redis-server --version
+```
+
+#### 9.2.3 安装 Rust 并编译 Qdrant
+
+安装基础依赖：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential pkg-config libssl-dev clang cmake git
+```
+
+安装 Rust：
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+rustc --version
+cargo --version
+```
+
+拉取并编译 Qdrant：
+
+```bash
+cd /home/ubuntu
+git clone https://github.com/qdrant/qdrant.git qdrant-src
+cd /home/ubuntu/qdrant-src
+cargo build --release --bin qdrant
+```
+
+编译完成后的二进制默认在：
+
+```bash
+/home/ubuntu/qdrant-src/target/release/qdrant
+```
+
+#### 9.2.4 准备目录
+
+```bash
+cd /home/ubuntu/rag_project/rag
+mkdir -p \
+  data/qdrant \
+  data/redis \
+  data/lex_index \
+  data/stored_files \
+  data/content_lists \
+  data/exported_chunks \
+  data/agent_memory \
+  data/chat_sessions \
+  models \
+  .user
+```
+
+#### 9.2.5 准备 `.env`
+
 典型启动顺序：
 
 1. 启动 `redis`
@@ -461,6 +557,26 @@ QDRANT_URL=http://127.0.0.1:6333
 REDIS_URL=redis://127.0.0.1:6379/0
 SHARED_STORAGE_ROOT=data
 ```
+
+如果你已经有本地模型和服务地址，`.env` 至少建议包含这些值：
+
+```env
+OPENAI_API_KEY=your-api-key
+url=http://your-model-endpoint/v1
+MODEL_NAME=qwq32b
+SECRET_KEY=change-me
+
+conan_path=models/bge-base-zh-v1.5
+reranker_path=models/bge-reranker-base
+TABLE_SUMMARY_MODEL_PATH=models/Qwen2.5-1.5B-Instruct
+
+QDRANT_MODE=server
+QDRANT_URL=http://127.0.0.1:6333
+REDIS_URL=redis://127.0.0.1:6379/0
+SHARED_STORAGE_ROOT=data
+```
+
+#### 9.2.6 启动四个服务
 
 四个终端分别执行：
 
@@ -497,6 +613,8 @@ npm install
 npm run dev -- --host 0.0.0.0 --port 3000
 ```
 
+#### 9.2.7 验证链路
+
 验证命令：
 
 ```bash
@@ -504,6 +622,17 @@ curl http://127.0.0.1:6333/collections
 redis-cli -p 6379 ping
 curl http://127.0.0.1:8000/health
 ```
+
+访问地址：
+
+- 前端：`http://127.0.0.1:3000`
+- 后端 Swagger：`http://127.0.0.1:8000/docs`
+- Qdrant：`http://127.0.0.1:6333/collections`
+
+#### 9.2.8 停止本地四服务
+
+- 前台运行时，分别在 4 个终端执行 `Ctrl+C`
+- 如果使用系统服务方式启动了 Redis，再按你的系统服务方式停止
 
 ### 9.3 旧 local Qdrant 数据迁移到 server
 
@@ -658,6 +787,38 @@ mkdir -p \
 - `.user/` 用于用户数据和鉴权信息
 - `.env` 只通过 `env_file` 注入，不需要作为 volume 挂载
 - 当前 Compose 默认注入 `SHARED_STORAGE_ROOT=data`，所有上传文件、MinerU 输出、transcript、memory 都从这个根目录派生
+
+#### 9.4.3.1 `.env` 在 Docker 中如何生效
+
+当前 Compose 使用的是：
+
+- `env_file: .env`
+
+这表示：
+
+- `.env` 会在容器启动时被读取一次
+- 它不是作为 volume 挂进容器
+- 宿主机后续直接修改 `.env`，不会自动让正在运行的容器热更新
+
+因此，如果你在宿主机修改了：
+
+- `url`
+- `OPENAI_API_KEY`
+- `MODEL_NAME`
+- `QDRANT_*`
+- `REDIS_*`
+
+想让新值生效，需要重启或重建相关服务。
+
+最常见的情况是修改大模型地址，这时通常只需要重建或重启 `backend`：
+
+```bash
+docker compose up -d --force-recreate backend
+```
+
+如果你没有改镜像内容，只是改 `.env`，通常不需要重新 `build`。
+
+如果你改的是前端无关的后端配置，也不需要重启 `web`。
 
 ### 9.4.4 启动命令
 
