@@ -637,6 +637,26 @@ function convertPipeTablesToHtml(content: string): string {
       .split('|')
       .map((cell) => cell.trim());
 
+  const normalizeCellCount = (cells: string[], expectedCount: number) => {
+    if (expectedCount <= 0 || cells.length === expectedCount) {
+      return cells;
+    }
+
+    if (cells.length < expectedCount) {
+      return [...cells, ...Array.from({ length: expectedCount - cells.length }, () => '')];
+    }
+
+    if (expectedCount === 1) {
+      return [cells.join('|')];
+    }
+
+    const prefixCount = Math.max(0, expectedCount - 2);
+    const prefix = cells.slice(0, prefixCount);
+    const mergedMiddle = cells.slice(prefixCount, cells.length - 1).join('|');
+    const lastCell = cells[cells.length - 1] ?? '';
+    return [...prefix, mergedMiddle, lastCell];
+  };
+
   let i = 0;
   while (i < lines.length) {
     const headerLine = lines[i]?.trim() ?? '';
@@ -674,7 +694,7 @@ function convertPipeTablesToHtml(content: string): string {
         break;
       }
 
-      bodyRows.push(parseRow(row));
+      bodyRows.push(normalizeCellCount(parseRow(row), headerCells.length));
       j += 1;
     }
 
@@ -761,6 +781,8 @@ export type ChatContentBlock =
   | { type: 'math'; content: string }
   | { type: 'table'; content: string }
   | { type: 'code'; content: string };
+
+const fencedMarkdownBlockPattern = /^```([a-zA-Z0-9_-]+)?[ \t]*\n([\s\S]*?)\n```$/;
 
 const bareKnowledgeBaseImagePattern =
   /(?:^|[\s(（\[:：,，])(mineru_output\/[^\s)）\]】>]+?\.(?:png|jpe?g|gif|webp)|data\/stored_files\/[^\s)）\]】>]+?\.(?:png|jpe?g|gif|webp))(?=$|[\s)）\]】>,.!?，。；;:：])/gim;
@@ -852,6 +874,44 @@ export function normalizeChatMarkdown(content: string): string {
   return normalized.trim();
 }
 
+export function extractRenderableTableFromFencedCode(content: string): string | null {
+  const match = content.trim().match(fencedMarkdownBlockPattern);
+  if (!match) {
+    return null;
+  }
+
+  const language = (match[1] ?? '').trim().toLowerCase();
+  if (language && language !== 'markdown' && language !== 'md') {
+    return null;
+  }
+
+  const innerContent = (match[2] ?? '').trim();
+  if (!innerContent) {
+    return null;
+  }
+
+  const normalized = normalizeChatMarkdown(innerContent);
+  const trimmed = normalized.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (/^<table[\s>]/i.test(trimmed)) {
+    return trimmed;
+  }
+
+  const lines = trimmed
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length >= 2 && isTableRow(lines[0]) && isTableSeparator(lines[1])) {
+    return trimmed;
+  }
+
+  return null;
+}
+
 export function parseChatContentBlocks(content: string): ChatContentBlock[] {
   const normalized = normalizeChatMarkdown(content);
   if (!normalized) {
@@ -887,7 +947,13 @@ export function parseChatContentBlocks(content: string): ChatContentBlock[] {
         index += 1;
       }
 
-      blocks.push({ type: 'code', content: codeLines.join('\n') });
+      const codeContent = codeLines.join('\n');
+      const tableContent = extractRenderableTableFromFencedCode(codeContent);
+      if (tableContent) {
+        blocks.push({ type: 'table', content: tableContent });
+      } else {
+        blocks.push({ type: 'code', content: codeContent });
+      }
       continue;
     }
 
