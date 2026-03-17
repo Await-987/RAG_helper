@@ -1,4 +1,5 @@
-﻿import sys
+# -*- coding: utf-8 -*-
+import sys
 import re
 from loguru import logger
 from typing import List, Optional, Any, Dict, Callable
@@ -42,26 +43,6 @@ class DatabaseToolkit(BaseToolkit):
         self._get_seen_keys_fn: Optional[Callable[[str], Optional[set]]] = None
         # 当前请求的 session_id（由 stream_chat 在调用前设置）
         self._current_session_id: Optional[str] = None
-
-    def set_session_callbacks(
-        self,
-        get_seen_keys_fn: Callable[[str], Optional[set]],
-    ) -> None:
-        """
-        由 ChatService 在初始化时注入回调，用于读取当前 session 的 seen_keys。
-        toolkit 本身不存状态，所有 session 状态由 ChatService 管理。
-        """
-        self._get_seen_keys_fn = get_seen_keys_fn
-
-    def set_current_session_id(self, session_id: Optional[str]) -> None:
-        """由 stream_chat 在每次请求开始时设置当前 session_id。"""
-        self._current_session_id = session_id
-
-    def _get_seen_keys(self) -> Optional[set]:
-        """获取当前 session 的 seen_keys，通过注入的回调从 ChatService 读取。"""
-        if self._get_seen_keys_fn is None or self._current_session_id is None:
-            return None
-        return self._get_seen_keys_fn(self._current_session_id)
 
     def warmup_lexical_index(self):
         """预热词汇索引和 reranker 模型，避免首次搜索时长时间等待。"""
@@ -339,35 +320,33 @@ class DatabaseToolkit(BaseToolkit):
         return expanded
 
     def _filter_seen_turn_evidence(
-        self, hits: List[Dict[str, Any]]
+        self, hits: List[Dict[str, Any]], seen_keys: Optional[set] = None
     ) -> List[Dict[str, Any]]:
         """
         过滤本 session 内已返回过的证据块。
-        seen_keys 由 ChatService 管理，通过注入的回调读取。
+        seen_keys 由调用方传入，三次搜索共享同一个 set。
         """
-        seen_keys = self._get_seen_keys()
         if seen_keys is None:
-            _log_search("\u26a0\ufe0f seen_keys \u4e3a None\uff0c\u8df3\u8fc7\u53bb\u91cd")
             return hits
 
         _log_search(
-            f"\U0001f50d _filter_seen_turn_evidence: seen_keys={len(seen_keys)}, hits={len(hits)}"
+            f"🔍 _filter_seen_turn_evidence: seen_keys={len(seen_keys)}, hits={len(hits)}"
         )
         fresh_hits: List[Dict[str, Any]] = []
         for hit in hits:
             key = self._hit_evidence_key(hit)
             if key in seen_keys:
-                _log_search(f"  [\u91cd\u590d] {key[:80]}")
+                _log_search(f"  [重复] {key[:80]}")
                 continue
             fresh_hits.append(hit)
 
         for hit in fresh_hits:
             seen_keys.add(self._hit_evidence_key(hit))
-            _log_search(f"  [\u65b0\u589e] {self._hit_evidence_key(hit)[:80]}")
+            _log_search(f"  [新增] {self._hit_evidence_key(hit)[:80]}")
 
         _log_search(
-            f"\U0001f4ca \u53bb\u91cd\u7ed3\u679c: \u65b0\u589e {len(fresh_hits)} \u6761, "
-            f"\u91cd\u590d {len(hits) - len(fresh_hits)} \u6761"
+            f"📊 去重结果: 新增 {len(fresh_hits)} 条, "
+            f"重复 {len(hits) - len(fresh_hits)} 条"
         )
         return fresh_hits
 
@@ -400,8 +379,8 @@ class DatabaseToolkit(BaseToolkit):
         if not selected and hits:
             selected = hits[:1]
         _log_search(
-            f"\U0001f9e0 \u8bc1\u636e\u6536\u7f29: \u5019\u9009 {len(hits)} \u6761 -> \u5b8c\u6574\u539f\u6587 {len(selected)} \u6761, "
-            f"\u603b\u5b57\u7b26\u9884\u7b97 {max_total_chars}, \u5355\u6761\u4e0a\u9650 {max_chars_per_chunk}"
+            f"🧠 证据收缩: 候选 {len(hits)} 条 -> 完整原文 {len(selected)} 条, "
+            f"总字符预算 {max_total_chars}, 单条上限 {max_chars_per_chunk}"
         )
         return selected
 
@@ -409,19 +388,21 @@ class DatabaseToolkit(BaseToolkit):
         self,
         query: str,
         intent_description: Optional[str] = None,
+        seen_keys: Optional[set] = None,
         **kwargs,
     ) -> str:
         """\u68c0\u7d22\u672c\u5730\u7535\u529b\u7cfb\u7edf\u77e5\u8bc6\u5e93\u7684\u5de5\u5177\u3002
 
         Args:
-            query: \u7b80\u5316\u540e\u7684\u641c\u7d22 query\uff083-8 \u4e2a\u6838\u5fc3\u5173\u952e\u8bcd\uff09
-            intent_description: \u7528\u6237\u771f\u5b9e\u610f\u56fe\u7684\u5b8c\u6574\u63cf\u8ff0\uff08\u7528\u4e8e\u91cd\u6392\u5e8f\uff09
+            query: 简化后的搜索 query（3-8 个核心关键词）
+            intent_description: 用户真实意图的完整描述（用于重排序）
 
         Returns:
-            \u683c\u5f0f\u5316\u7684\u641c\u7d22\u7ed3\u679c\u5b57\u7b26\u4e32
+            格式化的搜索结果字符串
         """
         return self._search_database(
-            query=query, intent_description=intent_description, **kwargs
+            query=query, intent_description=intent_description,
+            seen_keys=seen_keys, **kwargs
         )
 
     def _search_database(
@@ -429,6 +410,7 @@ class DatabaseToolkit(BaseToolkit):
         query: str,
         intent_description: Optional[str] = None,
         top_k: int = 8,
+        seen_keys: Optional[set] = None,
         *,
         use_hybrid: bool = True,
         use_rerank: bool = True,
@@ -444,7 +426,7 @@ class DatabaseToolkit(BaseToolkit):
         max_per_parent: int = 1,
         neighbor_window: int = 1,
     ) -> str:
-        # ===== \u53c2\u6570\u9632\u5fa1 =====
+        # ===== 参数防御 =====
         if alpha is None: alpha = 0.75
         if max_results is None: max_results = 12
         if candidate_top_k is None: candidate_top_k = self.DEFAULT_CANDIDATE_LIMIT
@@ -470,7 +452,7 @@ class DatabaseToolkit(BaseToolkit):
 
         sep = "=" * 60
         _log_search("\n" + sep)
-        _log_search("\U0001f50d [\u641c\u7d22\u5de5\u5177\u88ab\u8c03\u7528]")
+        _log_search("🔍 [搜索工具被调用]")
         q_preview = query[:80] + ("..." if len(query) > 80 else "")
         _log_search(f"   query: '{q_preview}'")
         if intent_description:
@@ -483,27 +465,27 @@ class DatabaseToolkit(BaseToolkit):
         _log_search(sep + "\n")
 
         if not query or not query.strip():
-            logger.warning("\u26a0\ufe0f \u641c\u7d22 query \u4e3a\u7a7a")
+            logger.warning("⚠️ 搜索 query 为空")
             return "No results from the vector database."
 
         # Step 1: \u68c0\u7d22
         if use_hybrid:
-            _log_search("\U0001f4ca \u6267\u884c\u6df7\u5408\u641c\u7d22 (vector + BM25)...")
+            _log_search("📊 执行混合搜索 (vector + BM25)...")
             hits = self.db.hybrid_search(
                 query=query, top_k=candidate_top_k, alpha=alpha,
                 dynamic_topk=False, score_threshold=score_threshold,
                 max_results=max_results,
             )
         else:
-            _log_search("\U0001f4ca \u6267\u884c\u7eaf\u5411\u91cf\u641c\u7d22...")
+            _log_search("📊 执行纯向量搜索...")
             hits = self.db.search(query=query, top_k=candidate_top_k)
 
         if not hits:
             return "No results from the vector database."
 
-        # Step 2: Rerank + \u52a8\u6001\u9600\u5024
+        # Step 2: Rerank + 动态阈值
         if use_rerank:
-            _log_search("\U0001f504 \u6267\u884c\u91cd\u6392\u5e8f (reranker)...")
+            _log_search("🔄 执行重排序 (reranker)...")
             hits = self._rerank(query, hits, intent_description=intent_description)
             if dynamic_topk:
                 hits = DatabaseToolkit._apply_dynamic_cut(
@@ -516,7 +498,7 @@ class DatabaseToolkit(BaseToolkit):
                 hits, key=lambda h: float(h.get("score", 0.0)), reverse=True
             )[:int(candidate_top_k)]
 
-        # Step 3-6: \u540e\u5904\u7406
+        # Step 3-6: 后处理
         hits = self._apply_query_type_bias(hits, query)
         hits = self._dedupe_by_parent(hits, max_per_parent=max_per_parent)
         if neighbor_window > 0:
@@ -529,15 +511,15 @@ class DatabaseToolkit(BaseToolkit):
             max_total_chars=max_total_chars, max_chars_per_chunk=max_chars_per_chunk,
         )
 
-        # Step 7: Session \u7ea7\u53bb\u91cd
-        hits = self._filter_seen_turn_evidence(hits)
+        # Step 7: Session 级去重
+        hits = self._filter_seen_turn_evidence(hits, seen_keys=seen_keys)
         if not hits:
-            _log_search("\u267b\ufe0f \u672c\u8f6e\u540e\u7eed\u68c0\u7d22\u672a\u53d1\u73b0\u65b0\u589e\u8bc1\u636e")
+            _log_search("♻️ 本轮后续检索未发现新增证据")
             return "No new results from the vector database in this turn."
 
-        _log_search(f"\u2705 \u641c\u7d22\u5b8c\u6210: \u6700\u7ec8\u8fd4\u56de {len(hits)} \u6761\u7ed3\u679c")
+        _log_search(f"✅ 搜索完成: 最终返回 {len(hits)} 条结果")
 
-        # Step 8: \u683c\u5f0f\u5316\u8f93\u51fa
+        # Step 8: 格式化输出
         formatted_results = []
         for hit in hits:
             payload = hit.get("payload", {}) or {}
@@ -568,7 +550,7 @@ class DatabaseToolkit(BaseToolkit):
             )
 
         _log_search("\n" + sep)
-        _log_search(f"\U0001f4cb [\u641c\u7d22\u7ed3\u679c\u6458\u8981] \u5171 {len(formatted_results)} \u6761")
+        _log_search(f"📋 [搜索结果摘要] 共 {len(formatted_results)} 条")
         for i, hit in enumerate(hits[:5], 1):
             payload = hit.get("payload", {}) or {}
             source = payload.get("Original_file", "Unknown")
@@ -580,10 +562,10 @@ class DatabaseToolkit(BaseToolkit):
             content_preview = content.replace("\n", " ").strip()[:100]
             if len(content) > 100:
                 content_preview += "..."
-            _log_search(f"   [{i}] \U0001f4c4 {file_name} | \U0001f3af {score:.4f}")
+            _log_search(f"   [{i}] 📄 {file_name} | 🎯 {score:.4f}")
             _log_search(f"       {content_preview}")
         if len(hits) > 5:
-            _log_search(f"   ... \u8fd8\u67096 {len(hits) - 5} \u6761")
+            _log_search(f"   ... 还有 {len(hits) - 5} 条")
         _log_search(sep + "\n")
 
         return "\n\n".join(formatted_results)

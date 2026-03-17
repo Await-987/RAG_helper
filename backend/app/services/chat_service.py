@@ -981,19 +981,7 @@ class ChatService:
         self.session_manager = SessionManager()
         self._intent_router: Optional[ChatAgent] = None
         self._search_rewriter: Optional[ChatAgent] = None
-        # session_id -> seen_evidence_keys (set)
-        self._session_seen_keys: Dict[str, set] = {}
-        # Inject seen_keys callback into the global DatabaseToolkit singleton
-        from app.dependencies import get_database_toolkit
-        get_database_toolkit().set_session_callbacks(
-            get_seen_keys_fn=self.get_session_seen_keys,
-        )
 
-    def get_session_seen_keys(self, session_id: str) -> set:
-        """Return (and lazily create) the seen_evidence_keys set for a session."""
-        if session_id not in self._session_seen_keys:
-            self._session_seen_keys[session_id] = set()
-        return self._session_seen_keys[session_id]
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
@@ -1351,10 +1339,12 @@ class ChatService:
                     candidate_queries.append((heuristic_query, message))
 
             evidence_parts: List[str] = []
+            seen_keys: set = set()  # 本次三次搜索内去重
             for idx, (query, intent_description) in enumerate(candidate_queries[:3], start=1):
                 evidence = toolkit.search_database(
                     query=query,
                     intent_description=intent_description,
+                    seen_keys=seen_keys,
                 )
                 normalized = (evidence or "").strip()
                 if not normalized or normalized == "No results from the vector database.":
@@ -1514,13 +1504,6 @@ class ChatService:
         try:
             # Get or create session
             session_id, chat_agent = self.session_manager.get_or_create(username, session_id)
-            # Ensure this session has a seen_keys set in ChatService
-            self.get_session_seen_keys(session_id)  # lazy-create if needed
-            seen_count = len(self._session_seen_keys.get(session_id, set()))
-            logger.info(f"🧠 session seen_keys: {seen_count} 条 (session_id={session_id[:8]}...)")
-            # Tell toolkit which session is active for this request
-            from app.dependencies import get_database_toolkit
-            get_database_toolkit().set_current_session_id(session_id)
 
             self.session_manager.append_transcript_message(
                 username,
