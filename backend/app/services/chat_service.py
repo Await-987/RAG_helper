@@ -608,7 +608,7 @@ class SessionManager:
             logger.warning(f"Failed to initialize CAMEL long-term memory, fallback to default memory: {exc}")
             return None
 
-    def get_or_create(self, username: str, session_id: Optional[str] = None) -> Tuple[str, ChatAgent, bool]:
+    def get_or_create(self, username: str, session_id: Optional[str] = None) -> Tuple[str, ChatAgent]:
         """
         Get or create a ChatAgent for the given session.
 
@@ -617,7 +617,7 @@ class SessionManager:
             session_id: Optional session ID. If None, creates a new session.
 
         Returns:
-            Tuple of (session_id, ChatAgent, is_newly_created)
+            Tuple of (session_id, ChatAgent)
         """
         if session_id is None:
             session_id = str(uuid.uuid4())
@@ -633,9 +633,7 @@ class SessionManager:
         if existing_metadata and existing_metadata.get("username") != username:
             raise PermissionError(f"Session '{session_id}' does not belong to user '{username}'")
 
-        is_newly_created = False
         if session_id not in self._sessions:
-            is_newly_created = True
             logger.info(f"Creating new chat session: {session_id}")
             self._sessions[session_id] = self._create_chat_agent()
             self._restore_session_memory(username, session_id, self._sessions[session_id])
@@ -662,7 +660,7 @@ class SessionManager:
         metadata["memory_enabled"] = bool(getattr(self._sessions[session_id], "memory", None))
         self._cache_session_metadata(metadata)
 
-        return session_id, self._sessions[session_id], is_newly_created
+        return session_id, self._sessions[session_id]
 
     def _create_chat_agent(self) -> ChatAgent:
         """Create a new ChatAgent instance"""
@@ -1285,7 +1283,7 @@ class ChatService:
             logger.warning(f"Failed to rebuild session memory from transcript for {session_id}: {exc}")
             return False
 
-    def _force_search_evidence(self, username: str, session_id: str, message: str, seen_keys: Optional[set] = None) -> Optional[str]:
+    def _force_search_evidence(self, username: str, session_id: str, message: str) -> Optional[str]:
         try:
             from app.dependencies import get_database_toolkit
 
@@ -1313,23 +1311,25 @@ class ChatService:
                 if heuristic_query:
                     candidate_queries.append((heuristic_query, message))
 
-            # 只搜一次：调用 primary_query + primary_intent
-            evidence = toolkit.search_database(
-                query=primary_query,
-                intent_description=primary_intent,
-                seen_keys=seen_keys,
-            )
-            normalized = (evidence or "").strip()
-            
-            if not normalized or normalized == "No results from the vector database.":
+            evidence_parts: List[str] = []
+            for idx, (query, intent_description) in enumerate(candidate_queries[:3], start=1):
+                evidence = toolkit.search_database(
+                    query=query,
+                    intent_description=intent_description,
+                )
+                normalized = (evidence or "").strip()
+                if not normalized or normalized == "No results from the vector database.":
+                    continue
+                if normalized == "No new results from the vector database in this turn.":
+                    continue
+                evidence_parts.append(f"[检索 {idx}] query={query}\n{normalized}")
+
+            if not evidence_parts:
                 return (
                     "当前知识库检索未返回有效结果。你必须明确说明未找到相关信息，"
                     "不要基于常识自行作答。"
                 )
-            # 如果搜到的全是重复内容但显示了占位符，normalized中会包含占位符内容
-            # Agent会看到【占位符】标记，理解这些是已提过的信息
-            
-            merged_evidence = normalized
+            merged_evidence = "\n\n".join(evidence_parts)
             return self._truncate_for_prompt(merged_evidence, settings.FACTUAL_EVIDENCE_MAX_CHARS)
         except Exception as exc:
             logger.warning(f"Forced factual search failed: {exc}")
@@ -1474,17 +1474,10 @@ class ChatService:
         """
         try:
             # Get or create session
-            session_id, chat_agent, is_newly_created = self.session_manager.get_or_create(username, session_id)
+            session_id, chat_agent = self.session_manager.get_or_create(username, session_id)
             from app.dependencies import get_database_toolkit
             database_toolkit = get_database_toolkit()
-
-            if not hasattr(chat_agent, "seen_evidence_keys"):
-                chat_agent.seen_evidence_keys = set()
-                logger.info(f"🆕 初始化chat_agent.seen_evidence_keys (agent_id={id(chat_agent)})")
-            else:
-                logger.info(f"♻️ 复用已有chat_agent.seen_evidence_keys (agent_id={id(chat_agent)}, 已有{len(chat_agent.seen_evidence_keys)}条记录)")
-
-            database_toolkit.set_session_seen_keys(chat_agent.seen_evidence_keys)
+            database_toolkit.begin_turn()
 
             self.session_manager.append_transcript_message(
                 username,
@@ -1521,7 +1514,7 @@ class ChatService:
             full_response = ""
             retry_after_compact = True
             needs_forced_search = self._route_requires_search(username, session_id, message)
-            factual_evidence = self._force_search_evidence(username, session_id, message, seen_keys=chat_agent.seen_evidence_keys) if needs_forced_search else None
+            factual_evidence = self._force_search_evidence(username, session_id, message) if needs_forced_search else None
             agent_message = (
                 self._build_factual_prompt_with_evidence(message, factual_evidence)
                 if factual_evidence is not None
@@ -1635,7 +1628,9 @@ class ChatService:
             logger.exception(f"Chat streaming error: {e}")
             yield self._format_sse("error", {"message": str(e)})
         finally:
-            pass
+            with suppress(Exception):
+                from app.dependencies import get_database_toolkit
+                get_database_toolkit().end_turn()
 
     def _is_tool_content(self, text: str) -> bool:
         """Check if content is tool-related (should be filtered)"""
