@@ -1,6 +1,7 @@
+# -*- coding: utf-8 -*-
 import sys
+import threading
 import re
-from contextvars import ContextVar
 from loguru import logger
 from typing import List, Optional, Any, Dict
 
@@ -15,10 +16,15 @@ def _log_search(msg: str):
     sys.stdout.flush()
 
 
-_turn_seen_evidence_keys: ContextVar[Optional[set[str]]] = ContextVar(
-    "turn_seen_evidence_keys",
-    default=None,
-)
+_thread_local = threading.local()
+
+
+def _get_turn_seen_keys():
+    return getattr(_thread_local, 'seen_keys', None)
+
+
+def _set_turn_seen_keys(s):
+    _thread_local.seen_keys = s
 
 
 class DatabaseToolkit(BaseToolkit):
@@ -81,11 +87,11 @@ class DatabaseToolkit(BaseToolkit):
 
     def begin_turn(self) -> None:
         """Start per-turn evidence dedup state."""
-        _turn_seen_evidence_keys.set(set())
+        self._turn_seen_keys: set = set()
 
     def end_turn(self) -> None:
         """Clear per-turn evidence dedup state."""
-        _turn_seen_evidence_keys.set(None)
+        self._turn_seen_keys = set()
 
     def __enter__(self):
         return self
@@ -355,7 +361,7 @@ class DatabaseToolkit(BaseToolkit):
         return expanded
 
     def _filter_seen_turn_evidence(self, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        seen_keys = _turn_seen_evidence_keys.get()
+        seen_keys = getattr(self, '_turn_seen_keys', None)
         if seen_keys is None:
             return hits
 
@@ -365,6 +371,18 @@ class DatabaseToolkit(BaseToolkit):
             if evidence_key in seen_keys:
                 continue
             fresh_hits.append(hit)
+
+        _log_search(
+            f"🔍 去重过滤: 候选 {len(hits)} 条 -> 新增 {len(fresh_hits)} 条"
+            f"（已见 {len(hits) - len(fresh_hits)} 条重复）"
+        )
+        for hit in fresh_hits:
+            payload = hit.get("payload", {}) or {}
+            source = payload.get("Original_file", "Unknown")
+            file_name = source.split("\\")[-1] if "\\" in source else source.split("/")[-1]
+            content = payload.get("Content", "") or payload.get("content", "")
+            preview = content.replace("\n", " ").strip()[:60]
+            _log_search(f"  [新] 📄 {file_name} | {preview}...")
 
         if fresh_hits:
             for hit in fresh_hits:
