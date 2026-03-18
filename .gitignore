@@ -59,6 +59,7 @@ frontend/.vite/
 frontend/.cache/
 
 # data/storages/
+data/import_jobs
 data/storages/*
 #  .gitkeep
 !data/storages/.gitkeep
