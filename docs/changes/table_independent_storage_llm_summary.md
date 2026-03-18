@@ -45,7 +45,7 @@ def generate_table_summary(table_content: str, table_caption: str = "", use_llm_
 
 ### 2. 本地小模型部署
 
-**文件**: `agents/backend_model.py`
+**文件**: `backend/app/core/model_runtime.py`
 
 新增以下函数用于管理本地小模型：
 
@@ -136,7 +136,7 @@ TABLE_SUMMARY_MODEL_PATH=models/Qwen2.5-1.5B-Instruct
 
 | 文件 | 修改内容 |
 |------|----------|
-| `agents/backend_model.py` | 新增本地小模型加载和管理函数 |
+| `backend/app/core/model_runtime.py` | 新增本地小模型加载和管理函数 |
 | `tools/load_files.py` | 1. 新增 `generate_table_summary` 函数<br>2. 新增 `extract_context` 函数<br>3. 修改 `preprocess` 函数，表格独立处理<br>4. 修改存储逻辑 |
 | `tools/database_toolkit.py` | 可选：新增 `restore_table_context` 参数 |
 | `run/streamlit.py` | 新增模型生命周期管理 |

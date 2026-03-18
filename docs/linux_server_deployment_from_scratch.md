@@ -33,7 +33,6 @@
 - `backend/`
 - `frontend/`
 - `tools/`
-- `agents/`
 - `scripts/`
 - `config/`
 - `requirements.txt`

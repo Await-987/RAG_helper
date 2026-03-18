@@ -16,7 +16,7 @@ if PROJECT_ROOT not in sys.path:
 # 1) 只从具体模块导入，避免 tools/__init__.py 可能的副作用
 # -----------------------------
 from tools.qdrant import QdrantDB, QdrantDB_Init, save2Qdrant_Input
-from agents.backend_model import backend_reranker_model
+from backend.app.core.model_runtime import backend_reranker_model
 
 
 def count_results_in_tool_output(s: str) -> int:

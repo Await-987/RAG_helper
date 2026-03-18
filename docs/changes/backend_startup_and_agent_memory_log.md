@@ -178,7 +178,7 @@
 
 涉及文件：
 
-- `agents/backend_model.py`
+- `backend/app/core/model_runtime.py`
 - `backend/app/services/chat_service.py`
 - `backend/app/config.py`
 - `backend/README.md`

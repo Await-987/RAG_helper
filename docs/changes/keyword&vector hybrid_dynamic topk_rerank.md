@@ -61,7 +61,7 @@ tests/smoke_e2e_real_pdfs_hybrid_rerank.py
 
 检索链路升级：tools/qdrant.py、tools/database_toolkit.py（search_database 行为升级）
 
-可选精排：agents/backend_model.py 增加 backend_reranker_model()（不配置不生效）
+可选精排：backend/app/core/model_runtime.py 增加 backend_reranker_model()（不配置不生效）
 
 测试脚本：新增 tests/ 下 smoke/e2e 脚本（不影响生产）
 

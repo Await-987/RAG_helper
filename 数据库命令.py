@@ -32,5 +32,5 @@
 
   5. 查看数据库统计
 
-  python -c "from tools.file_manager_ui import get_database_stats; stats, total = get_database_stats(); print(f'总切片数: {total}');
+  python -c "from backend.app.core.file_catalog import get_database_stats; stats, total = get_database_stats(); print(f'总切片数: {total}');
   print(f'文件数: {len(stats)}')"

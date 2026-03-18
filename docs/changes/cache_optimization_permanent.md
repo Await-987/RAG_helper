@@ -35,7 +35,7 @@ Streamlit 每次用户交互（点击按钮、翻页等）都会重新执行整�
 
 ## 修改的文件
 
-### tools/file_manager_ui.py
+### backend/app/core/file_catalog.py
 
 ```python
 import streamlit as st

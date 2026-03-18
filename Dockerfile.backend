@@ -55,14 +55,10 @@ RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${N
         -r /tmp/requirements.txt \
         -r /tmp/backend-requirements.txt
 
-# 复制 agents 目录。
-COPY agents ./agents
 # 复制 backend 目录。
 COPY backend ./backend
 # 复制 config 目录。
 COPY config ./config
-# 复制 run 目录。
-COPY run ./run
 # 复制 scripts 目录。
 COPY scripts ./scripts
 # 复制 tests 目录，便于镜像内诊断或自检。

@@ -4,10 +4,10 @@
 
 ### 问题1：Reranker 导入失败
 ```
-WARNING - Failed to init reranker: cannot import name 'backend_reranker_model' from 'agents.backend_model'
+WARNING - Failed to init reranker: cannot import name 'backend_reranker_model' from 'backend.app.core.model_runtime'
 ```
 
-`database_toolkit.py` 尝试导入 `backend_reranker_model` 函数，但该函数在 `agents/backend_model.py` 中不存在。
+`database_toolkit.py` 尝试导入 `backend_reranker_model` 函数，但该函数在 `backend/app/core/model_runtime.py` 中不存在。
 
 ### 问题2：`_apply_dynamic_cut` 参数冲突
 ```
@@ -18,12 +18,12 @@ Error: DatabaseToolkit._apply_dynamic_cut() got multiple values for argument 'hi
 
 ## 根本原因
 
-1. `backend_reranker_model` 函数未在 `agents/backend_model.py` 中定义
+1. `backend_reranker_model` 函数未在 `backend/app/core/model_runtime.py` 中定义
 2. 使用 `self._apply_dynamic_cut()` 调用静态方法时，在某些 Python 版本或特定环境下可能导致参数解析异常
 
 ## 变更内容
 
-### agents/backend_model.py
+### backend/app/core/model_runtime.py
 
 **新增函数**：
 ```python
@@ -57,20 +57,9 @@ def backend_reranker_model():
     return None
 ```
 
-### agents/__init__.py
+### backend/app/core/model_runtime.py
 
-**更新导出列表**，添加 `backend_reranker_model`：
-```python
-from .backend_model import backend_model, stream_model, backend_embedding_model, backend_reranker_model
-
-__all__ = [
-    "backend_model",
-    "stream_model",
-    "backend_embedding_model",
-    "backend_reranker_model",
-    "chat_agent_factory"
-]
-```
+统一从运行时模块导出 `backend_reranker_model`，不再依赖兼容层包导出。
 
 ### tools/qdrant.py
 
@@ -124,7 +113,7 @@ reranker_path=/path/to/your/reranker/model
 
 ## 相关文件
 
-- `agents/backend_model.py` - 新增 `backend_reranker_model` 函数
-- `agents/__init__.py` - 导出新增函数
+- `backend/app/core/model_runtime.py` - 新增 `backend_reranker_model` 函数
+- `backend/app/core/model_runtime.py` - 提供 `backend_reranker_model` 函数
 - `tools/qdrant.py` - 修改静态方法调用方式
 - `tools/database_toolkit.py` - 修改静态方法调用方式

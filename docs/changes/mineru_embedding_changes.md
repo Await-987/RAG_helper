@@ -37,7 +37,7 @@
 **运行时验证证据：**
 在当前环境执行：
 ```powershell
-python -c "from agents.backend_model import backend_embedding_model; m=backend_embedding_model(); print(type(m)); print(m.get_output_dim())"
+python -c "from backend.app.core.model_runtime import backend_embedding_model; m=backend_embedding_model(); print(type(m)); print(m.get_output_dim())"
 
 输出示例：
 SentenceTransformerEncoder
@@ -62,6 +62,6 @@ README.md
 
 config/mineru.json
 
-agents/backend_model.py
+backend/app/core/model_runtime.py
 
 .gitignore

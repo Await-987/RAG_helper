@@ -5,7 +5,7 @@
 import sys
 sys.path.append('.')
 
-from agents.chat_agent import chat_agent_factory
+from backend.app.core.agent_factory import chat_agent_factory
 from pathlib import Path
 from datetime import datetime
 

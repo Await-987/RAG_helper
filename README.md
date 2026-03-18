@@ -4,9 +4,9 @@
 
 - `frontend/`：React + Vite 前端，负责聊天、文件管理、用户管理、消息渲染
 - `backend/`：FastAPI 后端，负责鉴权、会话、流式回答、文件服务接口
-- `tools/`、`agents/`、`config/`、`data/`、`models/`：前后端共享的知识库、解析、检索和模型资源
+- `tools/`、`config/`、`data/`、`models/`：前后端共享的知识库、解析、检索和模型资源
 
-项目历史上保留过 `run/streamlit.py` 旧入口，但当前部署主线已经统一为前后端分离架构。
+旧的 `Streamlit` 入口和相关运行逻辑已经移除，当前部署主线只保留前后端分离架构。
 
 ## 1. 项目概览
 
@@ -101,14 +101,6 @@ backend
   - `web + backend + qdrant + redis`
   - 用于标准化部署
 
-### 2.4 历史旧入口
-
-```text
-streamlit run run/streamlit.py
-```
-
-该入口仅作为历史代码保留，不再作为主部署方案的一部分。
-
 ## 3. 目录结构
 
 ```text
@@ -135,13 +127,11 @@ rag/
 │   ├── run.py
 │   └── requirements.txt
 │
-├── agents/                          # LLM、embedding、reranker、Agent 组装
 ├── tools/                           # MinerU、入库、检索、Qdrant 工具链
 ├── config/                          # MinerU 等公共配置
 ├── deploy/nginx/                    # Docker Nginx 反向代理配置
 ├── scripts/                         # 迁移、批量导入等脚本
 ├── docs/                            # 设计与改动日志
-├── run/                             # 历史 Streamlit 入口
 ├── tests/                           # 测试与 smoke 脚本
 ├── storage_paths.py                 # 共享存储路径统一入口
 ├── Dockerfile.backend
@@ -197,7 +187,7 @@ data/
 - ChatAgent 会话生命周期管理
 - transcript / memory 持久化
 - 文件上传、入库、删除、预览
-- 调用 `agents/` 与 `tools/`
+- 调用 `backend/app/core/` 与 `tools/`
 
 关键模块：
 
@@ -232,15 +222,15 @@ data/
   - rerank
   - 动态裁剪和去重
 
-### 4.4 模型层
+### 4.4 后端运行时层
 
-- `agents/backend_model.py`
+- `backend/app/core/model_runtime.py`
   - LLM
   - embedding
   - reranker
   - table summary model
 
-- `agents/chat_agent.py`
+- `backend/app/core/agent_factory.py`
   - 问答 Agent 工厂
   - 系统提示词与行为约束
 

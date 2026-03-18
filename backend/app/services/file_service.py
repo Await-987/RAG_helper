@@ -43,7 +43,7 @@ class FileService:
         This ensures storage directories exist and primes the file/database
         status query so the first file-list request is fast.
         """
-        from tools.file_manager_ui import MINERU_OUTPUT_DIR, get_local_files_with_db_status
+        from app.core.file_catalog import MINERU_OUTPUT_DIR, get_local_files_with_db_status
 
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         MINERU_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -70,7 +70,7 @@ class FileService:
         Returns:
             FileListResponse with paginated file info
         """
-        from tools.file_manager_ui import get_local_files_with_db_status
+        from app.core.file_catalog import get_local_files_with_db_status
 
         # Get all files
         file_info_list, total_chunks = get_local_files_with_db_status(self.storage_dir)
@@ -134,7 +134,7 @@ class FileService:
         Returns:
             FileImportResponse with import results
         """
-        from tools.file_manager_ui import import_file_to_database, batch_import_files
+        from app.core.file_catalog import batch_import_files
 
         # Convert tags to file paths
         file_paths = []
@@ -216,7 +216,7 @@ class FileService:
         Returns:
             FileDeleteResponse with delete results
         """
-        from tools.file_manager_ui import batch_delete_files_by_tags, delete_local_file
+        from app.core.file_catalog import batch_delete_files_by_tags, delete_local_file
 
         # Delete from database first
         db_result = batch_delete_files_by_tags(

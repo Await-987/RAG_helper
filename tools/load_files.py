@@ -194,7 +194,7 @@ def generate_table_summary(table_content: str, table_caption: str = "", use_llm_
 
     # 尝试使用本地小模型
     try:
-        from agents.backend_model import generate_table_summary_local
+        from backend.app.core.model_runtime import generate_table_summary_local
         summary = generate_table_summary_local(prompt)
 
         if summary:

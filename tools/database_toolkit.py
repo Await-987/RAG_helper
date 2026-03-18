@@ -110,7 +110,7 @@ class DatabaseToolkit(BaseToolkit):
         if self._reranker is not None:
             return self._reranker
         try:
-            from agents.backend_model import backend_reranker_model
+            from backend.app.core.model_runtime import backend_reranker_model
             self._reranker = backend_reranker_model()
         except Exception as e:
             logger.warning(f"Failed to init reranker: {e}")

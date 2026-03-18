@@ -1,6 +1,6 @@
 from camel.agents.chat_agent import ChatAgent
 from camel.messages.base import BaseMessage
-from agents import backend_model, stream_model
+from backend.app.core.model_runtime import backend_model, stream_model
 
 stream = True
 

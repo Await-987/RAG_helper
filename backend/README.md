@@ -139,12 +139,12 @@ curl http://localhost:8000/api/v1/auth/me \
 
 ## 核心改造点
 
-### 1. 模型缓存（移除 Streamlit 依赖）
+### 1. 模型缓存
 
-原代码使用 `@st.cache_resource`，改为模块级缓存：
+运行时模型统一收敛到 `backend/app/core/model_runtime.py`，使用模块级缓存：
 
 ```python
-# backend/app/dependencies.py
+# backend/app/core/model_runtime.py
 
 _embedding_model_cache = None
 
@@ -186,8 +186,8 @@ async def stream_chat(request: ChatRequest, ...):
 
 - **用户认证**: 复用 `tools/user_auth.py` 中的 `UserAuth` 类
 - **数据库工具**: 复用 `tools/database_toolkit.py` 中的 `DatabaseToolkit`
-- **文件管理**: 复用 `tools/file_manager_ui.py` 中的函数
-- **模型初始化**: 复用 `agents/backend_model.py` 中的模型工厂函数
+- **文件管理**: 复用 `backend/app/core/file_catalog.py` 中的后端目录/入库辅助函数
+- **模型初始化**: 统一使用 `backend/app/core/model_runtime.py`
 
 ## 测试
 
@@ -202,9 +202,7 @@ pytest tests/ -v
 
 ## 注意事项
 
-1. **Qdrant 并发限制**: 本地 Qdrant 存储不支持并发访问。如果 Streamlit 正在运行，后端首次访问数据库时会报错。解决方案：
-   - 使用 Qdrant Server 替代本地存储
-   - 或者停止 Streamlit 后再启动后端
+1. **Qdrant 并发限制**: 本地 Qdrant 存储不支持高并发访问。生产建议使用 Qdrant Server。
 
 2. **Token 过期**: JWT Token 默认 24 小时过期，可在 `config.py` 中修改 `ACCESS_TOKEN_EXPIRE_MINUTES`
 

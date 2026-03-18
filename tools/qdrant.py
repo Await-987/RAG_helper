@@ -87,7 +87,7 @@ class QdrantDB:
 
     def __init__(self, input: QdrantDB_Init):
         try:
-            from agents.backend_model import backend_embedding_model
+            from backend.app.core.model_runtime import backend_embedding_model
             self.embedding_instance = backend_embedding_model()
         except Exception as e:
             raise Exception(f"Failed to initialize embedding model via API: {e}")
@@ -97,7 +97,7 @@ class QdrantDB:
         self.storage_mode = self.runtime_config["mode"]
         self.storage_path = str(self.runtime_config["local_path"])
 
-        # --- 实例级别词汇索引缓存（随实例持久化，适合 Streamlit @st.cache_resource）---
+        # --- 实例级别词汇索引缓存（随实例持久化）---
         # 格式: {"index": dict, "point_count": int, "build_time": float, "collection_name": str}
         self._lex_index_cache: Dict[str, Any] = {}
 

@@ -80,7 +80,7 @@
 
 PowerShell
 
-python -c "from agents.backend_model import backend_embedding_model; m=backend_embedding_model(); print(f'Model Type: {type(m)}'); print(f'Output Dimension: {m.get_output_dim()}')"
+python -c "from backend.app.core.model_runtime import backend_embedding_model; m=backend_embedding_model(); print(f'Model Type: {type(m)}'); print(f'Output Dimension: {m.get_output_dim()}')"
 预期输出：
 
 Model Type: SentenceTransformerEncoder
@@ -93,6 +93,6 @@ README.md：记录版本变更说明。
 
 config/mineru.json：模型本地化路径配置。
 
-agents/backend_model.py：Embedding 模型加载逻辑。
+backend/app/core/model_runtime.py：Embedding 模型加载逻辑。
 
 .gitignore：排除大体积模型权重文件。

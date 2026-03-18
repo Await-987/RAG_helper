@@ -23,7 +23,7 @@ from datetime import datetime
 PROJECT_ROOT = Path(__file__).absolute().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from tools.file_manager_ui import batch_import_files
+from backend.app.core.file_catalog import batch_import_files
 from loguru import logger
 from storage_paths import STORED_FILES_DIR
 

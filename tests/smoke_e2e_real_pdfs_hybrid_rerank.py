@@ -12,7 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from tools.load_files import load_multiple_files
 from tools.mineru_toolkit import MineruComponent
 from tools.qdrant import QdrantDB, QdrantDB_Init
-from agents.backend_model import backend_reranker_model
+from backend.app.core.model_runtime import backend_reranker_model
 
 
 def must(cond: bool, msg: str):

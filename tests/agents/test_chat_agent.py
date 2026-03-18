@@ -1,4 +1,4 @@
-from agents import chat_agent_factory
+from backend.app.core.agent_factory import chat_agent_factory
 
 agent = chat_agent_factory()
 while True:
@@ -14,5 +14,4 @@ while True:
     print("-"*100)
     print(agent.memory.get_context())
     print("-" * 100)
-
 
