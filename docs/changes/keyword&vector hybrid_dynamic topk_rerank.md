@@ -49,11 +49,11 @@ rerank 仅作用于候选集合，对候选相关性重新打分并重排，以�
 
 新增/补充 smoke 与真实 PDF 的 e2e 验证脚本：
 
-tests/smoke_retrieval_hybrid_dynamic_rerank.py
+scripts/smoke_hybrid_retrieval.py
 
 合成小样本文本快速验证：keyword / hybrid / dynamic topk / rerank（可选）
 
-tests/smoke_e2e_real_pdfs_hybrid_rerank.py
+scripts/smoke_e2e_pdf_hybrid_rerank.py
 
 真实 PDF 端到端验证：MinerU 抽取 → 切分 → 入库 → hybrid 检索 → rerank top1
 
@@ -63,11 +63,11 @@ tests/smoke_e2e_real_pdfs_hybrid_rerank.py
 
 可选精排：backend/app/core/model_runtime.py 增加 backend_reranker_model()（不配置不生效）
 
-测试脚本：新增 tests/ 下 smoke/e2e 脚本（不影响生产）
+测试脚本：新增 scripts/ 下 smoke/e2e 脚本（不影响生产）
 
 ## 如何验证（复现步骤）
 ### 1) 快速 smoke（不依赖 PDF）
-python tests/smoke_retrieval_hybrid_dynamic_rerank.py
+python scripts/smoke_hybrid_retrieval.py
 
 期望输出包含：
 
@@ -80,7 +80,7 @@ dynamic_topk 高阈值下仍 >= top_k
 rerank enabled?（若配置了 reranker_path）
 
 ### 2) 真实 PDF E2E
-python tests/smoke_e2e_real_pdfs_hybrid_rerank.py <pdf1> <pdf2> <pdf3> <pdf4>
+python scripts/smoke_e2e_pdf_hybrid_rerank.py <pdf1> <pdf2> <pdf3> <pdf4>
 
 期望：
 
@@ -135,9 +135,9 @@ rerank 依赖本地模型与 sentence-transformers，若未配置/缺依赖会�
 
 Checklist
 
- 本地 smoke 全绿：smoke_retrieval_hybrid_dynamic_rerank.py
+本地 smoke 全绿：scripts/smoke_hybrid_retrieval.py
 
- 真实 PDF e2e 全绿：smoke_e2e_real_pdfs_hybrid_rerank.py
+真实 PDF e2e 全绿：scripts/smoke_e2e_pdf_hybrid_rerank.py
 
  前端导入 + 问答演示通过
 

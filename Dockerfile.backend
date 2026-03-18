@@ -61,8 +61,6 @@ COPY backend ./backend
 COPY config ./config
 # 复制 scripts 目录。
 COPY scripts ./scripts
-# 复制 tests 目录，便于镜像内诊断或自检。
-COPY tests ./tests
 # 复制 tools 目录。
 COPY tools ./tools
 # 复制共享路径入口模块。

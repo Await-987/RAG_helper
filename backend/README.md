@@ -223,8 +223,7 @@ async def stream_chat(request: ChatRequest, ...):
 pip install pytest pytest-asyncio httpx
 
 # 运行测试
-cd backend
-pytest tests/ -v
+python -m pytest backend/tests -v
 ```
 
 ## 注意事项

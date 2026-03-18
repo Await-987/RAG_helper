@@ -130,9 +130,8 @@ rag/
 ├── tools/                           # MinerU、入库、检索、Qdrant 工具链
 ├── config/                          # MinerU 等公共配置
 ├── deploy/nginx/                    # Docker Nginx 反向代理配置
-├── scripts/                         # 迁移、批量导入等脚本
+├── scripts/                         # 迁移、调试、smoke、评测脚本
 ├── docs/                            # 设计与改动日志
-├── tests/                           # 测试与 smoke 脚本
 ├── storage_paths.py                 # 共享存储路径统一入口
 ├── Dockerfile.backend
 ├── Dockerfile.frontend
@@ -1143,7 +1142,6 @@ docker compose up -d --build
 | chat_model_interactive.py | 裸模型对话 | 刚改完 .env 想确认模型 API 通了 |
 | chat_agent_interactive.py | 完整 RAG Agent 对话 | 想端到端验证检索+回答链路 |
 | import_file.py | 单文件入库 | 手动补录某个 PDF |
-| batch_import.py | 批量入库 | 初始化或迁移后批量补录 |
 | search_qdrant.py | 检索验证 | 入库后确认某个词能不能被检出 |
 | migrate_qdrant_local_to_server.py | 数据迁移 | 从 local 模式切换到 server 模式 |
 | download_table_summary_model.py | 下载模型 | 首次部署，Qwen 模型还没下载 |
@@ -1190,17 +1188,7 @@ python scripts/search_qdrant.py 供电营业规则
 python scripts/search_qdrant.py 供电营业规则 --collection database --top-k 5
 ```
 
-### 14.5 batch_import.py - 批量入库
-
-扫描 `STORED_FILES_DIR` 中所有 PDF，跳过已入库文件，串行批量导入。推荐后台运行。
-
-```bash
-python scripts/batch_import.py
-nohup python scripts/batch_import.py > import.log 2>&1 &
-tail -f import.log
-```
-
-### 14.6 migrate_qdrant_local_to_server.py - 本地 Qdrant 迁移到 Server
+### 14.5 migrate_qdrant_local_to_server.py - 本地 Qdrant 迁移到 Server
 
 将本地 Qdrant 数据迁移到远端 Qdrant Server，直接复制 id + vector + payload，无需重新 embedding。
 
@@ -1212,7 +1200,7 @@ python scripts/migrate_qdrant_local_to_server.py \
   --recreate
 ```
 
-### 14.7 download_table_summary_model.py - 下载表格摘要模型
+### 14.6 download_table_summary_model.py - 下载表格摘要模型
 
 下载 `Qwen2.5-1.5B-Instruct`（约 3GB），支持 ModelScope、HuggingFace、HF 镜像三种来源。
 
@@ -1223,7 +1211,7 @@ python scripts/download_table_summary_model.py --test-only
 python scripts/download_table_summary_model.py --source hf-mirror
 ```
 
-### 14.8 smoke_hybrid_retrieval.py - Hybrid 检索接口 Smoke Test
+### 14.7 smoke_hybrid_retrieval.py - Hybrid 检索接口 Smoke Test
 
 用可控文本验证 `keyword_search`、`hybrid_search`、dynamic topk、rerank 接口正确性。写入临时 collection，测试后自动清理。
 
@@ -1231,7 +1219,7 @@ python scripts/download_table_summary_model.py --source hf-mirror
 python scripts/smoke_hybrid_retrieval.py
 ```
 
-### 14.9 smoke_mineru_ingest_retrieve.py - MinerU + 入库 + 检索 Smoke Test
+### 14.8 smoke_mineru_ingest_retrieve.py - MinerU + 入库 + 检索 Smoke Test
 
 验证：MinerU 解析取证 -> 真实入库 -> 检索断言。
 
@@ -1239,7 +1227,7 @@ python scripts/smoke_hybrid_retrieval.py
 python scripts/smoke_mineru_ingest_retrieve.py data/stored_files/example.pdf
 ```
 
-### 14.10 smoke_e2e_pdf_hybrid_rerank.py - E2E Hybrid + Rerank Smoke Test
+### 14.9 smoke_e2e_pdf_hybrid_rerank.py - E2E Hybrid + Rerank Smoke Test
 
 真实 PDF 入库 -> MinerU 提取锚点 -> hybrid 检索断言 -> rerank 验证（需配置 `reranker_path`）。
 
@@ -1247,7 +1235,7 @@ python scripts/smoke_mineru_ingest_retrieve.py data/stored_files/example.pdf
 python scripts/smoke_e2e_pdf_hybrid_rerank.py data/stored_files/example.pdf
 ```
 
-### 14.11 smoke_mineru_embedding_qdrant.py - MinerU + Embedding + Qdrant 三合一 Smoke Test
+### 14.10 smoke_mineru_embedding_qdrant.py - MinerU + Embedding + Qdrant 三合一 Smoke Test
 
 依次验证：MinerU 解析 -> embedding 模型加载与向量检查 -> Qdrant 入库与检索。支持 `SMOKE_PDF` 环境变量。
 
@@ -1256,7 +1244,7 @@ python scripts/smoke_mineru_embedding_qdrant.py
 SMOKE_PDF=data/stored_files/your.pdf python scripts/smoke_mineru_embedding_qdrant.py
 ```
 
-### 14.12 smoke_pdf_ingest_query.py - PDF 入库 + 业务 Query 检索 Smoke Test
+### 14.11 smoke_pdf_ingest_query.py - PDF 入库 + 业务 Query 检索 Smoke Test
 
 针对四类业务 PDF 设计精确原文短语断言，根据文件名自动匹配测试计划，使用临时 collection。
 
@@ -1264,7 +1252,7 @@ SMOKE_PDF=data/stored_files/your.pdf python scripts/smoke_mineru_embedding_qdran
 python scripts/smoke_pdf_ingest_query.py data/stored_files/电网运行规则.pdf
 ```
 
-### 14.13 eval_retrieval.py - 检索策略评测
+### 14.12 eval_retrieval.py - 检索策略评测
 
 对比 `vector_only` / `hybrid` / `hybrid_dynamic` / `hybrid_rerank_dynamic` 四种策略的命中率、MRR 和延迟。可在 `DEFAULT_CASES` 中添加业务真实 query。
 
@@ -1273,7 +1261,7 @@ python scripts/eval_retrieval.py
 EVAL_TOP_K=10 EVAL_ALPHA=0.75 python scripts/eval_retrieval.py
 ```
 
-### 14.14 test_mineru_modes.py - MinerU 解析模式测试
+### 14.13 test_mineru_modes.py - MinerU 解析模式测试
 
 测试 pipeline / VLM 两种解析模式，分析元素类型分布，可对比两种模式差异。
 
@@ -1282,7 +1270,7 @@ python scripts/test_mineru_modes.py data/stored_files/example.pdf
 python scripts/test_mineru_modes.py data/stored_files/example.pdf --compare
 ```
 
-### 14.15 inspect_agent_response.py - ChatAgent 响应结构诊断
+### 14.14 inspect_agent_response.py - ChatAgent 响应结构诊断
 
 检查 CAMEL 框架流式模式下 response 对象结构，确认 `reasoning_content` 等字段传递情况。结果同时输出到终端和 `logs/` 目录。
 
@@ -1306,7 +1294,7 @@ python -m py_compile tools/qdrant.py
 
 ```bash
 source .venv/bin/activate
-python3 -m pytest
+python3 -m pytest backend/tests -v
 ```
 
 ### 15.3 前端构建检查

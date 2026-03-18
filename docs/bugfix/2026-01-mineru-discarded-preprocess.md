@@ -15,7 +15,7 @@
 重叠逻辑同步优化：在回退循环（Overlap）中增加同样的类型检查，遇未知类型直接 break 停止回退，防止索引错位。
 
 ## 4. 验证证明 (Evidence)
-运行 tests/smoke_mineru_debug_and_retrieve.py：
+运行 scripts/smoke_mineru_ingest_retrieve.py：
 
 修复前：在 Step 2 报错 KeyError: 'discarded'。
 
