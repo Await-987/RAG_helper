@@ -2,7 +2,9 @@
 File management service.
 """
 import os
+import re
 import sys
+from datetime import datetime
 from urllib.parse import unquote
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
@@ -14,6 +16,13 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.config import settings
+from app.core.import_jobs import (
+    create_import_job,
+    get_active_import_job,
+    get_import_job,
+    save_import_job,
+    start_import_job,
+)
 from app.schemas.file import (
     FileInfo, FileListResponse, FileImportResponse, FileImportStatus,
     FileDeleteResponse, FileDeleteStatus
@@ -36,6 +45,10 @@ class FileService:
         self.mineru_output_dir.mkdir(parents=True, exist_ok=True)
         self.collection_name = settings.COLLECTION_NAME
 
+    @staticmethod
+    def _now_iso() -> str:
+        return datetime.now().isoformat()
+
     def warmup(self) -> None:
         """
         Warm up file-management dependencies used by the backend.
@@ -57,7 +70,8 @@ class FileService:
         self,
         page: int = 1,
         page_size: int = 20,
-        file_type: Optional[str] = None
+        file_type: Optional[str] = None,
+        search: Optional[str] = None,
     ) -> FileListResponse:
         """
         Get paginated file list.
@@ -66,6 +80,7 @@ class FileService:
             page: Page number (1-indexed)
             page_size: Number of items per page
             file_type: Filter by type ('imported', 'not_imported', 'ghost', or None for all)
+            search: Keyword search across all files before pagination
 
         Returns:
             FileListResponse with paginated file info
@@ -74,14 +89,36 @@ class FileService:
 
         # Get all files
         file_info_list, total_chunks = get_local_files_with_db_status(self.storage_dir)
+        all_file_info_list = list(file_info_list)
+
+        global_stats = {
+            "imported": sum(1 for item in all_file_info_list if item["type"] == "imported"),
+            "not_imported": sum(1 for item in all_file_info_list if item["type"] == "not_imported"),
+            "ghost": sum(1 for item in all_file_info_list if item["type"] == "ghost"),
+        }
 
         # Filter by type if specified
         if file_type:
             file_info_list = [f for f in file_info_list if f["type"] == file_type]
 
-        # Sort: imported first, then not_imported, then ghost
         type_order = {"imported": 0, "not_imported": 1, "ghost": 2}
-        file_info_list.sort(key=lambda x: (type_order.get(x["type"], 3), x["name"]))
+
+        normalized_search = self._normalize_search_query(search)
+        if normalized_search:
+            file_info_list = [
+                item for item in file_info_list
+                if self._file_matches_search(item, normalized_search)
+            ]
+            file_info_list.sort(
+                key=lambda item: self._search_sort_key(
+                    item,
+                    normalized_search,
+                    type_order=type_order,
+                )
+            )
+        else:
+            # Default ordering: imported first, then not_imported, then ghost
+            file_info_list.sort(key=lambda x: (type_order.get(x["type"], 3), x["name"].lower()))
 
         # Paginate
         total_files = len(file_info_list)
@@ -110,11 +147,59 @@ class FileService:
             page=page,
             page_size=page_size,
             total_pages=total_pages,
-            stats={
-                "imported": sum(1 for item in file_info_list if item["type"] == "imported"),
-                "not_imported": sum(1 for item in file_info_list if item["type"] == "not_imported"),
-                "ghost": sum(1 for item in file_info_list if item["type"] == "ghost"),
-            }
+            stats=global_stats,
+        )
+
+    @staticmethod
+    def _normalize_search_query(search: Optional[str]) -> str:
+        return re.sub(r"\s+", " ", (search or "").strip().lower())
+
+    @classmethod
+    def _search_keywords(cls, search: str) -> List[str]:
+        return [token for token in re.split(r"\s+", search) if token]
+
+    @classmethod
+    def _file_matches_search(cls, item: Dict, search: str) -> bool:
+        keywords = cls._search_keywords(search)
+        if not keywords:
+            return True
+
+        name = str(item.get("name") or "").lower()
+        tag = str(item.get("tag") or "").lower()
+        haystack = f"{name} {tag}"
+
+        if search in haystack:
+            return True
+        return all(keyword in haystack for keyword in keywords)
+
+    @classmethod
+    def _search_sort_key(cls, item: Dict, search: str, *, type_order: Dict[str, int]) -> tuple:
+        name = str(item.get("name") or "")
+        name_lower = name.lower()
+        tag_lower = str(item.get("tag") or "").lower()
+        keywords = cls._search_keywords(search)
+
+        exact_match = 0 if name_lower == search else 1
+        prefix_match = 0 if name_lower.startswith(search) else 1
+        contains_full = 0 if search in name_lower else 1
+
+        if search in name_lower:
+            first_position = name_lower.find(search)
+        else:
+            positions = [name_lower.find(keyword) for keyword in keywords if keyword in name_lower]
+            first_position = min(positions) if positions else len(name_lower) + len(tag_lower) + 1
+
+        keyword_hits = sum(1 for keyword in keywords if keyword in name_lower or keyword in tag_lower)
+        return (
+            exact_match,
+            prefix_match,
+            contains_full,
+            -keyword_hits,
+            first_position,
+            type_order.get(str(item.get("type")), 3),
+            len(name_lower),
+            name_lower,
+            tag_lower,
         )
 
     def import_files(
@@ -124,7 +209,7 @@ class FileService:
         debug: bool = False
     ) -> FileImportResponse:
         """
-        Import files to database.
+        Submit file import as a background job.
 
         Args:
             file_tags: List of file tags to import
@@ -132,12 +217,63 @@ class FileService:
             debug: Enable debug mode
 
         Returns:
-            FileImportResponse with import results
+            FileImportResponse with import job status
         """
-        from app.core.file_catalog import batch_import_files
+        active_job = get_active_import_job()
+        if active_job is not None:
+            raise RuntimeError(
+                f"已有导入任务正在执行: {active_job['job_id']}"
+            )
+
+        job = create_import_job(
+            file_tags=file_tags,
+            dpi=dpi,
+            debug=debug,
+        )
+        start_import_job(job["job_id"], self._run_import_job)
+        latest_job = get_import_job(job["job_id"])
+        if latest_job is None:
+            raise RuntimeError("导入任务创建成功，但读取任务状态失败")
+        return FileImportResponse(**latest_job)
+
+    def get_import_job_status(self, job_id: str) -> Optional[FileImportResponse]:
+        job = get_import_job(job_id)
+        if job is None:
+            return None
+        return FileImportResponse(**job)
+
+    def get_active_import_job_status(self) -> Optional[FileImportResponse]:
+        job = get_active_import_job()
+        if job is None:
+            return None
+        return FileImportResponse(**job)
+
+    def _run_import_job(self, job_id: str) -> None:
+        from app.core.file_catalog import clear_local_file_status_cache, import_file_to_database
+
+        job = get_import_job(job_id)
+        if job is None:
+            logger.error(f"Import job not found: {job_id}")
+            return
+
+        request = dict(job.get("request") or {})
+        file_tags = list(request.get("file_tags") or [])
+        dpi = int(request.get("dpi") or 200)
+        debug = bool(request.get("debug") or False)
+
+        job["status"] = "running"
+        job["message"] = "后台导入任务执行中"
+        job["started_at"] = job.get("started_at") or self._now_iso()
+        save_import_job(job)
 
         # Convert tags to file paths
-        file_paths = []
+        file_entries: List[Tuple[str, Path]] = []
+        results_by_tag = {
+            str(item.get("file_tag")): dict(item)
+            for item in job.get("results", [])
+            if item.get("file_tag")
+        }
+
         for tag in file_tags:
             # Tag is relative path like "data/stored_files/file.pdf"
             # Need to convert to absolute path
@@ -147,57 +283,67 @@ class FileService:
                 full_path = self.storage_dir / Path(tag).name
 
             if full_path is not None and full_path.exists():
-                file_paths.append(str(full_path))
+                file_entries.append((tag, full_path))
             else:
                 logger.warning(f"File not found: {full_path}")
+                item = results_by_tag.get(tag, {"file_tag": tag, "status": "pending", "message": None, "chunks": None})
+                item["status"] = "failed"
+                item["message"] = "File not found"
+                results_by_tag[tag] = item
+                job["failed_count"] = int(job.get("failed_count") or 0) + 1
 
-        if not file_paths:
-            return FileImportResponse(
-                success_count=0,
-                failed_count=len(file_tags),
-                total=len(file_tags),
-                results=[
-                    FileImportStatus(
-                        file_tag=tag,
-                        status="failed",
-                        message="File not found"
-                    ) for tag in file_tags
-                ]
+        job["results"] = list(results_by_tag.values())
+        save_import_job(job)
+
+        if not file_entries:
+            job["status"] = "failed"
+            job["message"] = "没有可导入的文件"
+            job["error"] = "No valid files to import"
+            job["finished_at"] = self._now_iso()
+            save_import_job(job)
+            clear_local_file_status_cache()
+            return
+
+        for index, (tag, full_path) in enumerate(file_entries, start=1):
+            job = get_import_job(job_id) or job
+            job["current_index"] = index
+            job["current_file_tag"] = tag
+            job["message"] = f"正在导入 {Path(full_path).name} ({index}/{len(file_entries)})"
+            item = results_by_tag.get(tag, {"file_tag": tag, "status": "pending", "message": None, "chunks": None})
+            item["status"] = "processing"
+            item["message"] = "处理中"
+            results_by_tag[tag] = item
+            job["results"] = list(results_by_tag.values())
+            save_import_job(job)
+
+            success, message, chunks = import_file_to_database(
+                file_path=str(full_path),
+                collection_name=self.collection_name,
+                dpi=dpi,
+                debug=debug,
             )
+            item["status"] = "success" if success else "failed"
+            item["message"] = message
+            item["chunks"] = chunks
+            results_by_tag[tag] = item
 
-        # Batch import
-        result = batch_import_files(
-            file_paths=file_paths,
-            collection_name=self.collection_name,
-            dpi=dpi,
-            debug=debug
+            if success:
+                job["success_count"] = int(job.get("success_count") or 0) + 1
+            else:
+                job["failed_count"] = int(job.get("failed_count") or 0) + 1
+
+            job["results"] = list(results_by_tag.values())
+            save_import_job(job)
+
+        job = get_import_job(job_id) or job
+        job["status"] = "completed"
+        job["message"] = (
+            f"导入完成：成功 {job.get('success_count', 0)} 个，失败 {job.get('failed_count', 0)} 个"
         )
-
-        # Build response
-        import_results = []
-
-        for path in result["success"]:
-            tag = self._path_to_tag(path)
-            import_results.append(FileImportStatus(
-                file_tag=tag,
-                status="success",
-                message="Import successful"
-            ))
-
-        for path, error in result["failed"]:
-            tag = self._path_to_tag(path)
-            import_results.append(FileImportStatus(
-                file_tag=tag,
-                status="failed",
-                message=error
-            ))
-
-        return FileImportResponse(
-            success_count=result["success_count"],
-            failed_count=result["failed_count"],
-            total=result["total"],
-            results=import_results
-        )
+        job["current_file_tag"] = None
+        job["finished_at"] = self._now_iso()
+        save_import_job(job)
+        clear_local_file_status_cache()
 
     def delete_files(
         self,
@@ -270,6 +416,8 @@ class FileService:
             Tuple of (success, message, file_tag)
         """
         try:
+            from app.core.file_catalog import clear_local_file_status_cache
+
             # Sanitize filename
             safe_filename = self._sanitize_filename(filename)
             file_path = self.storage_dir / safe_filename
@@ -288,6 +436,10 @@ class FileService:
 
             # Generate tag
             file_tag = self._path_to_tag(str(file_path))
+
+            # File list results are cached for 60s; invalidate immediately so
+            # the newly uploaded file shows up on the next list request.
+            clear_local_file_status_cache()
 
             logger.info(f"File uploaded: {safe_filename}")
             return True, f"File '{safe_filename}' uploaded successfully", file_tag

@@ -2,10 +2,11 @@
 Backend runtime helpers for model factories and cached local models.
 """
 import gc
-import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+from ..config import settings
 
 load_dotenv()
 
@@ -43,8 +44,7 @@ def build_token_counter():
     from camel.types import ModelType
     from camel.utils import OpenAITokenCounter
 
-    counter_model_name = os.getenv("MEMORY_TOKEN_COUNTER_MODEL", "GPT_4O_MINI")
-    model_type = getattr(ModelType, counter_model_name, ModelType.GPT_4O_MINI)
+    model_type = getattr(ModelType, settings.MEMORY_TOKEN_COUNTER_MODEL, ModelType.GPT_4O_MINI)
 
     try:
         counter = OpenAITokenCounter(model_type)
@@ -55,34 +55,77 @@ def build_token_counter():
         return StubTokenCounter()
 
 
-def backend_model():
+def _build_model_config(
+    *,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    max_tokens: int | None = None,
+    stream: bool = False,
+) -> dict:
+    config: dict = {}
+    if temperature is not None:
+        config["temperature"] = temperature
+    if top_p is not None:
+        config["top_p"] = top_p
+    if max_tokens is not None:
+        config["max_tokens"] = max_tokens
+    if stream:
+        config["stream"] = True
+        config["stream_options"] = {"include_usage": True}
+    return config
+
+
+def backend_model(
+    *,
+    model_name: str | None = None,
+    api_key: str | None = None,
+    url: str | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    max_tokens: int | None = None,
+):
     from camel.models import ModelFactory
     from camel.types import ModelPlatformType
 
+    model_config_dict = _build_model_config(
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+    )
     return ModelFactory.create(
         model_platform=ModelPlatformType.OPENAI_COMPATIBLE_MODEL,
-        model_type=os.getenv("MODEL_NAME", "qwq32b"),
-        api_key=os.getenv("OPENAI_API_KEY"),
-        url=os.getenv("url"),
+        model_type=model_name or settings.MODEL_NAME,
+        api_key=api_key or settings.OPENAI_API_KEY,
+        url=url or settings.OPENAI_API_URL,
         token_counter=build_token_counter(),
+        model_config_dict=model_config_dict or None,
     )
 
 
-def stream_model():
+def stream_model(
+    *,
+    model_name: str | None = None,
+    api_key: str | None = None,
+    url: str | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    max_tokens: int | None = None,
+):
     from camel.models import ModelFactory
     from camel.types import ModelPlatformType
 
     return ModelFactory.create(
         model_platform=ModelPlatformType.OPENAI_COMPATIBLE_MODEL,
-        model_type=os.getenv("MODEL_NAME", "qwq32b"),
-        api_key=os.getenv("OPENAI_API_KEY"),
-        url=os.getenv("url"),
+        model_type=model_name or settings.MODEL_NAME,
+        api_key=api_key or settings.OPENAI_API_KEY,
+        url=url or settings.OPENAI_API_URL,
         token_counter=build_token_counter(),
-        model_config_dict={
-            "stream": True,
-            "stream_options": {"include_usage": True},
-            "max_tokens": 4000,
-        },
+        model_config_dict=_build_model_config(
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            stream=True,
+        ),
     )
 
 
@@ -94,11 +137,11 @@ def get_embedding_model():
 
     from camel.embeddings import SentenceTransformerEncoder
 
-    full_path = _resolve_project_path(os.getenv("conan_path"))
+    full_path = _resolve_project_path(settings.EMBEDDING_MODEL_PATH)
     if full_path is None:
         raise ValueError("Missing env var `conan_path` for local embedding model path")
 
-    device = _auto_detect_device(os.getenv("EMBEDDING_DEVICE"))
+    device = _auto_detect_device(settings.EMBEDDING_DEVICE)
     print(f"Loading embedding model from: {full_path}")
     print(f"  Using device: {device}")
 
@@ -117,14 +160,14 @@ def get_reranker_model():
     if _reranker_model_cache is not None:
         return _reranker_model_cache
 
-    reranker_path = _resolve_project_path(os.getenv("reranker_path"))
+    reranker_path = _resolve_project_path(settings.RERANKER_PATH)
     if reranker_path is None:
         return None
 
     try:
         from sentence_transformers import CrossEncoder
 
-        device = _auto_detect_device(os.getenv("RERANKER_DEVICE"))
+        device = _auto_detect_device(settings.RERANKER_DEVICE)
         print(f"Loading reranker model from: {reranker_path}")
         print(f"  Using device: {device}")
         _reranker_model_cache = CrossEncoder(str(reranker_path), device=device)
@@ -146,14 +189,12 @@ def init_table_summary_model():
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        model_path = _resolve_project_path(
-            os.getenv("TABLE_SUMMARY_MODEL_PATH", "models/Qwen2.5-1.5B-Instruct")
-        )
+        model_path = _resolve_project_path(settings.TABLE_SUMMARY_MODEL_PATH or "models/Qwen2.5-1.5B-Instruct")
         if model_path is None or not model_path.exists():
             print(f"[WARNING] Table summary model not found: {model_path}")
             return False
 
-        device = _auto_detect_device(os.getenv("TABLE_SUMMARY_DEVICE"))
+        device = _auto_detect_device(settings.TABLE_SUMMARY_DEVICE)
         print(f"Loading table summary model: {model_path}")
         print(f"  Using device: {device}")
 

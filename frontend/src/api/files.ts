@@ -15,7 +15,8 @@ export const fileApi = {
   getFiles: async (
     page: number = 1,
     pageSize: number = 20,
-    fileType?: string
+    fileType?: string,
+    search?: string
   ): Promise<FileListResponse> => {
     const params = new URLSearchParams({
       page: String(page),
@@ -23,6 +24,9 @@ export const fileApi = {
     });
     if (fileType) {
       params.append('file_type', fileType);
+    }
+    if (search && search.trim()) {
+      params.append('search', search.trim());
     }
     const response = await api.get<FileListResponse>(`/files?${params}`);
     return response.data;
@@ -44,6 +48,16 @@ export const fileApi = {
     const response = await api.post<FileImportResponse>('/files/import', data, {
       timeout: 10 * 60 * 1000,
     });
+    return response.data;
+  },
+
+  getImportJob: async (jobId: string): Promise<FileImportResponse> => {
+    const response = await api.get<FileImportResponse>(`/files/import-jobs/${encodeURIComponent(jobId)}`);
+    return response.data;
+  },
+
+  getActiveImportJob: async (): Promise<FileImportResponse> => {
+    const response = await api.get<FileImportResponse>('/files/import-jobs/active');
     return response.data;
   },
 

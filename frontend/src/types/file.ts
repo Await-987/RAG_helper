@@ -37,11 +37,22 @@ export interface FileImportRequest {
 
 export interface FileImportStatus {
   file_tag: string;
-  status: 'success' | 'failed';
-  message: string;
+  status: 'pending' | 'processing' | 'success' | 'failed';
+  message: string | null;
+  chunks?: number | null;
 }
 
 export interface FileImportResponse {
+  job_id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  message: string | null;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  current_index: number;
+  current_file_tag: string | null;
   success_count: number;
   failed_count: number;
   total: number;

@@ -962,7 +962,12 @@ class ChatService:
                         "必须结合最近对话上下文理解代词和追问。"
                     ),
                 ),
-                model=backend_model(),
+                model=backend_model(
+                    model_name=settings.INTENT_ROUTER_MODEL_NAME,
+                    temperature=settings.INTENT_ROUTER_TEMPERATURE,
+                    top_p=settings.INTENT_ROUTER_TOP_P,
+                    max_tokens=settings.INTENT_ROUTER_MAX_TOKENS,
+                ),
                 tools=[],
                 summarize_threshold=None,
             )
@@ -989,7 +994,12 @@ class ChatService:
                         "expanded_queries 应优先补充表号、清单表、投标报价表、附表等检索词。"
                     ),
                 ),
-                model=backend_model(),
+                model=backend_model(
+                    model_name=settings.SEARCH_REWRITER_MODEL_NAME,
+                    temperature=settings.SEARCH_REWRITER_TEMPERATURE,
+                    top_p=settings.SEARCH_REWRITER_TOP_P,
+                    max_tokens=settings.SEARCH_REWRITER_MAX_TOKENS,
+                ),
                 tools=[],
                 summarize_threshold=None,
             )

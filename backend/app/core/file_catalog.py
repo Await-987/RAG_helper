@@ -73,8 +73,22 @@ def _get_database_stats_impl(collection_name: str) -> Tuple[Dict[str, int], int]
         from tools.qdrant import QdrantDB, QdrantDB_Init
 
         db = QdrantDB(input=QdrantDB_Init(collection_name=collection_name))
-        db._maybe_build_lex_index(force=False)
-        lex_index = db._lex_index
+        lex_index = None
+
+        # 文件管理只需要按 Original_file 统计切片数，不值得因为点数变化就
+        # 在这里触发整库 BM25 词汇索引重建。优先复用磁盘缓存；如果缓存与
+        # 当前点数不一致，则直接走 scroll 统计，避免导入后刷新文件列表时
+        # 卡在全量重建上。
+        if db._load_lex_index_from_disk():
+            current_cnt = db._get_collection_point_count()
+            cached_cnt = db._lex_index_point_count
+            if current_cnt is not None and current_cnt == cached_cnt:
+                lex_index = db._lex_index
+            else:
+                logger.info(
+                    "词汇索引点数已变化，跳过文件管理场景下的全量重建 | "
+                    f"collection={collection_name} cached={cached_cnt} current={current_cnt}"
+                )
 
         if lex_index and lex_index.get("N", 0) > 0:
             stats: Dict[str, int] = {}

@@ -280,38 +280,89 @@ cd ..
 
 ## 7. 环境变量与配置模式
 
-在项目根目录创建 `.env`。
+在项目根目录创建 `.env`。推荐直接复制 `.env.example` 后按实际环境修改。
 
 示例：
 
 ```env
-# 主对话模型
-OPENAI_API_KEY=your-api-key
-url=https://your-api-endpoint/v1
-MODEL_NAME=qwq32b
-
-# 本地模型路径
-conan_path=models/bge-base-zh-v1.5
-reranker_path=models/bge-reranker-base
-TABLE_SUMMARY_MODEL_PATH=models/Qwen2.5-1.5B-Instruct
-
-# 可选
+# ------------------------------
+# 基础运行配置
+# ------------------------------
 DEBUG=false
 SECRET_KEY=change-me
 
-# Qdrant
-QDRANT_MODE=local
-QDRANT_URL=
+# ------------------------------
+# OpenAI 兼容模型服务
+# ------------------------------
+OPENAI_API_KEY=your-api-key
+url=https://your-openai-compatible-endpoint/v1
+MODEL_NAME=qwq32b
+
+# ------------------------------
+# 主回答 Agent 参数
+# ------------------------------
+MAIN_AGENT_MODEL_NAME=qwq32b
+MAIN_AGENT_TEMPERATURE=0.2
+MAIN_AGENT_TOP_P=0.9
+MAIN_AGENT_MAX_TOKENS=4000
+MAIN_AGENT_MESSAGE_WINDOW_SIZE=12
+MAIN_AGENT_SUMMARIZE_THRESHOLD=20
+MAIN_AGENT_PRUNE_TOOL_CALLS=true
+MAIN_AGENT_STREAM_ACCUMULATE=false
+MAIN_AGENT_SYSTEM_PROMPT_PATH=config/prompts/main_agent_system.txt
+
+# ------------------------------
+# 辅助 Agent 参数
+# ------------------------------
+INTENT_ROUTER_MODEL_NAME=qwq32b
+INTENT_ROUTER_TEMPERATURE=0.0
+INTENT_ROUTER_TOP_P=1.0
+INTENT_ROUTER_MAX_TOKENS=800
+
+SEARCH_REWRITER_MODEL_NAME=qwq32b
+SEARCH_REWRITER_TEMPERATURE=0.1
+SEARCH_REWRITER_TOP_P=1.0
+SEARCH_REWRITER_MAX_TOKENS=1200
+
+# ------------------------------
+# 本地模型路径
+# ------------------------------
+conan_path=models/bge-base-zh-v1.5
+reranker_path=models/bge-reranker-base
+TABLE_SUMMARY_MODEL_PATH=models/Qwen2.5-1.5B-Instruct
+EMBEDDING_DEVICE=
+RERANKER_DEVICE=
+TABLE_SUMMARY_DEVICE=
+
+# ------------------------------
+# Agent Memory
+# ------------------------------
+AGENT_MEMORY_ENABLED=true
+AGENT_MEMORY_TOKEN_LIMIT=12000
+AGENT_MEMORY_RETRIEVE_LIMIT=6
+AGENT_MEMORY_KEEP_RATE=0.9
+MEMORY_TOKEN_COUNTER_MODEL=GPT_4O_MINI
+CHAT_CONTEXT_BUDGET_LOG_ENABLED=false
+AGENT_COMPACT_ENABLED=true
+AGENT_COMPACT_TRIGGER_MESSAGES=12
+AGENT_COMPACT_TRIGGER_CHARS=24000
+AGENT_COMPACT_KEEP_RECENT_MESSAGES=4
+FACTUAL_EVIDENCE_MAX_CHARS=6000
+
+# ------------------------------
+# Qdrant / Redis / 共享存储
+# ------------------------------
+SHARED_STORAGE_ROOT=data
+QDRANT_MODE=server
+QDRANT_URL=http://127.0.0.1:6333
 QDRANT_API_KEY=
 QDRANT_LOCAL_PATH=data/storages
 QDRANT_LEXICAL_INDEX_DIR=data/lex_index
 
-# Redis
-REDIS_URL=
+REDIS_URL=redis://127.0.0.1:6379/0
 REDIS_PREFIX=rag
-
-# 共享文件根目录
-SHARED_STORAGE_ROOT=data
+REDIS_SOCKET_TIMEOUT_SEC=5
+REDIS_SOCKET_CONNECT_TIMEOUT_SEC=5
 ```
 
 ### 7.1 常用变量说明
@@ -320,12 +371,32 @@ SHARED_STORAGE_ROOT=data
 |---|---|
 | `OPENAI_API_KEY` | 主对话模型 API Key |
 | `url` | OpenAI 兼容接口地址 |
-| `MODEL_NAME` | 主对话模型名称 |
+| `MODEL_NAME` | 默认模型名称；未给子 agent 单独指定时会回退到这里 |
+| `MAIN_AGENT_MODEL_NAME` | 主回答 agent 使用的模型名 |
+| `MAIN_AGENT_TEMPERATURE` | 主回答 agent 采样温度 |
+| `MAIN_AGENT_TOP_P` | 主回答 agent 的 `top_p` |
+| `MAIN_AGENT_MAX_TOKENS` | 主回答 agent 最大生成 token 数 |
+| `MAIN_AGENT_MESSAGE_WINDOW_SIZE` | 主回答 agent 的短窗口消息数 |
+| `MAIN_AGENT_SUMMARIZE_THRESHOLD` | 主回答 agent 的摘要触发阈值 |
+| `MAIN_AGENT_PRUNE_TOOL_CALLS` | 是否裁掉工具调用痕迹 |
+| `MAIN_AGENT_STREAM_ACCUMULATE` | 流式输出时是否累积完整内容 |
+| `MAIN_AGENT_SYSTEM_PROMPT_PATH` | 主回答 agent 系统提示词文件路径 |
+| `INTENT_ROUTER_MODEL_NAME` | 意图路由器模型名 |
+| `INTENT_ROUTER_TEMPERATURE` | 意图路由器温度 |
+| `SEARCH_REWRITER_MODEL_NAME` | 检索改写器模型名 |
+| `SEARCH_REWRITER_TEMPERATURE` | 检索改写器温度 |
 | `conan_path` | embedding 模型路径 |
 | `reranker_path` | reranker 模型路径 |
 | `TABLE_SUMMARY_MODEL_PATH` | 表格摘要模型路径 |
+| `EMBEDDING_DEVICE` | embedding 模型设备，留空为自动检测 |
+| `RERANKER_DEVICE` | reranker 模型设备，留空为自动检测 |
+| `TABLE_SUMMARY_DEVICE` | 表格摘要模型设备，留空为自动检测 |
 | `SECRET_KEY` | 后端 JWT 密钥 |
 | `DEBUG` | 后端调试模式 |
+| `AGENT_MEMORY_ENABLED` | 是否启用 CAMEL 长期记忆 |
+| `AGENT_MEMORY_TOKEN_LIMIT` | 长期记忆 token 上限 |
+| `AGENT_MEMORY_RETRIEVE_LIMIT` | 长期记忆召回条数 |
+| `AGENT_MEMORY_KEEP_RATE` | 历史消息保留系数 |
 | `QDRANT_MODE` | Qdrant 运行模式，`local` 或 `server` |
 | `QDRANT_URL` | Qdrant 服务地址，服务模式必填 |
 | `QDRANT_LEXICAL_INDEX_DIR` | BM25 词汇索引缓存目录 |
@@ -586,9 +657,15 @@ rag/
 
 ```env
 OPENAI_API_KEY=your-api-key
-url=https://your-api-endpoint/v1
+url=https://your-openai-compatible-endpoint/v1
 MODEL_NAME=qwq32b
 SECRET_KEY=change-me
+
+MAIN_AGENT_MODEL_NAME=qwq32b
+MAIN_AGENT_TEMPERATURE=0.2
+MAIN_AGENT_TOP_P=0.9
+MAIN_AGENT_MAX_TOKENS=4000
+MAIN_AGENT_SYSTEM_PROMPT_PATH=config/prompts/main_agent_system.txt
 
 conan_path=models/bge-base-zh-v1.5
 reranker_path=models/bge-reranker-base

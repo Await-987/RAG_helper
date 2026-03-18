@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useDeferredValue, useEffect, useState } from 'react';
 import { fileApi } from '@/api';
 import { useAuthStore } from '@/stores';
-import type { FileInfo, FileType } from '@/types';
+import type { FileImportResponse, FileInfo, FileType } from '@/types';
 import {
   Upload,
   FileText,
@@ -34,12 +34,14 @@ export function FileManagerPage() {
   const [currentPage, setCurrentPage] = useState(1);
 
   const [searchQuery, setSearchQuery] = useState('');
+  const deferredSearchQuery = useDeferredValue(searchQuery.trim());
   const [filterType, setFilterType] = useState<FileType | 'all'>('all');
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
 
   const [uploading, setUploading] = useState(false);
   const [importing, setImporting] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [importJob, setImportJob] = useState<FileImportResponse | null>(null);
 
   const [previewFile, setPreviewFile] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -54,13 +56,18 @@ export function FileManagerPage() {
   });
 
   // Fetch files
-  const fetchFiles = async () => {
+  const fetchFiles = async (
+    page: number = currentPage,
+    type: FileType | 'all' = filterType,
+    search: string = deferredSearchQuery
+  ) => {
     setLoading(true);
     try {
       const response = await fileApi.getFiles(
-        currentPage,
+        page,
         PAGE_SIZE,
-        filterType === 'all' ? undefined : filterType
+        type === 'all' ? undefined : type,
+        search
       );
       setFiles(response.files);
       setTotalFiles(response.total_files);
@@ -81,7 +88,7 @@ export function FileManagerPage() {
   useEffect(() => {
     fetchFiles();
     setSelectedFiles(new Set());
-  }, [currentPage, filterType]);
+  }, [currentPage, filterType, deferredSearchQuery]);
 
   useEffect(() => {
     if (!previewFile) {
@@ -126,10 +133,65 @@ export function FileManagerPage() {
     };
   }, [previewFile]);
 
-  // Filter by search query
-  const filteredFiles = searchQuery
-    ? files.filter((f) => f.name.toLowerCase().includes(searchQuery.toLowerCase()))
-    : files;
+  useEffect(() => {
+    if (!isAdmin) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadActiveJob = async () => {
+      try {
+        const job = await fileApi.getActiveImportJob();
+        if (!cancelled) {
+          setImportJob(job);
+        }
+      } catch {
+        if (!cancelled) {
+          setImportJob((current) => current && ['queued', 'running'].includes(current.status) ? current : null);
+        }
+      }
+    };
+
+    loadActiveJob();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin]);
+
+  useEffect(() => {
+    if (!importJob || !['queued', 'running'].includes(importJob.status)) {
+      return;
+    }
+
+    let cancelled = false;
+    const intervalId = window.setInterval(async () => {
+      try {
+        const nextJob = await fileApi.getImportJob(importJob.job_id);
+        if (cancelled) {
+          return;
+        }
+        setImportJob(nextJob);
+        if (!['queued', 'running'].includes(nextJob.status)) {
+          window.clearInterval(intervalId);
+          await fetchFiles(1);
+          setSelectedFiles(new Set());
+          alert(
+            nextJob.status === 'completed'
+              ? `导入完成：成功 ${nextJob.success_count} 个，失败 ${nextJob.failed_count} 个`
+              : `导入失败：${nextJob.error || nextJob.message || '未知错误'}`
+          );
+        }
+      } catch (error) {
+        console.error('Failed to poll import job:', error);
+      }
+    }, 2000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [importJob?.job_id, importJob?.status]);
 
   // Handle file upload
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -141,7 +203,10 @@ export function FileManagerPage() {
       for (const file of Array.from(fileList)) {
         await fileApi.uploadFile(file);
       }
-      await fetchFiles();
+      setCurrentPage(1);
+      setFilterType('not_imported');
+      setSelectedFiles(new Set());
+      await fetchFiles(1, 'not_imported');
     } catch (error) {
       console.error('Upload failed:', error);
       alert('上传失败');
@@ -166,12 +231,10 @@ export function FileManagerPage() {
 
     setImporting(true);
     try {
-      const result = await fileApi.importFiles({ file_tags: filesToImport });
-      alert(
-        `导入完成：成功 ${result.success_count} 个，失败 ${result.failed_count} 个`
-      );
-      await fetchFiles();
+      const job = await fileApi.importFiles({ file_tags: filesToImport });
+      setImportJob(job);
       setSelectedFiles(new Set());
+      alert('导入任务已提交到后台，期间其他后端功能可继续使用。');
     } catch (error) {
       console.error('Import failed:', error);
       alert('导入失败');
@@ -232,10 +295,10 @@ export function FileManagerPage() {
 
   // Select all on current page
   const toggleSelectAll = () => {
-    if (selectedFiles.size === filteredFiles.length) {
+    if (selectedFiles.size === files.length) {
       setSelectedFiles(new Set());
     } else {
-      setSelectedFiles(new Set(filteredFiles.map((f) => f.tag)));
+      setSelectedFiles(new Set(files.map((f) => f.tag)));
     }
   };
 
@@ -307,7 +370,11 @@ export function FileManagerPage() {
             <input
               type="text"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setCurrentPage(1);
+                setSelectedFiles(new Set());
+              }}
               placeholder="搜索文件..."
               className="input-field pl-10"
             />
@@ -316,7 +383,11 @@ export function FileManagerPage() {
           {/* Filter */}
           <select
             value={filterType}
-            onChange={(e) => setFilterType(e.target.value as FileType | 'all')}
+            onChange={(e) => {
+              setFilterType(e.target.value as FileType | 'all');
+              setCurrentPage(1);
+              setSelectedFiles(new Set());
+            }}
             className="input-field w-auto"
           >
             <option value="all">全部类型</option>
@@ -354,7 +425,7 @@ export function FileManagerPage() {
               {/* Import */}
               <button
                 onClick={handleImport}
-                disabled={importing || selectedFiles.size === 0}
+                disabled={importing || selectedFiles.size === 0 || !!importJob && ['queued', 'running'].includes(importJob.status)}
                 className="btn btn-primary flex items-center gap-2"
               >
                 {importing ? (
@@ -378,15 +449,38 @@ export function FileManagerPage() {
           )}
         </div>
 
+        {importJob && (
+          <div className="mb-4 rounded-xl border border-primary-500/30 bg-primary-500/10 px-4 py-3 text-sm text-gray-200">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="font-medium text-white">
+                  索引任务状态：{importJob.status === 'queued' ? '排队中' : importJob.status === 'running' ? '执行中' : importJob.status === 'completed' ? '已完成' : '失败'}
+                </p>
+                <p className="text-gray-300">
+                  成功 {importJob.success_count} / 失败 {importJob.failed_count} / 总计 {importJob.total}
+                </p>
+              </div>
+              <div className="text-right text-gray-300">
+                <p>
+                  进度 {Math.min(importJob.current_index, importJob.total)} / {importJob.total}
+                </p>
+                <p className="truncate max-w-[320px]">
+                  {importJob.current_file_tag || importJob.message || '等待执行'}
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* File list */}
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 size={24} className="animate-spin text-primary-400" />
           </div>
-        ) : filteredFiles.length === 0 ? (
+        ) : files.length === 0 ? (
           <div className="text-center py-12 text-gray-400">
             <FileText size={48} className="mx-auto mb-4 opacity-50" />
-            <p>没有找到文件</p>
+            <p>{deferredSearchQuery ? '没有匹配的文件' : '没有找到文件'}</p>
           </div>
         ) : (
           <>
@@ -395,19 +489,19 @@ export function FileManagerPage() {
               <div className="flex items-center gap-2 mb-3 px-2">
                 <input
                   type="checkbox"
-                  checked={selectedFiles.size === filteredFiles.length}
+                  checked={files.length > 0 && selectedFiles.size === files.length}
                   onChange={toggleSelectAll}
                   className="w-4 h-4 rounded border-gray-600 bg-dark-bg"
                 />
                 <span className="text-sm text-gray-400">
-                  全选当前页 ({selectedFiles.size} 已选)
+                  全选当前页搜索结果 ({selectedFiles.size} 已选)
                 </span>
               </div>
             )}
 
             {/* File table */}
             <div className="space-y-2">
-              {filteredFiles.map((file) => (
+              {files.map((file) => (
                 <div
                   key={file.tag}
                   className={clsx(

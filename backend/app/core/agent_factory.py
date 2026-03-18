@@ -1,10 +1,14 @@
 """
 Factory helpers for the backend chat agent.
 """
+from functools import lru_cache
+from pathlib import Path
 from typing import Any
 
 from camel.agents.chat_agent import ChatAgent
 from camel.messages.base import BaseMessage
+
+from ..config import PROJECT_ROOT, settings
 
 RAG_CHAT_SYSTEM_MESSAGE = r'''
         你是电力系统与国家电网业务场景的知识问答智能体。
@@ -77,6 +81,23 @@ RAG_CHAT_SYSTEM_MESSAGE = r'''
         '''
 
 
+@lru_cache(maxsize=1)
+def load_main_agent_system_prompt() -> str:
+    prompt_path = settings.MAIN_AGENT_SYSTEM_PROMPT_PATH
+    if not prompt_path:
+        return RAG_CHAT_SYSTEM_MESSAGE
+
+    resolved_path = Path(prompt_path)
+    if not resolved_path.is_absolute():
+        resolved_path = PROJECT_ROOT / resolved_path
+
+    try:
+        content = resolved_path.read_text(encoding="utf-8").strip()
+        return content or RAG_CHAT_SYSTEM_MESSAGE
+    except Exception:
+        return RAG_CHAT_SYSTEM_MESSAGE
+
+
 def create_chat_agent(database_toolkit: Any = None, memory: Any = None) -> ChatAgent:
     from .model_runtime import stream_model
 
@@ -94,15 +115,22 @@ def create_chat_agent(database_toolkit: Any = None, memory: Any = None) -> ChatA
     return ChatAgent(
         system_message=BaseMessage.make_assistant_message(
             role_name="Chat Agent",
-            content=RAG_CHAT_SYSTEM_MESSAGE,
+            content=load_main_agent_system_prompt(),
         ),
-        model=stream_model(),
+        model=stream_model(
+            model_name=settings.MAIN_AGENT_MODEL_NAME,
+            api_key=settings.MAIN_AGENT_API_KEY,
+            url=settings.MAIN_AGENT_API_URL,
+            temperature=settings.MAIN_AGENT_TEMPERATURE,
+            top_p=settings.MAIN_AGENT_TOP_P,
+            max_tokens=settings.MAIN_AGENT_MAX_TOKENS,
+        ),
         memory=memory,
         tools=[*database_toolkit.get_tools()],
-        message_window_size=12,
-        summarize_threshold=20,
-        prune_tool_calls_from_memory=True,
-        stream_accumulate=False,
+        message_window_size=settings.MAIN_AGENT_MESSAGE_WINDOW_SIZE,
+        summarize_threshold=settings.MAIN_AGENT_SUMMARIZE_THRESHOLD,
+        prune_tool_calls_from_memory=settings.MAIN_AGENT_PRUNE_TOOL_CALLS,
+        stream_accumulate=settings.MAIN_AGENT_STREAM_ACCUMULATE,
     )
 
 

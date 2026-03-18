@@ -51,7 +51,17 @@ class FileImportStatus(BaseModel):
 
 
 class FileImportResponse(BaseModel):
-    """File import response schema"""
+    """File import job schema."""
+    job_id: str
+    status: str = Field(..., description="Job status: 'queued', 'running', 'completed', 'failed'")
+    message: Optional[str] = None
+    error: Optional[str] = None
+    created_at: str
+    updated_at: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    current_index: int = 0
+    current_file_tag: Optional[str] = None
     success_count: int
     failed_count: int
     total: int

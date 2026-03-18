@@ -119,7 +119,7 @@ curl http://localhost:8000/api/v1/auth/me \
 
 ## 配置说明
 
-配置通过环境变量管理，支持 `.env` 文件：
+配置通过环境变量管理，支持 `.env` 文件。推荐以根目录 `.env.example` 为模板。
 
 | 环境变量 | 描述 | 默认值 |
 |----------|------|--------|
@@ -127,15 +127,42 @@ curl http://localhost:8000/api/v1/auth/me \
 | `DEBUG` | 调试模式 | false |
 | `OPENAI_API_KEY` | OpenAI API Key | - |
 | `url` | API URL | - |
-| `MODEL_NAME` | 模型名称 | qwq32b |
+| `MODEL_NAME` | 默认模型名称 | qwq32b |
+| `MAIN_AGENT_MODEL_NAME` | 主回答 agent 模型名称 | `MODEL_NAME` |
+| `MAIN_AGENT_TEMPERATURE` | 主回答 agent 温度 | 0.2 |
+| `MAIN_AGENT_TOP_P` | 主回答 agent top_p | 0.9 |
+| `MAIN_AGENT_MAX_TOKENS` | 主回答 agent 最大生成 token 数 | 4000 |
+| `MAIN_AGENT_MESSAGE_WINDOW_SIZE` | 主回答 agent 短窗口消息数 | 12 |
+| `MAIN_AGENT_SUMMARIZE_THRESHOLD` | 主回答 agent 摘要阈值 | 20 |
+| `MAIN_AGENT_PRUNE_TOOL_CALLS` | 是否裁掉工具调用痕迹 | true |
+| `MAIN_AGENT_STREAM_ACCUMULATE` | 流式输出时是否内部累积 | false |
+| `MAIN_AGENT_SYSTEM_PROMPT_PATH` | 主回答 agent 系统提示词文件路径 | `config/prompts/main_agent_system.txt` |
+| `INTENT_ROUTER_MODEL_NAME` | 意图路由器模型名 | `MODEL_NAME` |
+| `INTENT_ROUTER_TEMPERATURE` | 意图路由器温度 | 0.0 |
+| `INTENT_ROUTER_TOP_P` | 意图路由器 top_p | 1.0 |
+| `INTENT_ROUTER_MAX_TOKENS` | 意图路由器最大生成 token 数 | 800 |
+| `SEARCH_REWRITER_MODEL_NAME` | 检索改写器模型名 | `MODEL_NAME` |
+| `SEARCH_REWRITER_TEMPERATURE` | 检索改写器温度 | 0.1 |
+| `SEARCH_REWRITER_TOP_P` | 检索改写器 top_p | 1.0 |
+| `SEARCH_REWRITER_MAX_TOKENS` | 检索改写器最大生成 token 数 | 1200 |
 | `conan_path` | Embedding 模型路径 | - |
 | `reranker_path` | Reranker 模型路径 | - |
+| `TABLE_SUMMARY_MODEL_PATH` | 表格摘要模型路径 | - |
+| `EMBEDDING_DEVICE` | Embedding 模型设备 | 自动检测 |
+| `RERANKER_DEVICE` | Reranker 模型设备 | 自动检测 |
+| `TABLE_SUMMARY_DEVICE` | 表格摘要模型设备 | 自动检测 |
 | `AGENT_MEMORY_ENABLED` | 是否启用 CAMEL 长期记忆 | true |
-| `AGENT_MEMORY_DIR` | Agent memory 持久化目录 | `data/agent_memory` |
 | `AGENT_MEMORY_TOKEN_LIMIT` | Agent memory 上下文 token 上限 | 12000 |
 | `AGENT_MEMORY_RETRIEVE_LIMIT` | 语义记忆召回条数 | 6 |
 | `AGENT_MEMORY_KEEP_RATE` | 历史消息衰减系数 | 0.9 |
 | `MEMORY_TOKEN_COUNTER_MODEL` | CAMEL token counter 使用的模型枚举 | GPT_4O_MINI |
+| `QDRANT_MODE` | Qdrant 运行模式，`local` 或 `server` | local |
+| `QDRANT_URL` | Qdrant 服务地址 | - |
+| `QDRANT_LOCAL_PATH` | Qdrant 本地存储目录 | `data/storages` |
+| `QDRANT_LEXICAL_INDEX_DIR` | BM25 词汇索引目录 | `data/lex_index` |
+| `REDIS_URL` | Redis 地址 | - |
+| `REDIS_PREFIX` | Redis key 前缀 | rag |
+| `SHARED_STORAGE_ROOT` | 共享数据根目录 | data |
 
 ## 核心改造点
 

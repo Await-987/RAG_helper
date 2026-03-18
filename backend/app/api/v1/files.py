@@ -21,6 +21,7 @@ async def list_files(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     file_type: Optional[str] = Query(None, description="Filter by type: 'imported', 'not_imported', 'ghost'"),
+    search: Optional[str] = Query(None, description="Keyword search across the full file list before pagination"),
     current_user: dict = Depends(get_current_user),
     file_service: FileService = Depends(get_file_service)
 ):
@@ -30,11 +31,13 @@ async def list_files(
     - **page**: Page number (1-indexed)
     - **page_size**: Number of items per page
     - **file_type**: Filter by type ('imported', 'not_imported', 'ghost')
+    - **search**: Keyword search applied before pagination
     """
     return file_service.get_file_list(
         page=page,
         page_size=page_size,
-        file_type=file_type
+        file_type=file_type,
+        search=search,
     )
 
 
@@ -126,12 +129,46 @@ async def import_files(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No file tags provided"
         )
+    try:
+        return file_service.import_files(
+            file_tags=request.file_tags,
+            dpi=request.dpi,
+            debug=request.debug
+        )
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
 
-    return file_service.import_files(
-        file_tags=request.file_tags,
-        dpi=request.dpi,
-        debug=request.debug
-    )
+
+@router.get("/import-jobs/active", response_model=FileImportResponse)
+async def get_active_import_job(
+    current_user: dict = Depends(get_current_admin_user),
+    file_service: FileService = Depends(get_file_service)
+):
+    job = file_service.get_active_import_job_status()
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active import job"
+        )
+    return job
+
+
+@router.get("/import-jobs/{job_id}", response_model=FileImportResponse)
+async def get_import_job(
+    job_id: str,
+    current_user: dict = Depends(get_current_admin_user),
+    file_service: FileService = Depends(get_file_service)
+):
+    job = file_service.get_import_job_status(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Import job '{job_id}' not found"
+        )
+    return job
 
 
 @router.delete("", response_model=FileDeleteResponse)
