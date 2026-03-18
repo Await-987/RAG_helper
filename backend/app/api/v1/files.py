@@ -9,9 +9,8 @@ from app.schemas.file import (
     FileListResponse, FileImportRequest, FileImportResponse,
     FileDeleteRequest, FileDeleteResponse, FileUploadResponse
 )
-from app.services import FileService
+from app.services.file_service import FileService
 from app.dependencies import get_file_service, get_current_user, get_current_admin_user
-from tools.user_auth import UserRole
 
 router = APIRouter(prefix="/files", tags=["Files"])
 

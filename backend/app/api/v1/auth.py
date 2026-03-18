@@ -4,7 +4,7 @@ Authentication API routes.
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.schemas.auth import LoginRequest, Token, UserResponse
-from app.services import AuthService
+from app.services.auth_service import AuthService
 from app.dependencies import get_auth_service, get_current_user
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])

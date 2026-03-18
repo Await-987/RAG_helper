@@ -3,17 +3,11 @@ File management service.
 """
 import os
 import re
-import sys
 from datetime import datetime
 from urllib.parse import unquote
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 from loguru import logger
-
-# Add project root to path
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.config import settings
 from app.core.import_jobs import (
@@ -28,6 +22,7 @@ from app.schemas.file import (
     FileDeleteResponse, FileDeleteStatus
 )
 from storage_paths import (
+    PROJECT_ROOT,
     project_relative_path,
     tag_to_project_path,
     SHARED_STORAGE_ROOT_REL,

@@ -62,8 +62,6 @@
 - `tools/mineru_toolkit.py`
 - `tools/load_files.py`
 - `backend/app/core/file_catalog.py`
-- `tools/file_manager.py`
-- `scripts/batch_import.py`
 - `run/streamlit.py`
 
 具体改动：
@@ -126,8 +124,6 @@ python -m py_compile backend/app/services/file_service.py
 python -m py_compile tools/mineru_toolkit.py
 python -m py_compile tools/load_files.py
 python -m py_compile backend/app/core/file_catalog.py
-python -m py_compile tools/file_manager.py
-python -m py_compile scripts/batch_import.py
 docker compose config
 ```
 

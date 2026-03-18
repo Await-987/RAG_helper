@@ -2,18 +2,11 @@
 Authentication service.
 Wraps the existing UserAuth from tools.user_auth.
 """
-import sys
-from pathlib import Path
 from datetime import timedelta
 from typing import Optional, Tuple
 
-# Add project root to path
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 from tools.user_auth import UserAuth, UserRole
-from app.core.security import create_access_token, verify_password, get_password_hash
+from app.core.security import create_access_token
 from app.config import settings
 
 

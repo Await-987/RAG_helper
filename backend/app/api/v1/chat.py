@@ -13,7 +13,7 @@ from app.schemas.chat import (
     SessionListResponse,
     ChatMessage,
 )
-from app.services import ChatService
+from app.services.chat_service import ChatService
 from app.dependencies import get_chat_service, get_current_user
 
 router = APIRouter(prefix="/chat", tags=["Chat"])

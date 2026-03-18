@@ -1,7 +1,6 @@
 """
 Chat service with session management.
 """
-import sys
 import uuid
 import json
 import re
@@ -11,11 +10,6 @@ from datetime import datetime
 from typing import Dict, Optional, Generator, Any, Tuple, List
 from loguru import logger
 from pydantic import BaseModel, Field
-
-# Add project root to path
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from camel.agents.chat_agent import ChatAgent
 from camel.messages.base import BaseMessage
