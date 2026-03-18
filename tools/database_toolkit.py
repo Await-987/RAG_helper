@@ -1,7 +1,6 @@
-# -*- coding: utf-8 -*-
 import sys
-import threading
 import re
+from contextvars import ContextVar
 from loguru import logger
 from typing import List, Optional, Any, Dict
 
@@ -16,15 +15,18 @@ def _log_search(msg: str):
     sys.stdout.flush()
 
 
-_thread_local = threading.local()
+_turn_seen_evidence_keys: ContextVar[Optional[set[str]]] = ContextVar(
+    "turn_seen_evidence_keys",
+    default=None,
+)
 
 
-def _get_turn_seen_keys():
-    return getattr(_thread_local, 'seen_keys', None)
+def _get_turn_seen_keys() -> Optional[set[str]]:
+    return _turn_seen_evidence_keys.get()
 
 
-def _set_turn_seen_keys(s):
-    _thread_local.seen_keys = s
+def _set_turn_seen_keys(seen_keys: Optional[set[str]]) -> None:
+    _turn_seen_evidence_keys.set(seen_keys)
 
 
 class DatabaseToolkit(BaseToolkit):
@@ -87,11 +89,11 @@ class DatabaseToolkit(BaseToolkit):
 
     def begin_turn(self) -> None:
         """Start per-turn evidence dedup state."""
-        self._turn_seen_keys: set = set()
+        _set_turn_seen_keys(set())
 
     def end_turn(self) -> None:
         """Clear per-turn evidence dedup state."""
-        self._turn_seen_keys = set()
+        _set_turn_seen_keys(None)
 
     def __enter__(self):
         return self
@@ -360,15 +362,30 @@ class DatabaseToolkit(BaseToolkit):
         expanded["payload"] = expanded_payload
         return expanded
 
-    def _filter_seen_turn_evidence(self, hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        seen_keys = getattr(self, '_turn_seen_keys', None)
-        if seen_keys is None:
+    def _resolve_seen_key_scopes(self, seen_keys: Optional[set[str]]) -> List[set[str]]:
+        scopes: List[set[str]] = []
+        if seen_keys is not None:
+            scopes.append(seen_keys)
+
+        turn_seen_keys = _get_turn_seen_keys()
+        if turn_seen_keys is not None and turn_seen_keys is not seen_keys:
+            scopes.append(turn_seen_keys)
+
+        return scopes
+
+    def _filter_seen_evidence(
+        self,
+        hits: List[Dict[str, Any]],
+        seen_keys: Optional[set[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        active_scopes = self._resolve_seen_key_scopes(seen_keys)
+        if not active_scopes:
             return hits
 
         fresh_hits: List[Dict[str, Any]] = []
         for hit in hits:
             evidence_key = self._hit_evidence_key(hit)
-            if evidence_key in seen_keys:
+            if any(evidence_key in scope for scope in active_scopes):
                 continue
             fresh_hits.append(hit)
 
@@ -386,7 +403,9 @@ class DatabaseToolkit(BaseToolkit):
 
         if fresh_hits:
             for hit in fresh_hits:
-                seen_keys.add(self._hit_evidence_key(hit))
+                evidence_key = self._hit_evidence_key(hit)
+                for scope in active_scopes:
+                    scope.add(evidence_key)
             return fresh_hits
 
         return []
@@ -587,7 +606,7 @@ class DatabaseToolkit(BaseToolkit):
             max_total_chars=max_total_chars,
             max_chars_per_chunk=max_chars_per_chunk,
         )
-        hits = self._filter_seen_turn_evidence(hits)
+        hits = self._filter_seen_evidence(hits, seen_keys=seen_keys)
         if not hits:
             _log_search("♻️ 本轮后续检索未发现新增证据，已过滤重复结果")
             return "No new results from the vector database in this turn."
