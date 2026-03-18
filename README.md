@@ -1,4 +1,4 @@
-# 智能设计助手 RAG
+﻿# 智能设计助手 RAG
 
 面向电力系统与国家电网业务场景的 RAG 项目。当前主线是前后端分离架构：
 
@@ -1135,9 +1135,165 @@ docker compose up -d --build
 - `backend/README.md`
 - `http://localhost:8000/docs`
 
-## 14. 测试、检查与联调
+## 14. Scripts 工具脚本
 
-### 14.1 Python 语法检查
+`scripts/` 目录下收录了所有日常运维、测试和调试用的命令行工具。激活虚拟环境后在项目根目录执行。
+| 脚本 | 用途 | 典型触发场景 |
+|---|---|---|
+| chat_model_interactive.py | 裸模型对话 | 刚改完 .env 想确认模型 API 通了 |
+| chat_agent_interactive.py | 完整 RAG Agent 对话 | 想端到端验证检索+回答链路 |
+| import_file.py | 单文件入库 | 手动补录某个 PDF |
+| batch_import.py | 批量入库 | 初始化或迁移后批量补录 |
+| search_qdrant.py | 检索验证 | 入库后确认某个词能不能被检出 |
+| migrate_qdrant_local_to_server.py | 数据迁移 | 从 local 模式切换到 server 模式 |
+| download_table_summary_model.py | 下载模型 | 首次部署，Qwen 模型还没下载 |
+| eval_retrieval.py | 策略评测 | 调参时对比四种检索策略优劣 |
+| smoke_hybrid_retrieval.py | 检索接口 smoke | 改了 qdrant.py 后快速回归 |
+| smoke_mineru_ingest_retrieve.py | 入库链路 smoke | 改了 load_files.py 后验证 |
+| smoke_e2e_pdf_hybrid_rerank.py | E2E smoke | 改了 rerank 逻辑后跑真实 PDF |
+| smoke_mineru_embedding_qdrant.py | 三合一 smoke | 换了 embedding 模型后验证 |
+| smoke_pdf_ingest_query.py | 业务 query smoke | 回归四类核心业务 PDF 的问答 |
+| test_mineru_modes.py | MinerU 模式对比 | 评估 pipeline vs VLM 提取质量 |
+| inspect_agent_response.py | Agent 响应诊断 | 升级 CAMEL 版本后排查响应结构 |
+
+### 14.1 chat_model_interactive.py - 裸模型交互式对话
+
+直接使用 `stream_model()` 构建 ChatAgent，不加载任何 RAG 工具。用途：验证模型 API 连通性与流式输出。
+
+```bash
+python scripts/chat_model_interactive.py
+```
+
+### 14.2 chat_agent_interactive.py - RAG Agent 交互式对话
+
+使用 `chat_agent_factory()` 创建带完整 RAG 工具链的 ChatAgent。用途：端到端验证 Agent + DatabaseToolkit + 向量检索。
+
+```bash
+python scripts/chat_agent_interactive.py
+```
+
+### 14.3 import_file.py - 单文件入库
+
+将指定 PDF 解析并写入 Qdrant 知识库，支持指定 collection 和 DPI。
+
+```bash
+python scripts/import_file.py data/stored_files/example.pdf
+python scripts/import_file.py data/stored_files/example.pdf --collection database --dpi 200
+```
+
+### 14.4 search_qdrant.py - Qdrant 检索测试
+
+对指定 collection 执行向量检索并打印结果，验证入库是否成功。
+
+```bash
+python scripts/search_qdrant.py 供电营业规则
+python scripts/search_qdrant.py 供电营业规则 --collection database --top-k 5
+```
+
+### 14.5 batch_import.py - 批量入库
+
+扫描 `STORED_FILES_DIR` 中所有 PDF，跳过已入库文件，串行批量导入。推荐后台运行。
+
+```bash
+python scripts/batch_import.py
+nohup python scripts/batch_import.py > import.log 2>&1 &
+tail -f import.log
+```
+
+### 14.6 migrate_qdrant_local_to_server.py - 本地 Qdrant 迁移到 Server
+
+将本地 Qdrant 数据迁移到远端 Qdrant Server，直接复制 id + vector + payload，无需重新 embedding。
+
+```bash
+python scripts/migrate_qdrant_local_to_server.py \
+  --local-path data/storages \
+  --server-url http://127.0.0.1:6333 \
+  --collection database \
+  --recreate
+```
+
+### 14.7 download_table_summary_model.py - 下载表格摘要模型
+
+下载 `Qwen2.5-1.5B-Instruct`（约 3GB），支持 ModelScope、HuggingFace、HF 镜像三种来源。
+
+```bash
+python scripts/download_table_summary_model.py
+python scripts/download_table_summary_model.py --source modelscope
+python scripts/download_table_summary_model.py --test-only
+python scripts/download_table_summary_model.py --source hf-mirror
+```
+
+### 14.8 smoke_hybrid_retrieval.py - Hybrid 检索接口 Smoke Test
+
+用可控文本验证 `keyword_search`、`hybrid_search`、dynamic topk、rerank 接口正确性。写入临时 collection，测试后自动清理。
+
+```bash
+python scripts/smoke_hybrid_retrieval.py
+```
+
+### 14.9 smoke_mineru_ingest_retrieve.py - MinerU + 入库 + 检索 Smoke Test
+
+验证：MinerU 解析取证 -> 真实入库 -> 检索断言。
+
+```bash
+python scripts/smoke_mineru_ingest_retrieve.py data/stored_files/example.pdf
+```
+
+### 14.10 smoke_e2e_pdf_hybrid_rerank.py - E2E Hybrid + Rerank Smoke Test
+
+真实 PDF 入库 -> MinerU 提取锚点 -> hybrid 检索断言 -> rerank 验证（需配置 `reranker_path`）。
+
+```bash
+python scripts/smoke_e2e_pdf_hybrid_rerank.py data/stored_files/example.pdf
+```
+
+### 14.11 smoke_mineru_embedding_qdrant.py - MinerU + Embedding + Qdrant 三合一 Smoke Test
+
+依次验证：MinerU 解析 -> embedding 模型加载与向量检查 -> Qdrant 入库与检索。支持 `SMOKE_PDF` 环境变量。
+
+```bash
+python scripts/smoke_mineru_embedding_qdrant.py
+SMOKE_PDF=data/stored_files/your.pdf python scripts/smoke_mineru_embedding_qdrant.py
+```
+
+### 14.12 smoke_pdf_ingest_query.py - PDF 入库 + 业务 Query 检索 Smoke Test
+
+针对四类业务 PDF 设计精确原文短语断言，根据文件名自动匹配测试计划，使用临时 collection。
+
+```bash
+python scripts/smoke_pdf_ingest_query.py data/stored_files/电网运行规则.pdf
+```
+
+### 14.13 eval_retrieval.py - 检索策略评测
+
+对比 `vector_only` / `hybrid` / `hybrid_dynamic` / `hybrid_rerank_dynamic` 四种策略的命中率、MRR 和延迟。可在 `DEFAULT_CASES` 中添加业务真实 query。
+
+```bash
+python scripts/eval_retrieval.py
+EVAL_TOP_K=10 EVAL_ALPHA=0.75 python scripts/eval_retrieval.py
+```
+
+### 14.14 test_mineru_modes.py - MinerU 解析模式测试
+
+测试 pipeline / VLM 两种解析模式，分析元素类型分布，可对比两种模式差异。
+
+```bash
+python scripts/test_mineru_modes.py data/stored_files/example.pdf
+python scripts/test_mineru_modes.py data/stored_files/example.pdf --compare
+```
+
+### 14.15 inspect_agent_response.py - ChatAgent 响应结构诊断
+
+检查 CAMEL 框架流式模式下 response 对象结构，确认 `reasoning_content` 等字段传递情况。结果同时输出到终端和 `logs/` 目录。
+
+```bash
+python scripts/inspect_agent_response.py
+python scripts/inspect_agent_response.py --query "你好"
+```
+
+## 15. 测试、检查与联调
+
+### 15.1 Python 语法检查
 
 ```bash
 source .venv/bin/activate
@@ -1146,28 +1302,28 @@ python -m py_compile backend/app/services/chat_service.py
 python -m py_compile tools/qdrant.py
 ```
 
-### 14.2 Python 测试
+### 15.2 Python 测试
 
 ```bash
 source .venv/bin/activate
 python3 -m pytest
 ```
 
-### 14.3 前端构建检查
+### 15.3 前端构建检查
 
 ```bash
 cd frontend
 npm run build
 ```
 
-### 14.4 后端启动检查
+### 15.4 后端启动检查
 
 ```bash
 cd backend
 python3 run.py
 ```
 
-### 14.5 完整链路自检顺序
+### 15.5 完整链路自检顺序
 
 推荐按这个顺序检查：
 
@@ -1179,9 +1335,9 @@ python3 run.py
 6. 文件入库后 `database` collection 点数是否增加
 7. 聊天是否返回检索结果
 
-## 15. 常见问题
+## 16. 常见问题
 
-### 15.1 前端页面一直 loading
+### 16.1 前端页面一直 loading
 
 优先检查：
 
@@ -1190,7 +1346,7 @@ python3 run.py
 - 浏览器是否拿到旧 bundle
 - `/api/v1/auth/me` 是否异常
 
-### 15.2 Docker 构建时基础镜像或依赖拉取失败
+### 16.2 Docker 构建时基础镜像或依赖拉取失败
 
 优先检查：
 
@@ -1207,7 +1363,7 @@ python3 run.py
 DOCKER_BUILDKIT=0 docker compose build --no-cache
 ```
 
-### 15.3 Docker 运行中模型请求报 `Connection error`
+### 16.3 Docker 运行中模型请求报 `Connection error`
 
 如果后端日志里出现：
 
@@ -1233,7 +1389,7 @@ DOCKER_BUILDKIT=0 docker compose build --no-cache backend
 docker compose up -d --force-recreate backend
 ```
 
-### 15.4 文件存在但显示“未建库”
+### 16.4 文件存在但显示“未建库”
 
 优先检查：
 
@@ -1242,7 +1398,7 @@ docker compose up -d --force-recreate backend
 - 旧库是否还停留在 `data/storages`
 - 是否已经执行迁移脚本 `scripts/migrate_qdrant_local_to_server.py`
 
-### 15.5 Redis 容器启动失败，提示 `Can't handle RDB format version`
+### 16.5 Redis 容器启动失败，提示 `Can't handle RDB format version`
 
 这通常不是 Compose 配置错误，而是：
 
@@ -1260,7 +1416,7 @@ docker compose up -d --force-recreate backend
 
 如果 Redis 中只是会话索引缓存，并且你接受重建，也可以清空 `data/redis/` 后再启动。
 
-### 15.6 图片或表格不显示
+### 16.6 图片或表格不显示
 
 优先检查：
 
@@ -1269,7 +1425,7 @@ docker compose up -d --force-recreate backend
 - 回答中的图片路径是否被模型改写
 - 浏览器是否仍在使用旧前端代码
 
-### 15.7 聊天页底部出现大块黑色空白
+### 16.7 聊天页底部出现大块黑色空白
 
 这通常是前端旧 bundle 仍在运行，或者 `web` 容器还没重建。
 
@@ -1282,7 +1438,7 @@ docker compose up -d web
 
 然后浏览器强刷页面。
 
-### 15.8 表格检索内容被截断
+### 16.8 表格检索内容被截断
 
 当前项目已对表格/议程/清单类 query 自动放宽检索预算。如果仍然截断，优先检查：
 
@@ -1290,11 +1446,11 @@ docker compose up -d web
 - 表格切块是否正常
 - 原始文档在 MinerU 输出中是否已被截断
 
-### 15.9 Streamlit 和 FastAPI 是否能同时跑
+### 16.9 Streamlit 和 FastAPI 是否能同时跑
 
 可以，但不建议长期作为主运行方式。因为两套入口已经分化，后续维护更推荐以前后端分离架构为主。
 
-## 16. 仓库提交建议
+## 17. 仓库提交建议
 
 建议提交：
 
@@ -1324,7 +1480,7 @@ git diff --cached --stat
 git check-ignore -v .env models data/stored_files data/qdrant data/redis data/lex_index frontend/node_modules frontend/dist
 ```
 
-## 17. 当前仓库状态说明
+## 18. 当前仓库状态说明
 
 - 主线：前后端分离
 - Runtime 依赖：`backend + frontend + qdrant + redis`
