@@ -322,46 +322,6 @@ class DatabaseToolkit(BaseToolkit):
 
         return kept
 
-    def _expand_neighbor_context(self, hit: Dict[str, Any], neighbor_window: int = 1) -> Dict[str, Any]:
-        payload = hit.get("payload", {}) or {}
-        metadata = payload.get("metadata", {}) or {}
-
-        if payload.get("is_table") or metadata.get("is_table"):
-            return hit
-
-        file_tag = payload.get("Original_file")
-        chunk_index = metadata.get("chunk_index")
-        if not file_tag or not isinstance(chunk_index, int):
-            return hit
-
-        neighbors = self.db.get_adjacent_chunks(
-            file_tag=file_tag,
-            chunk_index=chunk_index,
-            window=neighbor_window,
-        )
-        if len(neighbors) <= 1:
-            return hit
-
-        ordered_contents: List[str] = []
-        for neighbor in neighbors:
-            neighbor_payload = neighbor.get("payload", {}) or {}
-            content = neighbor_payload.get("Content", "") or neighbor_payload.get("content", "")
-            if not isinstance(content, str):
-                content = str(content)
-            content = content.strip()
-            if content:
-                ordered_contents.append(content)
-
-        if not ordered_contents:
-            return hit
-
-        expanded = dict(hit)
-        expanded_payload = dict(payload)
-        expanded_payload["Content"] = "\n".join(ordered_contents)
-        expanded_payload["neighbor_expanded"] = True
-        expanded["payload"] = expanded_payload
-        return expanded
-
     def _resolve_seen_key_scopes(self, seen_keys: Optional[set[str]]) -> List[set[str]]:
         scopes: List[set[str]] = []
         if seen_keys is not None:
@@ -491,7 +451,6 @@ class DatabaseToolkit(BaseToolkit):
         max_total_chars: int = DEFAULT_MAX_TOTAL_CHARS,
         max_chars_per_chunk: int = DEFAULT_MAX_CHARS_PER_CHUNK,
         max_per_parent: int = 1,
-        neighbor_window: int = 1,
     ) -> str:
         """
         Hybrid retrieval within local database.
@@ -597,19 +556,16 @@ class DatabaseToolkit(BaseToolkit):
         hits = self._apply_query_type_bias(hits, query)
         hits = self._dedupe_by_parent(hits, max_per_parent=max_per_parent)
 
-        if neighbor_window > 0:
-            hits = [self._expand_neighbor_context(hit, neighbor_window=neighbor_window) for hit in hits]
-
+        hits = self._filter_seen_evidence(hits, seen_keys=seen_keys)
+        if not hits:
+            _log_search("♻️ 本轮后续检索未发现新增证据，已过滤重复结果")
+            return "No new results from the vector database in this turn."
         hits = self._select_full_chunk_hits(
             hits,
             full_chunk_limit=full_chunk_limit,
             max_total_chars=max_total_chars,
             max_chars_per_chunk=max_chars_per_chunk,
         )
-        hits = self._filter_seen_evidence(hits, seen_keys=seen_keys)
-        if not hits:
-            _log_search("♻️ 本轮后续检索未发现新增证据，已过滤重复结果")
-            return "No new results from the vector database in this turn."
 
         _log_search(f"✅ 搜索完成: 最终返回 {len(hits)} 条完整原文结果")
 
