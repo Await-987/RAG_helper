@@ -1328,7 +1328,7 @@ git check-ignore -v .env models data/stored_files data/qdrant data/redis data/le
 
 - 主线：前后端分离
 - Runtime 依赖：`backend + frontend + qdrant + redis`
-- Streamlit：保留但视为旧入口
+- Streamlit：旧入口已移除
 - 当前状态：Qdrant 服务化、Redis 会话索引化、共享存储根目录统一化均已完成
 - 仍未完成：`ChatAgent` 执行态彻底无状态化
 - 仓库适合提交为代码仓，不适合直接提交运行数据仓

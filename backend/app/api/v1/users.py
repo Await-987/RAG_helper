@@ -7,7 +7,7 @@ from app.schemas.user import (
     UserCreate, UserResponse, UserListResponse,
     ChangePasswordRequest, ResetPasswordRequest, ChangeRoleRequest
 )
-from app.services import UserService
+from app.services.user_service import UserService
 from app.dependencies import get_user_service, get_current_user, get_current_admin_user
 from tools.user_auth import UserRole
 

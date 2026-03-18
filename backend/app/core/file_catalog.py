@@ -4,7 +4,7 @@ Backend file catalog helpers extracted from the old Streamlit-era module.
 import os
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from loguru import logger
 
@@ -158,26 +158,6 @@ def clear_local_file_status_cache():
     _local_file_status_cache.clear()
 
 
-def get_files_without_chunks(storage_dir: Path, collection_name: str = "database") -> List[Dict]:
-    db_stats, _ = get_database_stats(collection_name)
-    local_files = [name for name in os.listdir(storage_dir) if os.path.isfile(storage_dir / name)]
-
-    files_without_chunks = []
-    for name in local_files:
-        target_path = storage_dir / name
-        file_tag = _get_file_tag(target_path)
-        if db_stats.get(file_tag, 0) == 0:
-            files_without_chunks.append(
-                {
-                    "name": name,
-                    "path": target_path,
-                    "size": target_path.stat().st_size if target_path.exists() else 0,
-                }
-            )
-
-    return files_without_chunks
-
-
 def import_file_to_database(
     file_path: str,
     collection_name: str = "database",
@@ -200,90 +180,6 @@ def import_file_to_database(
     except Exception as exc:
         logger.error(f"导入文件失败: {exc}")
         return False, f"导入失败: {exc}", 0
-
-
-def batch_import_files(
-    file_paths: List[str],
-    collection_name: str = "database",
-    dpi: int = 200,
-    debug: bool = False,
-    num_workers: Optional[int] = None,
-) -> Dict:
-    del num_workers
-
-    results = {
-        "success": [],
-        "failed": [],
-        "total": len(file_paths),
-        "success_count": 0,
-        "failed_count": 0,
-    }
-
-    if not file_paths:
-        return results
-
-    logger.info(f"开始串行导入 {len(file_paths)} 个文件（PDFium 不支持多线程）")
-    for index, file_path in enumerate(file_paths, 1):
-        try:
-            logger.info(f"[{index}/{len(file_paths)}] 正在导入: {os.path.basename(file_path)}")
-            success, message, _chunks = import_file_to_database(
-                file_path=file_path,
-                collection_name=collection_name,
-                dpi=dpi,
-                debug=debug,
-            )
-            if success:
-                results["success"].append(file_path)
-                results["success_count"] += 1
-                logger.info(f"✅ [{index}/{len(file_paths)}] 成功导入: {os.path.basename(file_path)}")
-            else:
-                results["failed"].append((file_path, message))
-                results["failed_count"] += 1
-                logger.error(f"❌ [{index}/{len(file_paths)}] 导入失败: {os.path.basename(file_path)} - {message}")
-        except Exception as exc:
-            results["failed"].append((file_path, str(exc)))
-            results["failed_count"] += 1
-            logger.error(f"❌ [{index}/{len(file_paths)}] 导入异常: {os.path.basename(file_path)} - {exc}")
-
-    logger.info(f"批量导入完成：成功 {results['success_count']} 个，失败 {results['failed_count']} 个")
-    return results
-
-
-def get_file_info_list(storage_dir: Path) -> Tuple[List[Dict], int]:
-    db_stats, total_chunks = get_database_stats()
-    local_files = [name for name in os.listdir(storage_dir) if os.path.isfile(storage_dir / name)]
-
-    file_info_list = []
-    tags_in_db = set(db_stats.keys())
-
-    for name in local_files:
-        target_path = storage_dir / name
-        file_tag = _get_file_tag(target_path)
-        chunk_count = db_stats.get(file_tag, 0)
-
-        file_info_list.append(
-            {
-                "type": "local",
-                "name": name,
-                "tag": file_tag,
-                "path": target_path,
-                "chunk_count": chunk_count,
-            }
-        )
-        tags_in_db.discard(file_tag)
-
-    for ghost_tag in tags_in_db:
-        file_info_list.append(
-            {
-                "type": "ghost",
-                "name": ghost_tag.split("/")[-1],
-                "tag": ghost_tag,
-                "path": None,
-                "chunk_count": db_stats.get(ghost_tag, 0),
-            }
-        )
-
-    return file_info_list, total_chunks
 
 
 def delete_file_by_tag(
@@ -368,48 +264,6 @@ def delete_local_file(file_path: Path, delete_images: bool = False) -> bool:
     except Exception as exc:
         logger.error(f"删除本地文件失败: {exc}")
         return False
-
-
-def delete_file_completely(
-    file_tag: str,
-    file_path: Path = None,
-    collection_name: str = "database",
-    delete_local: bool = True,
-    delete_images: bool = True,
-) -> Dict:
-    result = {
-        "success": False,
-        "db_deleted": False,
-        "local_deleted": False,
-        "images_deleted_count": 0,
-        "error": None,
-    }
-
-    try:
-        if delete_file_by_tag(file_tag, collection_name, delete_images=False):
-            result["db_deleted"] = True
-            logger.info(f"数据库切片已删除: {file_tag}")
-        else:
-            result["error"] = "数据库删除失败"
-            return result
-
-        if delete_images:
-            document_name = get_document_name_from_tag(file_tag)
-            deleted_count, _deleted_files = delete_images_by_document_prefix(document_name)
-            result["images_deleted_count"] = deleted_count
-            if deleted_count > 0:
-                logger.info(f"关联图片已删除: {deleted_count} 个")
-
-        if delete_local and file_path and delete_local_file(file_path, delete_images=False):
-            result["local_deleted"] = True
-            logger.info(f"本地文件已删除: {file_path}")
-
-        result["success"] = True
-        return result
-    except Exception as exc:
-        result["error"] = str(exc)
-        logger.error(f"完整删除文件失败: {exc}")
-        return result
 
 
 def get_local_files_with_db_status(
