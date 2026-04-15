@@ -697,6 +697,10 @@ class SessionManager:
 
     def _restore_session_memory(self, username: str, session_id: str, chat_agent: ChatAgent) -> None:
         """Restore persisted memory for an existing session ID if available."""
+        if not settings.AGENT_MEMORY_ENABLED:
+            logger.info("Agent memory disabled by configuration, skip memory restore")
+            return
+
         memory_path = self._get_memory_path(username, session_id)
         if not memory_path.exists():
             return
@@ -706,6 +710,8 @@ class SessionManager:
             return
 
         try:
+            if hasattr(chat_agent, "clear_memory"):
+                chat_agent.clear_memory()
             chat_agent.load_memory_from_path(str(memory_path))
             logger.info(f"Restored agent memory from {memory_path}")
         except Exception as exc:
@@ -713,6 +719,9 @@ class SessionManager:
 
     def save_session_memory(self, username: str, session_id: str) -> None:
         """Persist a session memory snapshot to disk."""
+        if not settings.AGENT_MEMORY_ENABLED:
+            return
+
         chat_agent = self._sessions.get(session_id)
         if chat_agent is None:
             return
@@ -945,8 +954,7 @@ class ChatService:
             from app.core.model_runtime import backend_model
 
             self._intent_router = ChatAgent(
-                system_message=BaseMessage.make_assistant_message(
-                    role_name="Intent Router",
+                system_message=BaseMessage.make_system_message(
                     content=(
                         "你是一个对话路由器。你的任务是判断当前用户问题在本轮回答前是否必须强制检索知识库。"
                         "如果问题需要基于文档、标准、流程、定义、参数、条件、范围、职责、原因、区别、是否、多少等事实性内容回答，"
@@ -974,8 +982,7 @@ class ChatService:
             from app.core.model_runtime import backend_model
 
             self._search_rewriter = ChatAgent(
-                system_message=BaseMessage.make_assistant_message(
-                    role_name="Search Rewriter",
+                system_message=BaseMessage.make_system_message(
                     content=(
                         "你是一个知识库检索改写器。你的任务是结合最近对话上下文，"
                         "把当前用户追问改写成适合检索的 query 和 intent_description。"
@@ -1456,7 +1463,7 @@ class ChatService:
             self._log_context_budget(chat_agent, message)
 
             # Send session ID first
-            yield self._format_sse("session", {"session_id": session_id})
+            yield self._format_message_sse("session", {"session_id": session_id})
 
             # Stream response
             full_reasoning = ""
@@ -1479,8 +1486,8 @@ class ChatService:
                             msg = chunk_response.msgs[0]
 
                             # Handle reasoning content
-                            if hasattr(msg, 'reasoning_content') and msg.reasoning_content:
-                                reasoning_text = msg.reasoning_content
+                            reasoning_text = self._extract_reasoning_text(msg)
+                            if reasoning_text:
 
                                 # Filter tool-related content
                                 if not self._is_tool_content(reasoning_text):
@@ -1489,7 +1496,7 @@ class ChatService:
                                     else:
                                         full_reasoning += reasoning_text
 
-                                    yield self._format_sse("reasoning", {
+                                    yield self._format_message_sse("reasoning", {
                                         "content": reasoning_text,
                                     })
 
@@ -1501,7 +1508,7 @@ class ChatService:
                                 else:
                                     full_response += content_text
 
-                                yield self._format_sse("content", {
+                                yield self._format_message_sse("content", {
                                     "content": content_text,
                                 })
                     break
@@ -1541,6 +1548,12 @@ class ChatService:
                 else:
                     full_response = "抱歉，我无法生成回复。"
 
+            if not full_reasoning:
+                if hasattr(response, 'msg'):
+                    full_reasoning = self._extract_reasoning_text(response.msg)
+                elif hasattr(response, 'msgs') and len(response.msgs) > 0:
+                    full_reasoning = self._extract_reasoning_text(response.msgs[-1])
+
             # Send done event
             response_blocks = [block.model_dump() for block in _build_content_blocks(full_response)]
             reasoning_blocks = [block.model_dump() for block in _build_content_blocks(full_reasoning)] if full_reasoning else None
@@ -1555,27 +1568,29 @@ class ChatService:
             )
             self.session_manager.save_session_memory(username, session_id)
 
-            yield self._format_sse("done", {
+            yield self._format_message_sse("done", {
                 "reasoning": full_reasoning,
                 "reasoning_blocks": reasoning_blocks,
                 "content": full_response,
                 "blocks": response_blocks,
-                "session_id": session_id
+                "session_id": session_id,
+                "sources": self._extract_sources(full_response),
             })
 
         except Exception as e:
             if self._is_token_limit_error(e):
                 logger.warning(f"Top-level token limit fallback for session {session_id if 'session_id' in locals() else 'unknown'}")
-                yield self._format_sse("done", {
+                yield self._format_message_sse("done", {
                     "reasoning": "",
                     "reasoning_blocks": None,
                     "content": self._build_new_chat_required_message(),
                     "blocks": [block.model_dump() for block in _build_content_blocks(self._build_new_chat_required_message())],
                     "session_id": session_id if 'session_id' in locals() else None,
+                    "sources": [],
                 })
                 return
             logger.exception(f"Chat streaming error: {e}")
-            yield self._format_sse("error", {"message": str(e)})
+            yield self._format_error_sse(str(e))
         finally:
             with suppress(Exception):
                 from app.dependencies import get_database_toolkit
@@ -1588,9 +1603,82 @@ class ChatService:
         tool_markers = ["Tool Execution:", "Tool Result:", "Function Call:"]
         return any(marker in text for marker in tool_markers)
 
-    def _format_sse(self, event_type: str, data: dict) -> str:
-        """Format data as SSE event"""
-        return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    def _extract_reasoning_text(self, msg: Any) -> str:
+        """
+        Extract reasoning text from model message objects.
+
+        vLLM / OpenAI-compatible providers have used different field names
+        across versions, including `reasoning_content` and `reasoning`.
+        Keep both for backward compatibility.
+        """
+        if msg is None:
+            return ""
+
+        for field_name in ("reasoning", "reasoning_content"):
+            value = None
+            if isinstance(msg, dict):
+                value = msg.get(field_name)
+            elif hasattr(msg, field_name):
+                value = getattr(msg, field_name)
+
+            reasoning_text = self._stringify_reasoning_value(value)
+            if reasoning_text:
+                return reasoning_text
+
+        return ""
+
+    @staticmethod
+    def _stringify_reasoning_value(value: Any) -> str:
+        """Normalize reasoning payloads from multiple provider formats."""
+        if value is None:
+            return ""
+
+        if isinstance(value, str):
+            return value
+
+        if isinstance(value, dict):
+            for key in ("text", "content", "reasoning"):
+                nested = value.get(key)
+                if isinstance(nested, str) and nested:
+                    return nested
+            return ""
+
+        if isinstance(value, list):
+            parts: List[str] = []
+            for item in value:
+                normalized = ChatService._stringify_reasoning_value(item)
+                if normalized:
+                    parts.append(normalized)
+            return "".join(parts)
+
+        return str(value)
+
+    @staticmethod
+    def _format_message_sse(msg_type: str, data: dict) -> str:
+        """Format data as a unified SSE message event.
+
+        All business events use ``event: message`` and are distinguished by
+        the ``type`` field inside the JSON payload.  This makes the frontend
+        parser simpler – it only needs to listen for one SSE event name.
+        """
+        payload = {"type": msg_type, **data}
+        return f"event: message\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    @staticmethod
+    def _format_error_sse(message: str) -> str:
+        """Format an error as an SSE error event."""
+        return f"event: error\ndata: {json.dumps({'type': 'error', 'message': message}, ensure_ascii=False)}\n\n"
+
+    @staticmethod
+    def _extract_sources(content: str) -> List[str]:
+        """Extract source file names from the response content."""
+        sources: set = set()
+        for match in re.finditer(r'来源[：:]\s*(.+?)(?:\n|$)', content):
+            for src in match.group(1).split('、'):
+                src = src.strip().strip('《》').strip('"').strip("'")
+                if src:
+                    sources.add(src)
+        return list(sources)
 
     def clear_session(self, username: str, session_id: str) -> bool:
         """Clear a chat session"""

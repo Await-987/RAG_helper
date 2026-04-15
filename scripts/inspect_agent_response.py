@@ -3,11 +3,11 @@
 ChatAgent 响应结构诊断工具
 
 检查 CAMEL 框架在流式模式下的 response 对象结构，
-包括 msgs、content、reasoning_content 等字段的传递情况。
+包括 msgs、content、reasoning / reasoning_content 等字段的传递情况。
 
 用途：
   - 排查流式响应结构变化（CAMEL 版本升级后）
-  - 确认 reasoning_content 是否被正确传递
+  - 确认 reasoning / reasoning_content 是否被正确传递
   - 诊断 agent.step() 返回值的实际类型和属性
 
 结果同时输出到终端和 logs/ 目录下的日志文件。

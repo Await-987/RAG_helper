@@ -113,8 +113,7 @@ def create_chat_agent(database_toolkit: Any = None, memory: Any = None) -> ChatA
             database_toolkit.warmup_lexical_index()
 
     return ChatAgent(
-        system_message=BaseMessage.make_assistant_message(
-            role_name="Chat Agent",
+        system_message=BaseMessage.make_system_message(
             content=load_main_agent_system_prompt(),
         ),
         model=stream_model(

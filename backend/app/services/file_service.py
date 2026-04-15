@@ -245,6 +245,7 @@ class FileService:
 
     def _run_import_job(self, job_id: str) -> None:
         from app.core.file_catalog import clear_local_file_status_cache, import_file_to_database
+        logger.info(f"[Import] 开始导入任务 {job_id}，共 {len(list((dict((get_import_job(job_id) or {}).get('request') or {})).get('file_tags') or []))} 个文件")
 
         job = get_import_job(job_id)
         if job is None:
@@ -317,6 +318,7 @@ class FileService:
                 dpi=dpi,
                 debug=debug,
             )
+            logger.info(f"[Import] {Path(full_path).name} → {'成功' if success else '失败'}: {message}")
             item["status"] = "success" if success else "failed"
             item["message"] = message
             item["chunks"] = chunks
@@ -339,6 +341,7 @@ class FileService:
         job["finished_at"] = self._now_iso()
         save_import_job(job)
         clear_local_file_status_cache()
+        logger.info(f"[Import] 任务 {job_id} 完成：成功 {job.get('success_count', 0)}，失败 {job.get('failed_count', 0)}")
 
     def delete_files(
         self,

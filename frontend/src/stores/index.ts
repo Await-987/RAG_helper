@@ -1,2 +1,2 @@
 export { useAuthStore } from './authStore';
-export { useChatStore, createMessage } from './chatStore';
+export { useChatStore } from './chatStore';

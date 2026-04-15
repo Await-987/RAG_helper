@@ -10,6 +10,7 @@ export interface ChatMessage {
   blocks?: ChatContentBlock[];
   reasoning?: string;
   reasoningBlocks?: ChatContentBlock[];
+  sources?: string[];
   timestamp: Date;
 }
 
@@ -55,6 +56,7 @@ export interface SSEEvent {
   reasoning_blocks?: ChatContentBlock[];
   session_id?: string;
   message?: string;
+  sources?: string[];
 }
 
 export interface ChatState {

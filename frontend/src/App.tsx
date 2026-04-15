@@ -1,43 +1,30 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
-import { useAuthStore } from '@/stores';
+import { useAuthStore } from '@/stores/authStore';
+import { AppLayout } from '@/components/layout/AppLayout';
+import { ChatPage } from '@/pages/ChatPage';
+import { LoginPage } from '@/pages/LoginPage';
+import { FileManagerPage } from '@/pages/FileManagerPage';
+import { UserManagementPage } from '@/pages/UserManagementPage';
+import { ChangePasswordPage } from '@/pages/ChangePasswordPage';
 
-// Layout
-import { MainLayout } from '@/components/Layout/MainLayout';
-
-// Pages
-import { LoginPage } from '@/pages/Login';
-import { ChatPage } from '@/pages/Chat';
-import { FileManagerPage } from '@/pages/FileManager';
-import { UserManagementPage } from '@/pages/UserManagement';
-import { ChangePasswordPage } from '@/pages/ChangePassword';
-
-// Protected Route
-function ProtectedRoute({
-  children,
-  adminOnly = false,
-}: {
-  children: React.ReactNode;
-  adminOnly?: boolean;
-}) {
-  const { isAuthenticated, user, isLoading } = useAuthStore();
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { isAuthenticated, isLoading } = useAuthStore();
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
 
-    const checkAuth = async () => {
-      const timeoutMs = 8000;
-
+    const doCheck = async () => {
       try {
         await Promise.race([
           useAuthStore.getState().checkAuth(),
-          new Promise((_, reject) => {
-            window.setTimeout(() => reject(new Error('auth check timeout')), timeoutMs);
-          }),
+          new Promise((_, reject) =>
+            window.setTimeout(() => reject(new Error('timeout')), 8000)
+          ),
         ]);
-      } catch (error) {
-        console.error('Auth check failed:', error);
+      } catch {
+        // ignore
       } finally {
         if (!cancelled) {
           setChecking(false);
@@ -46,11 +33,8 @@ function ProtectedRoute({
       }
     };
 
-    checkAuth();
-
-    return () => {
-      cancelled = true;
-    };
+    doCheck();
+    return () => { cancelled = true; };
   }, []);
 
   if (checking || isLoading) {
@@ -61,63 +45,30 @@ function ProtectedRoute({
     );
   }
 
-  if (!isAuthenticated) {
-    return <Navigate to="/login" replace />;
-  }
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
 
-  if (adminOnly && user?.role !== 'admin') {
-    return <Navigate to="/" replace />;
-  }
-
-  return <MainLayout>{children}</MainLayout>;
+  return <>{children}</>;
 }
 
-function App() {
+export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Public routes */}
         <Route path="/login" element={<LoginPage />} />
-
-        {/* Protected routes */}
         <Route
-          path="/"
           element={
             <ProtectedRoute>
-              <ChatPage />
+              <AppLayout />
             </ProtectedRoute>
           }
-        />
-        <Route
-          path="/files"
-          element={
-            <ProtectedRoute>
-              <FileManagerPage />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/users"
-          element={
-            <ProtectedRoute adminOnly>
-              <UserManagementPage />
-            </ProtectedRoute>
-          }
-        />
-        <Route
-          path="/change-password"
-          element={
-            <ProtectedRoute>
-              <ChangePasswordPage />
-            </ProtectedRoute>
-          }
-        />
-
-        {/* Fallback */}
+        >
+          <Route path="/" element={<ChatPage />} />
+          <Route path="/files" element={<FileManagerPage />} />
+          <Route path="/users" element={<UserManagementPage />} />
+          <Route path="/change-password" element={<ChangePasswordPage />} />
+        </Route>
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
   );
 }
-
-export default App;

@@ -31,7 +31,8 @@ api.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       clearAccessToken();
-      window.location.href = '/login';
+      // Don't do full page reload - let React Router handle navigation
+      // ProtectedRoute will detect !isAuthenticated and redirect to /login
     }
     return Promise.reject(error);
   }

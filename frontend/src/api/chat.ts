@@ -18,12 +18,12 @@ function parseSSEEvent(rawEvent: string): SSEEvent | null {
     return null;
   }
 
-  let eventType: SSEEvent['type'] | null = null;
+  let sseEventName: string | null = null;
   const dataLines: string[] = [];
 
   for (const line of lines) {
     if (line.startsWith('event:')) {
-      eventType = line.slice(6).trim() as SSEEvent['type'];
+      sseEventName = line.slice(6).trim();
       continue;
     }
 
@@ -32,13 +32,27 @@ function parseSSEEvent(rawEvent: string): SSEEvent | null {
     }
   }
 
-  if (!eventType || dataLines.length === 0) {
+  if (!sseEventName || dataLines.length === 0) {
     return null;
   }
 
   try {
     const data = JSON.parse(dataLines.join('\n'));
-    return { type: eventType, ...data } as SSEEvent;
+
+    // New format: all business events use "event: message" with internal "type" field
+    if (sseEventName === 'message') {
+      const eventType = data.type as SSEEvent['type'];
+      if (!eventType) return null;
+      return { type: eventType, ...data } as SSEEvent;
+    }
+
+    // Error events use "event: error"
+    if (sseEventName === 'error') {
+      return { type: 'error', message: data.message || data.error || 'Unknown error' } as SSEEvent;
+    }
+
+    // Fallback for legacy format (shouldn't happen with new backend)
+    return { type: sseEventName as SSEEvent['type'], ...data } as SSEEvent;
   } catch (error) {
     console.error('Failed to parse SSE event payload:', error, rawEvent);
     return null;

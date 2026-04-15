@@ -1,0 +1,78 @@
+{
+  "deployment_identity": {
+    "project_id": "rag",
+    "description": "RAG 智能设计助手应用",
+    "url": "http://<server-ip>:10000/"
+  },
+  "docker_runtime_config": {
+    "orchestrator": "docker compose",
+    "compose_file": "docker-compose.yml + docker-compose.deploy.yml",
+    "startup_command": "docker compose -f docker-compose.yml -f docker-compose.deploy.yml up -d",
+    "shutdown_command": "docker compose -f docker-compose.yml -f docker-compose.deploy.yml down",
+    "restart_policy": "unless-stopped",
+    "application": {
+      "service_name": "web",
+      "container_name": "deploy_bundle-web-1",
+      "image": "rag-web:latest",
+      "network": {
+        "port_mapping": "10000:80"
+      }
+    },
+    "supporting_services": [
+      {
+        "service_name": "backend",
+        "container_name": "deploy_bundle-backend-1",
+        "image": "rag-backend:patched"
+      },
+      {
+        "service_name": "qdrant",
+        "container_name": "deploy_bundle-qdrant-1",
+        "image": "qdrant/qdrant:latest"
+      },
+      {
+        "service_name": "redis",
+        "container_name": "deploy_bundle-redis-1",
+        "image": "redis:8-alpine"
+      }
+    ],
+    "storage": {
+      "mount_volumes": [
+        {
+          "host_path": "/home/ubuntu/apps/rag_deploy/deploy_bundle/data",
+          "container_path": "/app/data",
+          "mode": "rw"
+        },
+        {
+          "host_path": "/home/ubuntu/apps/rag_deploy/deploy_bundle/models",
+          "container_path": "/app/models",
+          "mode": "rw"
+        },
+        {
+          "host_path": "/home/ubuntu/apps/rag_deploy/deploy_bundle/.user",
+          "container_path": "/app/.user",
+          "mode": "rw"
+        },
+        {
+          "host_path": "/home/ubuntu/apps/rag_deploy/deploy_bundle/data/qdrant",
+          "container_path": "/qdrant/storage",
+          "mode": "rw"
+        },
+        {
+          "host_path": "/home/ubuntu/apps/rag_deploy/deploy_bundle//data/redis",
+          "container_path": "/data",
+          "mode": "rw"
+        }
+      ]
+    }
+  },
+  "environment_variables": {
+    "APP_PORT": "10000",
+    "QDRANT_MODE": "server",
+    "QDRANT_URL": "http://qdrant:6333",
+    "REDIS_URL": "redis://redis:6379/0",
+    "NVIDIA_VISIBLE_DEVICES": "all"
+  },
+  "app_metadata": {
+    "entry_point": "web"
+  }
+}
