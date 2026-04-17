@@ -1,25 +1,31 @@
 import { create } from 'zustand';
-import type { ChatContentBlock, ChatMessage, ChatSessionSummary, SSEEvent } from '@/types';
+import type { ChatContentBlock, ChatMessage, ChatSessionSummary } from '@/types';
 import { chatApi } from '@/api/chat';
 import { getAccessToken } from '@/utils/authToken';
 
-interface ChatStore {
-  // Messages
+// Each session has its own independent state
+interface SessionState {
   messages: ChatMessage[];
-  currentSessionId: string | null;
   isLoading: boolean;
   streamingContent: string;
   streamingReasoning: string;
   streamingSources: string[];
   abortController: AbortController | null;
+}
 
-  // Sessions
+interface ChatStore {
+  // All session states keyed by session_id (empty string key for new chat)
+  sessionStates: Record<string, SessionState>;
+  // Currently displayed session (empty string means new chat)
+  currentSessionId: string;
+
+  // Sessions list
   sessions: ChatSessionSummary[];
   sessionsLoading: boolean;
 
   // Actions
   sendMessage: (message: string) => Promise<void>;
-  stopStreaming: () => void;
+  stopStreaming: (sessionId?: string) => void;
   loadSession: (sessionId: string) => Promise<void>;
   loadSessions: () => Promise<void>;
   deleteSession: (sessionId: string) => Promise<void>;
@@ -28,6 +34,8 @@ interface ChatStore {
 }
 
 const generateId = () => Math.random().toString(36).substring(2, 9);
+
+const NULL_SESSION_KEY = ''; // Empty string represents new/null session
 
 function createMessage(
   role: 'user' | 'assistant',
@@ -49,96 +57,135 @@ function createMessage(
   };
 }
 
+function toSessionKey(sessionId: string | null): string {
+  return sessionId ?? NULL_SESSION_KEY;
+}
+
+function getEmptySessionState(): SessionState {
+  return {
+    messages: [],
+    isLoading: false,
+    streamingContent: '',
+    streamingReasoning: '',
+    streamingSources: [],
+    abortController: null,
+  };
+}
+
+function ensureSessionState(states: Record<string, SessionState>, key: string): Record<string, SessionState> {
+  if (states[key]) return states;
+  return { ...states, [key]: getEmptySessionState() };
+}
+
 export const useChatStore = create<ChatStore>((set, get) => ({
-  messages: [],
-  currentSessionId: null,
-  isLoading: false,
-  streamingContent: '',
-  streamingReasoning: '',
-  streamingSources: [],
-  abortController: null,
+  sessionStates: { [NULL_SESSION_KEY]: getEmptySessionState() },
+  currentSessionId: NULL_SESSION_KEY,
   sessions: [],
   sessionsLoading: false,
 
   sendMessage: async (message: string) => {
     const token = getAccessToken() || undefined;
-    const state = get();
+    const currentKey = get().currentSessionId;
 
-    // Add user message
+    // Ensure session state exists
+    set((s) => ({
+      sessionStates: ensureSessionState(s.sessionStates, currentKey),
+    }));
+
+    // Add user message to THIS session only
     const userMsg = createMessage('user', message);
     set((s) => ({
-      messages: [...s.messages, userMsg],
-      isLoading: true,
-      streamingContent: '',
-      streamingReasoning: '',
-      streamingSources: [],
+      sessionStates: {
+        ...s.sessionStates,
+        [currentKey]: {
+          ...s.sessionStates[currentKey],
+          messages: [...s.sessionStates[currentKey].messages, userMsg],
+          isLoading: true,
+          streamingContent: '',
+          streamingReasoning: '',
+          streamingSources: [],
+        },
+      },
     }));
 
     const controller = new AbortController();
-    set({ abortController: controller });
+    set((s) => ({
+      sessionStates: {
+        ...s.sessionStates,
+        [currentKey]: {
+          ...s.sessionStates[currentKey],
+          abortController: controller,
+        },
+      },
+    }));
+
+    // The actual sessionId for API (empty string means null/new)
+    const apiSessionId = currentKey === NULL_SESSION_KEY ? undefined : currentKey;
+    let streamingKey = currentKey;
 
     try {
       let fullContent = '';
-      let fullReasoning = '';
+      let fullReasoning: string | undefined;
       let finalSources: string[] = [];
       let finalBlocks: ChatContentBlock[] | undefined;
       let finalReasoningBlocks: ChatContentBlock[] | undefined;
 
-      // Throttle streaming updates to avoid React infinite re-render
-      let lastUpdateTime = 0;
-      const UPDATE_INTERVAL = 100; // ms
-      let pendingContent = '';
-      let pendingReasoning = '';
-
-      const flushUpdates = (force = false) => {
-        const now = Date.now();
-        if (!force && now - lastUpdateTime < UPDATE_INTERVAL) return;
-        lastUpdateTime = now;
-        const updates: Partial<ChatStore> = {};
-        if (pendingReasoning) { updates.streamingReasoning = pendingReasoning; pendingReasoning = ''; }
-        if (pendingContent) { updates.streamingContent = pendingContent; pendingContent = ''; }
-        if (Object.keys(updates).length > 0) set(updates);
+      // Helper to update the session we're streaming for
+      const updateStreamingSession = (updates: Partial<SessionState>) => {
+        set((s) => ({
+          sessionStates: {
+            ...s.sessionStates,
+            [streamingKey]: {
+              ...s.sessionStates[streamingKey],
+              ...updates,
+            },
+          },
+        }));
       };
 
-      for await (const event of chatApi.streamChat(
-        message,
-        state.currentSessionId || undefined,
-        token
-      )) {
+      for await (const event of chatApi.streamChat(message, apiSessionId, token)) {
         if (controller.signal.aborted) break;
 
         switch (event.type) {
           case 'session':
-            set({ currentSessionId: event.session_id || null });
+            // Server returned a new session ID (for new chats)
+            if (event.session_id && streamingKey === NULL_SESSION_KEY) {
+              const newKey = event.session_id;
+              // Move state from empty key to new session key
+              set((s) => {
+                const oldState = s.sessionStates[NULL_SESSION_KEY];
+                const states = { ...s.sessionStates };
+                states[newKey] = oldState;
+                states[NULL_SESSION_KEY] = getEmptySessionState();
+                return {
+                  currentSessionId: newKey,
+                  sessionStates: states,
+                };
+              });
+              streamingKey = newKey;
+            }
             break;
 
           case 'reasoning':
             if (event.content) {
-              fullReasoning += event.content;
-              pendingReasoning = fullReasoning;
-              flushUpdates();
+              fullReasoning = (fullReasoning ?? '') + event.content;
+              updateStreamingSession({ streamingReasoning: fullReasoning });
             }
             break;
 
           case 'content':
             if (event.content) {
               fullContent += event.content;
-              pendingContent = fullContent;
-              flushUpdates();
+              updateStreamingSession({ streamingContent: fullContent });
             }
             break;
 
           case 'done':
-            // Force flush any pending streaming content before finalizing
-            flushUpdates(true);
-            fullContent = event.content || fullContent;
-            fullReasoning = event.reasoning || fullReasoning;
+            fullContent = event.content ?? fullContent;
+            fullReasoning = event.reasoning ?? fullReasoning;
             finalBlocks = event.blocks;
             finalReasoningBlocks = event.reasoning_blocks;
-            finalSources = event.sources || [];
-            if (event.session_id) {
-              set({ currentSessionId: event.session_id });
-            }
+            finalSources = event.sources ?? [];
             break;
 
           case 'error':
@@ -151,35 +198,62 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       const assistantMsg = createMessage(
         'assistant',
         fullContent,
-        fullReasoning || undefined,
+        fullReasoning,
         finalBlocks,
         finalReasoningBlocks,
         finalSources,
       );
 
       set((s) => ({
-        messages: [...s.messages, assistantMsg],
-        isLoading: false,
-        streamingContent: '',
-        streamingReasoning: '',
-        streamingSources: finalSources,
-        abortController: null,
+        sessionStates: {
+          ...s.sessionStates,
+          [streamingKey]: {
+            ...s.sessionStates[streamingKey],
+            messages: [...s.sessionStates[streamingKey].messages, assistantMsg],
+            isLoading: false,
+            streamingContent: '',
+            streamingReasoning: '',
+            streamingSources: finalSources,
+            abortController: null,
+          },
+        },
       }));
 
-      // Refresh sessions list after sending (outside the streaming loop)
+      // Refresh sessions list
       get().loadSessions();
     } catch (error) {
       console.error('Chat error:', error);
-      set({ isLoading: false, abortController: null });
-      throw error;
+      set((s) => ({
+        sessionStates: {
+          ...s.sessionStates,
+          [streamingKey]: {
+            ...s.sessionStates[streamingKey],
+            isLoading: false,
+            abortController: null,
+          },
+        },
+      }));
     }
   },
 
-  stopStreaming: () => {
-    const { abortController } = get();
-    if (abortController) {
-      abortController.abort();
-      set({ isLoading: false, abortController: null });
+  stopStreaming: (sessionId?: string) => {
+    const targetKey = sessionId ?? get().currentSessionId;
+    const sessionState = get().sessionStates[targetKey];
+
+    if (sessionState?.abortController) {
+      sessionState.abortController.abort();
+      set((s) => ({
+        sessionStates: {
+          ...s.sessionStates,
+          [targetKey]: {
+            ...s.sessionStates[targetKey],
+            isLoading: false,
+            abortController: null,
+            streamingContent: '',
+            streamingReasoning: '',
+          },
+        },
+      }));
     }
   },
 
@@ -190,18 +264,26 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         id: `${sessionId}-${i}`,
         role: msg.role,
         content: msg.content,
-        blocks: msg.blocks || undefined,
-        reasoning: msg.reasoning || undefined,
-        reasoningBlocks: msg.reasoning_blocks || undefined,
+        blocks: msg.blocks ?? undefined,
+        reasoning: msg.reasoning ?? undefined,
+        reasoningBlocks: msg.reasoning_blocks ?? undefined,
         timestamp: new Date(msg.timestamp),
       }));
-      set({
+
+      set((s) => ({
         currentSessionId: sessionId,
-        messages: loadedMessages,
-        streamingContent: '',
-        streamingReasoning: '',
-        streamingSources: [],
-      });
+        sessionStates: {
+          ...s.sessionStates,
+          [sessionId]: {
+            messages: loadedMessages,
+            isLoading: false,
+            streamingContent: '',
+            streamingReasoning: '',
+            streamingSources: [],
+            abortController: null,
+          },
+        },
+      }));
     } catch (error) {
       console.error('Failed to load session:', error);
     }
@@ -221,30 +303,57 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   deleteSession: async (sessionId: string) => {
     try {
       await chatApi.clearSession(sessionId);
-      set((s) => ({
-        sessions: s.sessions.filter((sess) => sess.session_id !== sessionId),
-        currentSessionId: s.currentSessionId === sessionId ? null : s.currentSessionId,
-        messages: s.currentSessionId === sessionId ? [] : s.messages,
-      }));
+      set((s) => {
+        const newStates = { ...s.sessionStates };
+        delete newStates[sessionId];
+        return {
+          sessions: s.sessions.filter((sess) => sess.session_id !== sessionId),
+          sessionStates: newStates,
+          currentSessionId: s.currentSessionId === sessionId ? NULL_SESSION_KEY : s.currentSessionId,
+        };
+      });
     } catch (error) {
       console.error('Failed to delete session:', error);
     }
   },
 
   setCurrentSessionId: (id) => {
-    set({ currentSessionId: id });
-    if (id === null) {
-      set({ messages: [], streamingContent: '', streamingReasoning: '', streamingSources: [] });
-    }
+    const key = toSessionKey(id);
+    set((s) => ({
+      currentSessionId: key,
+      sessionStates: ensureSessionState(s.sessionStates, key),
+    }));
   },
 
   createNewChat: () => {
-    set({
-      currentSessionId: null,
-      messages: [],
-      streamingContent: '',
-      streamingReasoning: '',
-      streamingSources: [],
-    });
+    set((s) => ({
+      currentSessionId: NULL_SESSION_KEY,
+      sessionStates: ensureSessionState(s.sessionStates, NULL_SESSION_KEY),
+    }));
   },
 }));
+
+// Convenience hooks
+export function useCurrentMessages() {
+  return useChatStore((s) => s.sessionStates[s.currentSessionId]?.messages ?? []);
+}
+
+export function useCurrentIsLoading() {
+  return useChatStore((s) => s.sessionStates[s.currentSessionId]?.isLoading ?? false);
+}
+
+export function useCurrentStreamingContent() {
+  return useChatStore((s) => s.sessionStates[s.currentSessionId]?.streamingContent ?? '');
+}
+
+export function useCurrentStreamingReasoning() {
+  return useChatStore((s) => s.sessionStates[s.currentSessionId]?.streamingReasoning ?? '');
+}
+
+export function useCurrentStreamingSources() {
+  return useChatStore((s) => s.sessionStates[s.currentSessionId]?.streamingSources ?? []);
+}
+
+export function useCurrentSessionId() {
+  return useChatStore((s) => s.currentSessionId === NULL_SESSION_KEY ? null : s.currentSessionId);
+}

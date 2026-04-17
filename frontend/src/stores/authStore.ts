@@ -12,7 +12,6 @@ interface AuthStore extends AuthState {
 
 export const useAuthStore = create<AuthStore>((set) => ({
   user: null,
-  token: null,
   isAuthenticated: false,
   isLoading: false,
 
@@ -24,13 +23,12 @@ export const useAuthStore = create<AuthStore>((set) => ({
       const user = await authApi.getCurrentUser();
       set({
         user,
-        token: response.access_token,
         isAuthenticated: true,
         isLoading: false,
       });
     } catch (error) {
       clearAccessToken();
-      set({ isLoading: false, user: null, token: null, isAuthenticated: false });
+      set({ isLoading: false, user: null, isAuthenticated: false });
       throw error;
     }
   },
@@ -39,7 +37,6 @@ export const useAuthStore = create<AuthStore>((set) => ({
     clearAccessToken();
     set({
       user: null,
-      token: null,
       isAuthenticated: false,
     });
   },
@@ -49,7 +46,7 @@ export const useAuthStore = create<AuthStore>((set) => ({
     set({ isLoading: true });
 
     if (!token) {
-      set({ isAuthenticated: false, user: null, token: null, isLoading: false });
+      set({ isAuthenticated: false, user: null, isLoading: false });
       return;
     }
 
@@ -57,7 +54,6 @@ export const useAuthStore = create<AuthStore>((set) => ({
       const user = await authApi.getCurrentUser();
       set({
         user,
-        token,
         isAuthenticated: true,
         isLoading: false,
       });
@@ -65,7 +61,6 @@ export const useAuthStore = create<AuthStore>((set) => ({
       clearAccessToken();
       set({
         user: null,
-        token: null,
         isAuthenticated: false,
         isLoading: false,
       });

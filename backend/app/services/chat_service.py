@@ -596,10 +596,10 @@ class SessionManager:
 
         try:
             from app.dependencies import get_embedding_model
+            from app.core.agent_memory import SafeLongtermAgentMemory
             from app.core.model_runtime import build_token_counter
             from camel.memories import (
                 ChatHistoryBlock,
-                LongtermAgentMemory,
                 ScoreBasedContextCreator,
                 VectorDBBlock,
             )
@@ -614,7 +614,7 @@ class SessionManager:
             )
             embedding_model = get_embedding_model()
 
-            memory = LongtermAgentMemory(
+            memory = SafeLongtermAgentMemory(
                 context_creator=context_creator,
                 chat_history_block=ChatHistoryBlock(
                     keep_rate=settings.AGENT_MEMORY_KEEP_RATE,
@@ -695,6 +695,58 @@ class SessionManager:
         agent_memory = self._build_agent_memory()
         return create_chat_agent(memory=agent_memory)
 
+    @staticmethod
+    def _get_raw_chat_history_record_dicts(chat_agent: ChatAgent) -> Optional[List[dict]]:
+        """Get raw chat-history records without vector-retrieval augmentation."""
+        memory = getattr(chat_agent, "memory", None)
+        if memory is None:
+            return None
+
+        for attr_name in ("chat_history_block", "_chat_history_block"):
+            history_block = getattr(memory, attr_name, None)
+            storage = getattr(history_block, "storage", None)
+            if storage is None or not hasattr(storage, "load"):
+                continue
+            try:
+                records = storage.load()
+            except Exception:
+                continue
+            if isinstance(records, list):
+                return records
+
+        return None
+
+    @staticmethod
+    def _normalize_persisted_memory_records(records: List[dict]) -> List[dict]:
+        """Drop persisted system messages and deduplicate records by UUID."""
+        normalized: List[dict] = []
+        seen_uuids: set[str] = set()
+
+        for record_dict in records:
+            if not isinstance(record_dict, dict):
+                continue
+
+            record_uuid = str(record_dict.get("uuid") or "").strip()
+            if record_uuid and record_uuid in seen_uuids:
+                continue
+            if record_uuid:
+                seen_uuids.add(record_uuid)
+
+            msg = record_dict.get("message", {}) or {}
+            role_type = str(msg.get("role_type") or "").strip().lower()
+            role_at_backend = str(record_dict.get("role_at_backend") or "").strip().lower()
+
+            if role_type == "system" or role_at_backend == "system":
+                continue
+
+            required_keys = ("message", "role_at_backend", "agent_id")
+            if not all(key in record_dict for key in required_keys):
+                continue
+
+            normalized.append(record_dict)
+
+        return normalized
+
     def _restore_session_memory(self, username: str, session_id: str, chat_agent: ChatAgent) -> None:
         """Restore persisted memory for an existing session ID if available."""
         if not settings.AGENT_MEMORY_ENABLED:
@@ -705,20 +757,56 @@ class SessionManager:
         if not memory_path.exists():
             return
 
-        if not hasattr(chat_agent, "load_memory_from_path"):
-            logger.warning("ChatAgent does not support load_memory_from_path, skip memory restore")
+        if not hasattr(chat_agent, "memory") or not hasattr(chat_agent.memory, "write_records"):
+            logger.warning("ChatAgent does not support memory write_records, skip memory restore")
             return
 
         try:
+            import json
+            from camel.memories.records import MemoryRecord
+
+            with open(memory_path, "r", encoding="utf-8") as f:
+                raw = f.read().strip()
+
+            records = []
+            for line in raw.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(json.loads(line))
+                except Exception:
+                    continue
+
+            if not records:
+                return
+
             if hasattr(chat_agent, "clear_memory"):
                 chat_agent.clear_memory()
-            chat_agent.load_memory_from_path(str(memory_path))
-            logger.info(f"Restored agent memory from {memory_path}")
+            elif hasattr(chat_agent.memory, "clear"):
+                chat_agent.memory.clear()
+
+            records = self._normalize_persisted_memory_records(records)
+            records_to_load = []
+            for record_dict in records:
+                try:
+                    record = MemoryRecord.from_dict(record_dict)
+                    records_to_load.append(record)
+                except Exception as e:
+                    logger.warning(f"Error converting record: {e}")
+                    continue
+
+            if records_to_load:
+                chat_agent.memory.write_records(records_to_load)
+                logger.info(f"Restored {len(records_to_load)} memory records from {memory_path}")
+            else:
+                logger.info(f"No user/assistant records to restore from {memory_path}")
+
         except Exception as exc:
             logger.warning(f"Failed to restore agent memory from {memory_path}: {exc}")
 
     def save_session_memory(self, username: str, session_id: str) -> None:
-        """Persist a session memory snapshot to disk."""
+        """Persist raw chat-history memory, excluding system messages."""
         if not settings.AGENT_MEMORY_ENABLED:
             return
 
@@ -726,14 +814,29 @@ class SessionManager:
         if chat_agent is None:
             return
 
-        if not hasattr(chat_agent, "save_memory"):
-            logger.warning("ChatAgent does not support save_memory, skip persistence")
-            return
-
         memory_path = self._get_memory_path(username, session_id)
         try:
-            chat_agent.save_memory(str(memory_path))
-            logger.debug(f"Saved agent memory to {memory_path}")
+            import json
+
+            raw_history_records = self._get_raw_chat_history_record_dicts(chat_agent)
+            if raw_history_records is not None:
+                records_to_save = self._normalize_persisted_memory_records(raw_history_records)
+            else:
+                from camel.types import OpenAIBackendRole
+
+                context_records = chat_agent.memory.retrieve()
+                records_to_save = []
+                for cr in context_records:
+                    if cr.memory_record.role_at_backend == OpenAIBackendRole.SYSTEM:
+                        continue
+                    records_to_save.append(cr.memory_record.to_dict())
+                records_to_save = self._normalize_persisted_memory_records(records_to_save)
+
+            with open(memory_path, 'w', encoding='utf-8') as f:
+                for record in records_to_save:
+                    f.write(json.dumps(record, ensure_ascii=False) + '\n')
+
+            logger.debug(f"Saved {len(records_to_save)} raw memory records (excluding system) to {memory_path}")
         except Exception as exc:
             logger.warning(f"Failed to save agent memory to {memory_path}: {exc}")
 
@@ -1691,3 +1794,86 @@ class ChatService:
     def get_session_detail(self, username: str, session_id: str) -> Optional[dict]:
         """Get persisted session detail for the current user."""
         return self.session_manager.get_session_detail(username, session_id)
+
+    def query_rag_sync(self, query: str) -> Dict[str, Any]:
+        """
+        Synchronous RAG query for external API access.
+
+        This method performs a one-shot RAG query without session management,
+        suitable for API-based integration.
+
+        Args:
+            query: User question
+
+        Returns:
+            Dict with 'answer' and 'sources' keys
+        """
+        from app.core.agent_factory import create_chat_agent
+        from app.dependencies import get_database_toolkit
+        from camel.messages.base import BaseMessage
+
+        logger.info(f"[RAG API] Processing query: {query[:100]}...")
+
+        # Get database toolkit for retrieval tools
+        database_toolkit = get_database_toolkit()
+        database_toolkit.begin_turn()
+
+        try:
+            # Create a fresh agent for this query
+            agent = create_chat_agent(database_toolkit=database_toolkit)
+
+            # Perform the query
+            full_response = ""
+            full_reasoning = ""
+
+            # Use agent.step() which internally calls tools
+            response = agent.step(query)
+
+            # Collect response chunks
+            for chunk_response in response:
+                if hasattr(chunk_response, 'msgs') and len(chunk_response.msgs) > 0:
+                    msg = chunk_response.msgs[0]
+
+                    # Collect reasoning
+                    reasoning_text = self._extract_reasoning_text(msg)
+                    if reasoning_text and not self._is_tool_content(reasoning_text):
+                        if reasoning_text.startswith(full_reasoning):
+                            full_reasoning = reasoning_text
+                        else:
+                            full_reasoning += reasoning_text
+
+                    # Collect content
+                    content_text = msg.content
+                    if content_text and not self._is_tool_content(content_text):
+                        if content_text.startswith(full_response):
+                            full_response = content_text
+                        else:
+                            full_response += content_text
+
+            # Get final content if needed
+            if not full_response:
+                if hasattr(response, 'msg') and hasattr(response.msg, 'content'):
+                    full_response = response.msg.content
+                elif hasattr(response, 'msgs') and len(response.msgs) > 0:
+                    full_response = response.msgs[-1].content
+                else:
+                    full_response = "抱歉，无法生成回复。"
+
+            # Extract sources from response
+            sources = self._extract_sources(full_response)
+
+            logger.info(f"[RAG API] Query completed. Sources: {sources}")
+
+            return {
+                "answer": full_response,
+                "sources": sources,
+            }
+        except Exception as e:
+            logger.exception(f"[RAG API] Query failed: {e}")
+            return {
+                "answer": f"查询失败: {str(e)}",
+                "sources": [],
+            }
+        finally:
+            with suppress(Exception):
+                database_toolkit.end_turn()

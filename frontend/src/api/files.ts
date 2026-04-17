@@ -9,7 +9,8 @@ import type {
   FileDeleteResponse,
 } from '@/types';
 
-const API_BASE_URL = '/api/v1';
+// Use the same base URL as axios client
+const getApiBaseUrl = () => '/api/v1';
 
 export const fileApi = {
   getFiles: async (
@@ -82,7 +83,7 @@ export const fileApi = {
   },
 
   getContentUrl: (fileTag: string): string =>
-    `${API_BASE_URL}/files/content/${fileTag
+    `${getApiBaseUrl()}/files/content/${fileTag
       .split('/')
       .map((segment) => encodeURIComponent(segment))
       .join('/')}`,

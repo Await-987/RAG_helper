@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronRight, Brain } from 'lucide-react';
+import { ChevronDown, Lightbulb } from 'lucide-react';
 
 interface ReasoningBlockProps {
   content: string;
@@ -12,20 +12,22 @@ export function ReasoningBlock({ content, defaultOpen = false }: ReasoningBlockP
   if (!content) return null;
 
   return (
-    <div className="mb-3">
+    <div className="mb-4">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-200 transition-colors"
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-sm text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50 transition-colors"
       >
-        <Brain size={14} />
+        <Lightbulb size={14} />
         <span>思考过程</span>
-        <ChevronRight
+        <ChevronDown
           size={14}
-          className={`transition-transform duration-200 ${open ? 'rotate-90' : ''}`}
+          className={`transition-transform ${open ? 'rotate-180' : ''}`}
         />
       </button>
       {open && (
-        <div className="mt-2 pl-3 border-l-2 border-primary-500/50 text-sm text-gray-400 whitespace-pre-wrap max-h-[60vh] overflow-y-auto custom-scrollbar">
+        <div className="mt-2 p-3 rounded-xl text-sm text-zinc-400 leading-relaxed max-h-[50vh] overflow-y-auto custom-scrollbar"
+          style={{ background: 'rgba(255,255,255,0.03)' }}
+        >
           {content}
         </div>
       )}

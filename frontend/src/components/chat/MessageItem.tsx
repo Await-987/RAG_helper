@@ -1,5 +1,5 @@
-import { useState, useCallback } from 'react';
-import { Copy, Check, RotateCcw, Bot, User } from 'lucide-react';
+import { useState, useCallback, memo } from 'react';
+import { Copy, Check, RotateCcw, User, Sparkles } from 'lucide-react';
 import type { ChatMessage } from '@/types';
 import { MessageContent } from './MessageContent';
 import { ReasoningBlock } from './ReasoningBlock';
@@ -7,11 +7,10 @@ import { SourceCitation } from './SourceCitation';
 
 interface MessageItemProps {
   message: ChatMessage;
-  isStreaming?: boolean;
-  onRegenerate?: (message: string) => void;
+  isLast?: boolean;
 }
 
-export function MessageItem({ message, isStreaming, onRegenerate }: MessageItemProps) {
+export const MessageItem = memo(function MessageItem({ message, isLast }: MessageItemProps) {
   const [copied, setCopied] = useState(false);
   const isUser = message.role === 'user';
 
@@ -21,66 +20,58 @@ export function MessageItem({ message, isStreaming, onRegenerate }: MessageItemP
     setTimeout(() => setCopied(false), 2000);
   }, [message.content]);
 
-  const handleRegenerate = useCallback(() => {
-    if (onRegenerate) onRegenerate(message.content);
-  }, [onRegenerate, message.content]);
-
   return (
-    <div className={`group px-4 py-4 ${isUser ? '' : 'bg-[#1a1a1a]'}`}>
+    <div className={`px-4 py-6 ${isUser ? '' : ''}`}>
       <div className="max-w-3xl mx-auto flex gap-4">
         {/* Avatar */}
-        <div className="shrink-0 mt-0.5">
+        <div className="shrink-0 select-none">
           {isUser ? (
-            <div className="w-8 h-8 rounded-full bg-gray-600 flex items-center justify-center">
-              <User size={16} className="text-gray-300" />
+            <div className="w-8 h-8 rounded-lg bg-zinc-600 flex items-center justify-center">
+              <User size={16} className="text-zinc-300" />
             </div>
           ) : (
-            <div className="w-8 h-8 rounded-full bg-primary-600 flex items-center justify-center">
-              <Bot size={16} className="text-white" />
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-600 flex items-center justify-center">
+              <Sparkles size={16} className="text-white" />
             </div>
           )}
         </div>
 
         {/* Content */}
         <div className="flex-1 min-w-0">
-          <div className="text-xs text-gray-500 mb-1">
-            {isUser ? '你' : 'AI 助手'}
+          {/* Name label */}
+          <div className="text-sm font-medium mb-1.5 text-zinc-300">
+            {isUser ? '你' : '知识库助手'}
           </div>
 
           {/* Reasoning */}
           {message.reasoning && !isUser && (
-            <ReasoningBlock content={message.reasoning} defaultOpen={isStreaming} />
+            <ReasoningBlock content={message.reasoning} />
           )}
 
           {/* Main content */}
-          <MessageContent content={message.content} blocks={message.blocks} />
+          <div className="markdown-content">
+            <MessageContent content={message.content} blocks={message.blocks} />
+          </div>
 
           {/* Sources */}
-          {message.sources && !isUser && (
+          {message.sources && !isUser && message.sources.length > 0 && (
             <SourceCitation sources={message.sources} />
           )}
 
-          {/* Actions */}
-          <div className="flex items-center gap-1 mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
-            <button
-              onClick={handleCopy}
-              className="p-1.5 rounded-md text-gray-500 hover:text-gray-300 hover:bg-dark-hover transition-colors"
-              title="复制"
-            >
-              {copied ? <Check size={14} /> : <Copy size={14} />}
-            </button>
-            {!isUser && onRegenerate && (
+          {/* Actions - appear on hover */}
+          {!isUser && (
+            <div className="flex items-center gap-2 mt-3 opacity-0 hover:opacity-100 transition-opacity">
               <button
-                onClick={handleRegenerate}
-                className="p-1.5 rounded-md text-gray-500 hover:text-gray-300 hover:bg-dark-hover transition-colors"
-                title="重新生成"
+                onClick={handleCopy}
+                className="text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1.5 text-xs"
               >
-                <RotateCcw size={14} />
+                {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
+                {copied ? '已复制' : '复制'}
               </button>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
-}
+});

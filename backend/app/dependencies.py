@@ -12,10 +12,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.core.security import verify_token
+from app.config import settings
 from app.core.model_runtime import (
     cleanup_table_summary_model,
     get_embedding_model,
@@ -191,3 +192,41 @@ async def get_optional_user(
     user = auth_service.get_user_by_username(username)
 
     return user
+
+
+# ==================== RAG API Key Authentication ====================
+
+async def verify_rag_api_key(request: Request) -> dict:
+    """
+    Verify API Key for RAG external API access.
+
+    Supports two header formats:
+    - X-API-Key: <key>
+    - Authorization: ApiKey <key>
+    """
+    api_key = request.headers.get("X-API-Key")
+
+    if not api_key:
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("ApiKey "):
+            api_key = auth_header[7:]  # Remove "ApiKey " prefix
+
+    if not api_key:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API Key required. Use X-API-Key header or Authorization: ApiKey <key>",
+        )
+
+    if not settings.RAG_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="RAG API not configured. Set RAG_API_KEY environment variable.",
+        )
+
+    if api_key != settings.RAG_API_KEY:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API Key",
+        )
+
+    return {"authenticated": True, "method": "api_key"}

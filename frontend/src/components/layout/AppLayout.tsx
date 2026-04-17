@@ -9,16 +9,14 @@ const ADMIN_ONLY_PATHS = ['/users'];
 export function AppLayout() {
   const { sidebarOpen, toggleSidebar, setSidebarOpen } = useUIStore();
   const user = useAuthStore((s) => s.user);
-  const logout = useAuthStore((s) => s.logout);
   const location = useLocation();
 
-  // Block non-admin users from admin-only routes
   if (ADMIN_ONLY_PATHS.includes(location.pathname) && user?.role !== 'admin') {
     return <Navigate to="/" replace />;
   }
 
   return (
-    <div className="flex h-screen bg-dark-bg text-gray-100 overflow-hidden">
+    <div className="flex h-screen bg-dark-bg text-zinc-100 overflow-hidden">
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div
@@ -31,31 +29,27 @@ export function AppLayout() {
       <div
         className={`
           fixed lg:relative z-40 h-full
-          transition-transform duration-300 ease-in-out
-          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0 lg:w-0 lg:overflow-hidden'}
+          transition-transform duration-200
+          ${sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0 lg:hidden'}
         `}
       >
         <Sidebar />
       </div>
 
-      {/* Main content */}
-      <div className="flex-1 flex flex-col min-w-0">
-        {/* Top bar */}
-        <header className="h-12 flex items-center justify-between px-4 border-b border-dark-border bg-dark-bg shrink-0">
+      {/* Main */}
+      <div className="flex-1 flex flex-col min-w-0 relative">
+        {/* Mobile header */}
+        <header className="h-12 flex items-center px-4 lg:hidden shrink-0 bg-dark-secondary">
           <button
             onClick={toggleSidebar}
-            className="p-1.5 rounded-lg hover:bg-dark-hover text-gray-400 hover:text-gray-100 transition-colors"
+            className="p-2 rounded-lg text-zinc-400 hover:text-zinc-200 transition-colors"
           >
             {sidebarOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
-          <div className="flex items-center gap-3">
-            {user && (
-              <span className="text-sm text-gray-400">{user.username}</span>
-            )}
-          </div>
+          <span className="ml-3 text-sm font-medium">知识库助手</span>
         </header>
 
-        {/* Page content */}
+        {/* Content */}
         <main className="flex-1 overflow-hidden">
           <Outlet />
         </main>

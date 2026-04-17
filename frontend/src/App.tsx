@@ -7,6 +7,7 @@ import { LoginPage } from '@/pages/LoginPage';
 import { FileManagerPage } from '@/pages/FileManagerPage';
 import { UserManagementPage } from '@/pages/UserManagementPage';
 import { ChangePasswordPage } from '@/pages/ChangePasswordPage';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuthStore();
@@ -52,23 +53,25 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route
-          element={
-            <ProtectedRoute>
-              <AppLayout />
-            </ProtectedRoute>
-          }
-        >
-          <Route path="/" element={<ChatPage />} />
-          <Route path="/files" element={<FileManagerPage />} />
-          <Route path="/users" element={<UserManagementPage />} />
-          <Route path="/change-password" element={<ChangePasswordPage />} />
-        </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route
+            element={
+              <ProtectedRoute>
+                <AppLayout />
+              </ProtectedRoute>
+            }
+          >
+            <Route path="/" element={<ChatPage />} />
+            <Route path="/files" element={<FileManagerPage />} />
+            <Route path="/users" element={<UserManagementPage />} />
+            <Route path="/change-password" element={<ChangePasswordPage />} />
+          </Route>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </ErrorBoundary>
   );
 }

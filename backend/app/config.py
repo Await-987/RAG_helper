@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
     AUTH_INSTANCE_ID: str = _env_str("AUTH_INSTANCE_ID", uuid.uuid4().hex)
 
+    # RAG API Key for external service access
+    RAG_API_KEY: str = _env_str("RAG_API_KEY", "")
+
     # CORS settings
     CORS_ORIGINS: list[str] = ["*"]
     CORS_ALLOW_CREDENTIALS: bool = True

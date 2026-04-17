@@ -1,7 +1,8 @@
-import { useState, useCallback, FormEvent } from 'react';
+import { useState, useCallback, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import { Zap, Loader2 } from 'lucide-react';
+import type { AxiosError } from 'axios';
 
 export function LoginPage() {
   const navigate = useNavigate();
@@ -19,8 +20,9 @@ export function LoginPage() {
       try {
         await login({ username, password });
         navigate('/');
-      } catch (err: any) {
-        setError(err?.response?.data?.detail || err?.message || '登录失败');
+      } catch (err: unknown) {
+        const axiosErr = err as AxiosError<{ detail: string }>;
+        setError(axiosErr?.response?.data?.detail || (err as Error).message || '登录失败');
       } finally {
         setLoading(false);
       }
@@ -31,58 +33,48 @@ export function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center bg-dark-bg p-4">
       <div className="w-full max-w-sm">
-        {/* Logo */}
+        {/* Brand */}
         <div className="text-center mb-8">
-          <div className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-primary-600/20 flex items-center justify-center">
-            <Zap size={28} className="text-primary-400" />
+          <div className="inline-flex items-center justify-center w-12 h-12 mb-4 rounded-xl bg-gradient-to-br from-primary-500 to-primary-600">
+            <Zap size={24} className="text-white" />
           </div>
-          <h1 className="text-2xl font-bold text-white">智能知识库助手</h1>
-          <p className="text-gray-500 mt-1 text-sm">登录以继续</p>
+          <h1 className="text-xl font-semibold text-white mb-1">知识库助手</h1>
+          <p className="text-zinc-500 text-sm">登录以继续</p>
         </div>
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
           {error && (
-            <div className="p-3 rounded-lg bg-red-600/10 border border-red-600/20 text-red-400 text-sm">
+            <div className="px-4 py-3 rounded-xl text-sm text-red-400 bg-red-500/10">
               {error}
             </div>
           )}
 
-          <div>
-            <input
-              type="text"
-              placeholder="用户名"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-              className="input-field"
-              disabled={loading}
-            />
-          </div>
-          <div>
-            <input
-              type="password"
-              placeholder="密码"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-              className="input-field"
-              disabled={loading}
-            />
-          </div>
+          <input
+            type="text"
+            placeholder="用户名"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            required
+            className="input-field"
+            disabled={loading}
+          />
+          <input
+            type="password"
+            placeholder="密码"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            className="input-field"
+            disabled={loading}
+          />
           <button
             type="submit"
             disabled={loading}
             className="btn btn-primary w-full flex items-center justify-center gap-2"
           >
-            {loading ? (
-              <>
-                <Loader2 size={16} className="animate-spin" />
-                登录中...
-              </>
-            ) : (
-              '登录'
-            )}
+            {loading ? <Loader2 size={16} className="animate-spin" /> : null}
+            {loading ? '登录中...' : '登录'}
           </button>
         </form>
       </div>
