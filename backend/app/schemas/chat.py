@@ -38,6 +38,23 @@ class ChatAsset(BaseModel):
     content_url: Optional[str] = Field(None, description="Resolved asset content URL")
 
 
+class RetrievalChunkRef(BaseModel):
+    """A single retrieved chunk preview shown in the traceability panel."""
+
+    file_tag: str = Field(default="", description="Stable file tag of the source document")
+    label: str = Field(default="", description="Display label (usually file name)")
+    score: float = Field(default=0.0, description="Final confidence / rerank score")
+    preview: str = Field(default="", description="Truncated preview of the chunk content")
+
+
+class RetrievalTrace(BaseModel):
+    """Single search_database invocation trace for the traceability panel."""
+
+    query: str = Field(default="", description="Compact retrieval query (keywords)")
+    intent_description: str = Field(default="", description="Full natural-language intent used for reranking")
+    chunks: List[RetrievalChunkRef] = Field(default_factory=list, description="Retrieved chunks for this call")
+
+
 class ChatMessage(BaseModel):
     """Chat message schema"""
     role: str = Field(..., description="Message role: 'user' or 'assistant'")
@@ -47,6 +64,10 @@ class ChatMessage(BaseModel):
     reasoning_blocks: Optional[List[ChatContentBlock]] = Field(None, description="Structured reasoning blocks")
     sources: Optional[List[ChatSource]] = Field(None, description="Structured source references")
     assets: Optional[List[ChatAsset]] = Field(None, description="Structured knowledge-base assets")
+    retrieval_traces: Optional[List[RetrievalTrace]] = Field(
+        None,
+        description="Per-turn retrieval traces (query + intent_description + chunk previews).",
+    )
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
