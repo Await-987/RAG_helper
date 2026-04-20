@@ -47,8 +47,10 @@ async def query_rag(
         seen_files = set()
 
         for src in result.get("sources", []):
-            abs_path = _resolve_source_path(src)
-            file_name = _extract_filename(src)
+            file_tag, file_name = _normalize_source_ref(src)
+            if not file_tag:
+                continue
+            abs_path = _resolve_source_path(file_tag)
 
             sources.append(SourceFile(
                 file_name=file_name,
@@ -252,3 +254,20 @@ def _resolve_source_path(source: str) -> str:
 def _extract_filename(source: str) -> str:
     """Extract filename from a path."""
     return Path(source).name
+
+
+def _normalize_source_ref(source: object) -> tuple[str, str]:
+    """Normalize a source ref that may be a plain string or a structured dict."""
+    if isinstance(source, dict):
+        file_tag = str(source.get("file_tag") or "").strip()
+        label = str(source.get("label") or "").strip()
+        if file_tag:
+            return file_tag, label or _extract_filename(file_tag)
+        if label:
+            return label, label
+        return "", ""
+
+    source_text = str(source or "").strip()
+    if not source_text:
+        return "", ""
+    return source_text, _extract_filename(source_text)

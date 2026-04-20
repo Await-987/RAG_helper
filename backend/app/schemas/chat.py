@@ -20,6 +20,24 @@ class ChatContentBlock(BaseModel):
     content: str = Field(..., description="Block content")
 
 
+class ChatSource(BaseModel):
+    """Structured source reference for chat answers."""
+
+    label: str = Field(..., description="Display label for the cited source")
+    file_tag: str = Field(..., description="Stable file tag used by the file content endpoint")
+    content_url: Optional[str] = Field(None, description="Resolved file content URL")
+
+
+class ChatAsset(BaseModel):
+    """Structured asset reference such as table images."""
+
+    asset_tag: str = Field(..., description="Stable asset tag used by the file content endpoint")
+    label: str = Field(..., description="Display label for the asset")
+    kind: str = Field(default="table_image", description="Asset kind")
+    source_file_tag: Optional[str] = Field(None, description="Owning source document tag")
+    content_url: Optional[str] = Field(None, description="Resolved asset content URL")
+
+
 class ChatMessage(BaseModel):
     """Chat message schema"""
     role: str = Field(..., description="Message role: 'user' or 'assistant'")
@@ -27,6 +45,8 @@ class ChatMessage(BaseModel):
     blocks: Optional[List[ChatContentBlock]] = Field(None, description="Structured content blocks")
     reasoning: Optional[str] = Field(None, description="Reasoning content (for assistant messages)")
     reasoning_blocks: Optional[List[ChatContentBlock]] = Field(None, description="Structured reasoning blocks")
+    sources: Optional[List[ChatSource]] = Field(None, description="Structured source references")
+    assets: Optional[List[ChatAsset]] = Field(None, description="Structured knowledge-base assets")
     timestamp: datetime = Field(default_factory=datetime.now)
 
 
@@ -37,6 +57,8 @@ class ChatStreamChunk(BaseModel):
     blocks: Optional[List[ChatContentBlock]] = None
     reasoning: Optional[str] = None
     reasoning_blocks: Optional[List[ChatContentBlock]] = None
+    sources: Optional[List[ChatSource]] = None
+    assets: Optional[List[ChatAsset]] = None
     done: bool = False
     error: Optional[str] = None
 

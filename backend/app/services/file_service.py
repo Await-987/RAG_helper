@@ -3,6 +3,7 @@ File management service.
 """
 import os
 import re
+import unicodedata
 from datetime import datetime
 from urllib.parse import unquote
 from pathlib import Path
@@ -470,6 +471,12 @@ class FileService:
         if path is not None and path.exists():
             return path
 
+        # Chat answers may cite a source as "GB/T 6451-2015 第 6.1.3条" or
+        # "GB/T 6451-2015 表1". Fall back to filename matching by standard id.
+        fallback_path = self._resolve_source_reference(normalized_tag)
+        if fallback_path is not None:
+            return fallback_path
+
         # MinerU image references in answers may omit the original PDF prefix.
         # Fall back to suffix matching so `mineru_output/foo_1.jpg` can still
         # resolve to `mineru_output/0【...】foo_1.jpg`.
@@ -512,6 +519,93 @@ class FileService:
                     if suffix_matches:
                         return suffix_matches[0]
         return None
+
+    @staticmethod
+    def _strip_source_locator(source: str) -> str:
+        """Remove trailing section/table locators from LLM-generated source text."""
+        value = unquote((source or "").strip())
+        value = value.strip(" \t\r\n\"'`“”‘’")
+        value = re.sub(r"\s+", " ", value)
+
+        locator_patterns = (
+            r"[\s（(【\[]第\s*\d+(?:\.\d+){0,6}\s*(?:条|款|项|节|章)?(?:[）)】\]]+)?",
+            r"[\s（(【\[]表\s*[A-Za-z]?\d+(?:[-—]\d+)?(?:[）)】\]]+)?",
+            r"[\s（(【\[]图\s*[A-Za-z]?\d+(?:[-—]\d+)?(?:[）)】\]]+)?",
+            r"[\s（(【\[]附录\s*[A-Za-z0-9一二三四五六七八九十]+(?:[）)】\]]+)?",
+        )
+        for pattern in locator_patterns:
+            match = re.search(pattern, value, flags=re.IGNORECASE)
+            if match:
+                value = value[:match.start()].strip(" \t\r\n,，;；:：-—（）()【】[]")
+
+        return value
+
+    @staticmethod
+    def _normalize_source_key(value: str) -> str:
+        normalized = unicodedata.normalize("NFKC", value or "").lower()
+        return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", normalized)
+
+    def _resolve_source_reference(self, raw_reference: str) -> Optional[Path]:
+        """Map a source label to the closest stored file name."""
+        reference = unquote((raw_reference or "").strip())
+        if not reference or not self.storage_dir.exists():
+            return None
+
+        candidate_texts: List[str] = []
+        for candidate in (
+            reference,
+            Path(reference).name,
+            self._strip_source_locator(reference),
+            self._strip_source_locator(Path(reference).name),
+        ):
+            cleaned = (candidate or "").strip().strip(" \t\r\n\"'`")
+            if cleaned and cleaned not in candidate_texts:
+                candidate_texts.append(cleaned)
+
+        for candidate in candidate_texts:
+            direct_path = self.storage_dir / candidate
+            if direct_path.exists():
+                return direct_path
+
+            if not Path(candidate).suffix:
+                for extension in (".pdf", ".doc", ".docx", ".txt", ".md"):
+                    direct_with_ext = self.storage_dir / f"{candidate}{extension}"
+                    if direct_with_ext.exists():
+                        return direct_with_ext
+
+        stored_files = [path for path in self.storage_dir.iterdir() if path.is_file()]
+        if not stored_files:
+            return None
+
+        best_match: Optional[Path] = None
+        best_rank: Optional[Tuple[int, int, int, str]] = None
+
+        for candidate in candidate_texts:
+            candidate_key = self._normalize_source_key(candidate)
+            if not candidate_key:
+                continue
+
+            for path in stored_files:
+                file_name = path.name
+                stem = path.stem
+                file_key = self._normalize_source_key(file_name)
+                stem_key = self._normalize_source_key(stem)
+                rank: Optional[Tuple[int, int, int, str]] = None
+
+                if candidate.lower() == file_name.lower() or candidate.lower() == stem.lower():
+                    rank = (0, 0 if path.suffix.lower() == ".pdf" else 1, len(file_name), file_name)
+                elif candidate_key == file_key or candidate_key == stem_key:
+                    rank = (1, 0 if path.suffix.lower() == ".pdf" else 1, len(file_name), file_name)
+                elif file_key.startswith(candidate_key) or stem_key.startswith(candidate_key):
+                    rank = (2, 0 if path.suffix.lower() == ".pdf" else 1, len(file_name), file_name)
+                elif candidate_key in file_key or candidate_key in stem_key:
+                    rank = (3, 0 if path.suffix.lower() == ".pdf" else 1, len(file_name), file_name)
+
+                if rank is not None and (best_rank is None or rank < best_rank):
+                    best_match = path
+                    best_rank = rank
+
+        return best_match
 
     def get_file_path(self, file_tag: str) -> Optional[Path]:
         """Resolve a file tag or relative storage path to an actual file path."""

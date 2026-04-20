@@ -1,6 +1,5 @@
 import sys
 import re
-from contextvars import ContextVar
 from loguru import logger
 from typing import List, Optional, Any, Dict
 
@@ -15,20 +14,6 @@ def _log_search(msg: str):
     sys.stdout.flush()
 
 
-_turn_seen_evidence_keys: ContextVar[Optional[set[str]]] = ContextVar(
-    "turn_seen_evidence_keys",
-    default=None,
-)
-
-
-def _get_turn_seen_keys() -> Optional[set[str]]:
-    return _turn_seen_evidence_keys.get()
-
-
-def _set_turn_seen_keys(seen_keys: Optional[set[str]]) -> None:
-    _turn_seen_evidence_keys.set(seen_keys)
-
-
 class DatabaseToolkit(BaseToolkit):
     """A toolkit for retrieving information from your local Qdrant knowledge base."""
 
@@ -36,7 +21,11 @@ class DatabaseToolkit(BaseToolkit):
     DEFAULT_FINAL_FULL_CHUNKS = 4
     DEFAULT_MAX_TOTAL_CHARS = 12000
     DEFAULT_MAX_CHARS_PER_CHUNK = 3200
-    TABLE_QUERY_HINTS = ("表", "表格", "议程", "清单", "名单", "名录", "统计", "汇总")
+    TABLE_QUERY_HINTS = (
+        "表", "表格", "表中", "表里", "参数表", "数据表", "附表",
+        "议程", "清单", "名单", "名录", "统计", "汇总",
+        "标准值", "数值", "取值", "参数", "额定", "阻抗", "损耗",
+    )
     NUMERIC_QUERY_HINTS = (
         "多少", "多大", "参数", "电压", "电流", "容量", "功率", "温度",
         "压力", "频率", "比率", "百分比", "阈值", "上限", "下限", "范围",
@@ -46,6 +35,10 @@ class DatabaseToolkit(BaseToolkit):
         r"(\d+(?:\.\d+)?)\s*(kV|V|A|mA|MW|kW|W|Hz|%|℃|°C|mm|cm|m|km|kg|t|MPa|kPa|年|月|日|h|min|s|次|项|条|章)?",
         re.IGNORECASE,
     )
+    STANDARD_ID_RE = re.compile(
+        r"[A-Z]{1,10}\s*[\/／∕]\s*T\s*\d+(?:\.\d+)?(?:\s*[-—–]\s*\d{2,4})?",
+        re.IGNORECASE,
+    )
 
     def __init__(self):
         super().__init__()
@@ -53,6 +46,10 @@ class DatabaseToolkit(BaseToolkit):
         self.db = QdrantDB(input=qdrant_init)
         self._reranker = None  # lazy-load
         self._index_warmed_up = False  # 索引预热标志
+        # 实例级别的 turn 状态存储（替代 ContextVar，解决异步跨上下文问题）
+        self._turn_seen_keys: Optional[set[str]] = None
+        self._turn_source_refs: List[Dict[str, str]] = []
+        self._turn_asset_refs: List[Dict[str, str]] = []
 
     def warmup_lexical_index(self):
         """
@@ -89,11 +86,15 @@ class DatabaseToolkit(BaseToolkit):
 
     def begin_turn(self) -> None:
         """Start per-turn evidence dedup state."""
-        _set_turn_seen_keys(set())
+        self._turn_seen_keys = set()
+        self._turn_source_refs = []
+        self._turn_asset_refs = []
 
     def end_turn(self) -> None:
         """Clear per-turn evidence dedup state."""
-        _set_turn_seen_keys(None)
+        self._turn_seen_keys = None
+        self._turn_source_refs = []
+        self._turn_asset_refs = []
 
     def __enter__(self):
         return self
@@ -170,16 +171,7 @@ class DatabaseToolkit(BaseToolkit):
         valid_hits = []
         for h in hits:
             payload = h.get("payload", {}) or {}
-            # 优先使用 child_content（子chunk），fallback 到 Content
-            # 注意：child_content 可能在 payload.metadata 中或 payload 顶级
-            metadata = payload.get("metadata", {}) or {}
-            content = (
-                metadata.get("child_content")
-                or payload.get("child_content")
-                or payload.get("Content")
-                or payload.get("content")
-                or ""
-            )
+            content = self._build_rerank_content(h)
             if not isinstance(content, str):
                 content = str(content)
             content = content.strip()
@@ -219,18 +211,116 @@ class DatabaseToolkit(BaseToolkit):
                 deduped.append(h)
         return deduped
 
+    @classmethod
+    def _is_table_hit(cls, hit: Dict[str, Any]) -> bool:
+        payload = hit.get("payload", {}) or {}
+        metadata = payload.get("metadata", {}) or {}
+        return bool(payload.get("is_table") or metadata.get("is_table"))
+
+    @classmethod
+    def _build_rerank_content(cls, hit: Dict[str, Any], max_chars: int = 2400) -> str:
+        """
+        Build the text used for reranking.
+
+        Design intent:
+        - text chunks: prefer child_content because it is focused and usually cleaner
+        - table chunks: prefer full parent content so reranker can see real cells/text,
+          optionally with nearby context, instead of only a short table summary
+        """
+        payload = hit.get("payload", {}) or {}
+        metadata = payload.get("metadata", {}) or {}
+
+        source = str(payload.get("Original_file", "")).strip()
+        parent_content = payload.get("Content") or payload.get("content") or ""
+        child_content = metadata.get("child_content") or payload.get("child_content") or ""
+        context_before = metadata.get("context_before") or payload.get("context_before") or ""
+        context_after = metadata.get("context_after") or payload.get("context_after") or ""
+
+        if cls._is_table_hit(hit):
+            parts: List[str] = []
+            if source:
+                parts.append(f"文件: {source}")
+            if context_before:
+                parts.append(str(context_before).strip())
+            if parent_content:
+                parts.append(str(parent_content).strip())
+            if context_after:
+                parts.append(str(context_after).strip())
+            combined = "\n".join(part for part in parts if part).strip()
+            return cls._truncate_text(combined, max_chars)
+
+        content_parts: List[str] = []
+        if source:
+            content_parts.append(f"文件: {source}")
+        content = str(child_content or parent_content or "").strip()
+        if content:
+            content_parts.append(content)
+        content = "\n".join(content_parts).strip()
+        return cls._truncate_text(content, max_chars)
+
+    @staticmethod
+    def _normalize_standard_text(text: str) -> str:
+        normalized = (text or "").upper()
+        normalized = normalized.replace("／", "/").replace("∕", "/")
+        normalized = normalized.replace("—", "-").replace("–", "-").replace("－", "-")
+        normalized = re.sub(r"\s+", "", normalized)
+        return normalized
+
+    @classmethod
+    def _extract_standard_ids(cls, text: str) -> List[str]:
+        normalized_ids: List[str] = []
+        seen: set[str] = set()
+        for match in cls.STANDARD_ID_RE.findall(text or ""):
+            normalized = cls._normalize_standard_text(match)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                normalized_ids.append(normalized)
+        return normalized_ids
+
+    @classmethod
+    def _hit_matches_standard_id(cls, hit: Dict[str, Any], query: str) -> bool:
+        query_standard_ids = cls._extract_standard_ids(query)
+        if not query_standard_ids:
+            return False
+
+        payload = hit.get("payload", {}) or {}
+        metadata = payload.get("metadata", {}) or {}
+        haystack = "\n".join([
+            str(payload.get("Original_file", "")),
+            str(payload.get("Content", "") or payload.get("content", "")),
+            str(metadata.get("child_content", "") or payload.get("child_content", "")),
+        ])
+        haystack_normalized = cls._normalize_standard_text(haystack)
+        return any(standard_id in haystack_normalized for standard_id in query_standard_ids)
+
     @staticmethod
     def _truncate_text(text: str, max_chars: int) -> str:
         if len(text) <= max_chars:
             return text
         return text[:max_chars].rstrip() + "\n...[内容过长，已截断]"
 
+    def _keywordize_query(self, text: str) -> str:
+        normalized = re.sub(r"[^\w\u4e00-\u9fff%./-]+", " ", (text or "").strip())
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if not normalized:
+            return ""
+        stopwords = {"请问", "一下", "这个", "那个", "什么", "是", "的", "了", "吗", "呢", "呀", "其", "它", "该"}
+        terms = [term for term in normalized.split(" ") if term and term not in stopwords]
+        return " ".join(terms[:8]) or normalized[:80]
+
     @classmethod
     def _is_table_like_query(cls, query: str) -> bool:
         query = (query or "").strip()
         if not query:
             return False
-        return any(token in query for token in cls.TABLE_QUERY_HINTS)
+        if any(token in query for token in cls.TABLE_QUERY_HINTS):
+            return True
+
+        # Numeric/parameter questions against standards often target tables even
+        # when the user does not explicitly say "表格".
+        standard_like = bool(re.search(r"[A-Z]+/T\s*\d+[-\d]*", query))
+        param_like = any(token in query for token in ("多少", "多大", "参数", "标准值", "数值", "取值", "阻抗", "损耗", "额定"))
+        return standard_like and param_like
 
     @classmethod
     def _is_numeric_like_query(cls, query: str) -> bool:
@@ -262,15 +352,7 @@ class DatabaseToolkit(BaseToolkit):
 
     @classmethod
     def _hit_has_numeric_content(cls, hit: Dict[str, Any]) -> bool:
-        payload = hit.get("payload", {}) or {}
-        metadata = payload.get("metadata", {}) or {}
-        text = (
-            metadata.get("child_content")
-            or payload.get("child_content")
-            or payload.get("Content")
-            or payload.get("content")
-            or ""
-        )
+        text = cls._build_rerank_content(hit, max_chars=2400)
         if not isinstance(text, str):
             text = str(text)
         return bool(cls.NUMERIC_CONTENT_RE.search(text))
@@ -282,8 +364,9 @@ class DatabaseToolkit(BaseToolkit):
 
         is_table_query = cls._is_table_like_query(query)
         is_numeric_query = cls._is_numeric_like_query(query)
+        has_standard_id = bool(cls._extract_standard_ids(query))
 
-        if not is_table_query and not is_numeric_query:
+        if not is_table_query and not is_numeric_query and not has_standard_id:
             return hits
 
         adjusted: List[Dict[str, Any]] = []
@@ -292,11 +375,23 @@ class DatabaseToolkit(BaseToolkit):
             payload = h.get("payload", {}) or {}
             metadata = payload.get("metadata", {}) or {}
             score = float(h.get("score", 0.0))
+            content = str(payload.get("Content", "") or payload.get("content", ""))
+            is_table_hit = bool(payload.get("is_table") or metadata.get("is_table"))
 
-            if is_table_query and (payload.get("is_table") or metadata.get("is_table")):
-                score += 0.18
+            if is_table_query and is_table_hit:
+                score += 0.30
+                if "<table" in content.lower():
+                    score += 0.12
             if is_numeric_query and cls._hit_has_numeric_content(h):
                 score += 0.12
+            if has_standard_id and cls._hit_matches_standard_id(h, query):
+                score += 0.35
+                if is_table_hit:
+                    score += 0.08
+            if is_table_hit and "短路阻抗%" in content:
+                score += 0.15
+            elif is_table_hit and "短路阻抗" in content:
+                score += 0.08
 
             h["score"] = score
             adjusted.append(h)
@@ -327,7 +422,7 @@ class DatabaseToolkit(BaseToolkit):
         if seen_keys is not None:
             scopes.append(seen_keys)
 
-        turn_seen_keys = _get_turn_seen_keys()
+        turn_seen_keys = self._turn_seen_keys
         if turn_seen_keys is not None and turn_seen_keys is not seen_keys:
             scopes.append(turn_seen_keys)
 
@@ -369,6 +464,86 @@ class DatabaseToolkit(BaseToolkit):
             return fresh_hits
 
         return []
+
+    @classmethod
+    def _build_source_ref(cls, payload: Dict[str, Any]) -> Optional[Dict[str, str]]:
+        source = str(payload.get("Original_file", "")).strip()
+        if not source:
+            return None
+        file_name = source.split("\\")[-1] if "\\" in source else source.split("/")[-1]
+        return {
+            "file_tag": source,
+            "label": file_name or source,
+        }
+
+    def _record_turn_source_refs(self, hits: List[Dict[str, Any]]) -> None:
+        refs = self._turn_source_refs
+        seen_tags = {str(ref.get("file_tag", "")).strip() for ref in refs}
+        for hit in hits:
+            payload = hit.get("payload", {}) or {}
+            ref = self._build_source_ref(payload)
+            if ref is None:
+                continue
+            file_tag = ref["file_tag"]
+            if file_tag in seen_tags:
+                continue
+            refs.append(ref)
+            seen_tags.add(file_tag)
+
+    def get_turn_source_refs(self) -> List[Dict[str, str]]:
+        refs = self._turn_source_refs or []
+        return [dict(ref) for ref in refs if ref.get("file_tag")]
+
+    @classmethod
+    def _extract_asset_refs_from_content(cls, content: str, source_file_tag: str) -> List[Dict[str, str]]:
+        refs: List[Dict[str, str]] = []
+        seen_tags: set[str] = set()
+        for match in re.finditer(r'!\[[^\]]*\]\(([^)]+)\)', content or ""):
+            raw_path = (match.group(1) or "").strip().strip("<>").strip()
+            if not raw_path:
+                continue
+            normalized_path = raw_path.replace("\\", "/")
+            if "mineru_output/" not in normalized_path:
+                continue
+            asset_tag = normalized_path
+            if not asset_tag.startswith("data/"):
+                asset_tag = asset_tag.lstrip("/")
+                if not asset_tag.startswith("data/stored_files/"):
+                    if asset_tag.startswith("mineru_output/"):
+                        asset_tag = f"data/stored_files/{asset_tag}"
+                    else:
+                        asset_tag = f"data/stored_files/mineru_output/{asset_tag.split('mineru_output/', 1)[-1]}"
+            if asset_tag in seen_tags:
+                continue
+            image_name = asset_tag.rsplit("/", 1)[-1]
+            refs.append({
+                "asset_tag": asset_tag,
+                "label": image_name,
+                "kind": "table_image",
+                "source_file_tag": source_file_tag,
+            })
+            seen_tags.add(asset_tag)
+        return refs
+
+    def _record_turn_asset_refs(self, hits: List[Dict[str, Any]]) -> None:
+        refs = self._turn_asset_refs
+        seen_tags = {str(ref.get("asset_tag", "")).strip() for ref in refs}
+        for hit in hits:
+            payload = hit.get("payload", {}) or {}
+            source_file_tag = str(payload.get("Original_file", "")).strip()
+            content = str(payload.get("Content", "") or payload.get("content", "")).strip()
+            if not source_file_tag or not content:
+                continue
+            for ref in self._extract_asset_refs_from_content(content, source_file_tag):
+                asset_tag = ref["asset_tag"]
+                if asset_tag in seen_tags:
+                    continue
+                refs.append(ref)
+                seen_tags.add(asset_tag)
+
+    def get_turn_asset_refs(self) -> List[Dict[str, str]]:
+        refs = self._turn_asset_refs or []
+        return [dict(ref) for ref in refs if ref.get("asset_tag")]
 
     def _select_full_chunk_hits(
         self,
@@ -413,7 +588,7 @@ class DatabaseToolkit(BaseToolkit):
         )
         return selected
 
-    def search_database(self, query: str, intent_description: Optional[str] = None, **kwargs) -> str:
+    def search_database(self, query: Optional[str] = None, intent_description: Optional[str] = None, **kwargs) -> str:
         """检索本地电力系统知识库的工具。
         Agent-friendly entrypoint：仅需传入 query 和 intent_description。
         
@@ -433,7 +608,7 @@ class DatabaseToolkit(BaseToolkit):
 
     def _search_database(
         self,
-        query: str,
+        query: Optional[str] = None,
         intent_description: Optional[str] = None,
         top_k: int = 8,
         seen_keys: Optional[set] = None,
@@ -461,6 +636,15 @@ class DatabaseToolkit(BaseToolkit):
           score_threshold is on normalized score (0~1). If None, an adaptive threshold is used.
         - restore_table_context=True: 检索到表格时，合并上下文返回
         """
+        if (not query or not str(query).strip()) and intent_description:
+            query = self._keywordize_query(intent_description)
+            logger.warning(
+                "search_database called without query, fallback to keywordized intent_description | query={}",
+                query,
+            )
+
+        query = str(query or "").strip()
+
         # ===== 参数默认值处理 =====
         # 如果 LLM 传入 None，使用默认值
         if alpha is None:
@@ -488,6 +672,7 @@ class DatabaseToolkit(BaseToolkit):
             full_chunk_limit = max(full_chunk_limit, min(top_k, 5))
             max_total_chars = max(max_total_chars, 8000)
             max_chars_per_chunk = max(max_chars_per_chunk, 2400)
+            candidate_top_k = max(candidate_top_k, 30)
             restore_table_context = True
 
         # ===== 搜索开始日志 =====
@@ -510,7 +695,7 @@ class DatabaseToolkit(BaseToolkit):
         if dynamic_topk:
             max_results = max(int(max_results), candidate_top_k)
 
-        if not query or not query.strip():
+        if not query:
             logger.warning("⚠️ 搜索 query 为空，返回无结果")
             return "No results from the vector database."
 
@@ -536,6 +721,7 @@ class DatabaseToolkit(BaseToolkit):
         if use_rerank:
             _log_search(f"🔄 执行重排序 (reranker)...")
             hits = self._rerank(query, hits, intent_description=intent_description)
+            hits = self._apply_query_type_bias(hits, query)
 
             # 3) dynamic threshold cut should use final scores (after rerank)
             if dynamic_topk:
@@ -552,8 +738,9 @@ class DatabaseToolkit(BaseToolkit):
                 hits = sorted(hits, key=lambda h: float(h.get("score", 0.0)), reverse=True)[
                     : int(candidate_top_k)
                 ]
+        else:
+            hits = self._apply_query_type_bias(hits, query)
 
-        hits = self._apply_query_type_bias(hits, query)
         hits = self._dedupe_by_parent(hits, max_per_parent=max_per_parent)
 
         hits = self._filter_seen_evidence(hits, seen_keys=seen_keys)
@@ -566,6 +753,8 @@ class DatabaseToolkit(BaseToolkit):
             max_total_chars=max_total_chars,
             max_chars_per_chunk=max_chars_per_chunk,
         )
+        self._record_turn_source_refs(hits)
+        self._record_turn_asset_refs(hits)
 
         _log_search(f"✅ 搜索完成: 最终返回 {len(hits)} 条完整原文结果")
 

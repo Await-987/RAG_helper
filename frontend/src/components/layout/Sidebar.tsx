@@ -61,6 +61,19 @@ export function Sidebar() {
 
   return (
     <div className="w-60 h-full flex flex-col sidebar-container">
+      {/* Assistant Name */}
+      <div className="px-3 pt-4 pb-2">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
+            <MessageSquare size={18} className="text-white" />
+          </div>
+          <div>
+            <h1 className="text-base font-semibold text-zinc-100">智能助手</h1>
+            <p className="text-xs text-zinc-500">知识库检索问答</p>
+          </div>
+        </div>
+      </div>
+
       {/* New chat */}
       <div className="p-3">
         <button

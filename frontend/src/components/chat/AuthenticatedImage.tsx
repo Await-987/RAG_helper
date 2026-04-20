@@ -18,6 +18,7 @@ export function AuthenticatedImage({
   const [resolvedSrc, setResolvedSrc] = useState('');
   const [status, setStatus] = useState<'idle' | 'loading' | 'loaded' | 'error'>('idle');
   const [isDecoded, setIsDecoded] = useState(false);
+  const [originalSrc] = useState(src || '');
 
   useEffect(() => {
     const normalizedSrc = resolveKnowledgeBaseAssetUrl(src);
@@ -61,7 +62,7 @@ export function AuthenticatedImage({
           setStatus('loading');
         }
       } catch (error) {
-        console.error('Failed to load knowledge base image:', error);
+        console.error('Failed to load knowledge base image:', error, 'src:', src);
         if (!cancelled) {
           setResolvedSrc('');
           setStatus('error');
@@ -81,13 +82,21 @@ export function AuthenticatedImage({
 
   return (
     <div className="kb-image-shell my-3">
-      {!resolvedSrc && status === 'error' ? (
-        <div className="kb-image-fallback">图片加载失败</div>
+      {status === 'error' ? (
+        <div className="kb-image-fallback text-xs text-zinc-500 p-2 bg-zinc-800/50 rounded">
+          <span className="block mb-1">图片加载失败</span>
+          {alt && <span className="block text-zinc-400">{alt}</span>}
+          {originalSrc && (
+            <span className="block text-zinc-600 truncate" title={originalSrc}>
+              {originalSrc.slice(0, 80)}{originalSrc.length > 80 ? '...' : ''}
+            </span>
+          )}
+        </div>
       ) : (
         <>
-          {!isDecoded && (
-            <div className="kb-image-placeholder" aria-hidden="true">
-              <div className="kb-image-shimmer" />
+          {!isDecoded && status === 'loading' && (
+            <div className="kb-image-placeholder flex items-center justify-center h-24 bg-zinc-800/30 rounded" aria-hidden="true">
+              <span className="text-xs text-zinc-500">{alt || '加载中...'}</span>
             </div>
           )}
           {resolvedSrc && (

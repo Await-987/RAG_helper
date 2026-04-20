@@ -5,56 +5,116 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import rehypeRaw from 'rehype-raw';
 import 'katex/dist/katex.min.css';
-import type { ChatContentBlock } from '@/types';
 import { CodeBlock } from './CodeBlock';
 import { AuthenticatedImage } from './AuthenticatedImage';
+import { getAccessToken } from '@/utils/authToken';
 
 interface MessageContentProps {
   content: string;
-  blocks?: ChatContentBlock[];
+  blocks?: unknown[];
 }
 
-export const MessageContent = memo(function MessageContent({ content, blocks }: MessageContentProps) {
-  // If blocks are available, render them individually for better formatting
-  if (blocks && blocks.length > 0) {
-    return (
-      <div className="markdown-content">
-        {blocks.map((block, i) => (
-          <ContentBlockRenderer key={i} block={block} />
-        ))}
-      </div>
-    );
-  }
+// 解析 sources 区块
+const SOURCE_REFS_REGEX = /<!-- SOURCE_REFS_START -->\n([\s\S]*?)\n<!-- SOURCE_REFS_END -->/;
 
-  // Fallback: render raw content as markdown
+function extractSourcesBlock(content: string): { mainContent: string; sourcesContent: string | null } {
+  const match = content.match(SOURCE_REFS_REGEX);
+  if (match) {
+    const mainContent = content.replace(SOURCE_REFS_REGEX, '').trim();
+    return { mainContent, sourcesContent: match[1] };
+  }
+  return { mainContent: content, sourcesContent: null };
+}
+
+export const MessageContent = memo(function MessageContent({ content }: MessageContentProps) {
+  // 解析 sources 区块
+  const { mainContent, sourcesContent } = extractSourcesBlock(content);
+
+  console.log('[DEBUG] MessageContent:', {
+    contentLength: content.length,
+    mainContentPreview: mainContent.substring(0, 200),
+    hasSourcesBlock: !!sourcesContent,
+  });
+
+  // 用 MarkdownRenderer 渲染内容（包含图片），SourcesBlock 渲染超链接
   return (
     <div className="markdown-content">
-      <MarkdownRenderer content={content} />
+      <MarkdownRenderer content={mainContent} />
+      {sourcesContent && <SourcesBlock content={sourcesContent} />}
     </div>
   );
 });
 
-function ContentBlockRenderer({ block }: { block: ChatContentBlock }) {
-  switch (block.type) {
-    case 'code': {
-      const match = block.content.match(/^```(\w*)\n([\s\S]*?)\n?```$/);
-      if (match) {
-        return <CodeBlock language={match[1] || undefined} code={match[2]} />;
-      }
-      return <MarkdownRenderer content={block.content} />;
+// 渲染 sources 区块
+function SourcesBlock({ content }: { content: string }) {
+  const token = getAccessToken();
+
+  // 按行解析，支持多种 markdown 链接格式
+  const lines = content.split('\n').filter(line => line.trim());
+  const sources: { label: string; url: string }[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // 模式1: - [label](url)
+    const match1 = trimmed.match(/^-\s*\[([^\]]+)\]\(([^)]+)\)$/);
+    if (match1) {
+      sources.push({ label: match1[1], url: match1[2] });
+      continue;
     }
-    case 'math':
-      return <MarkdownRenderer content={`$$\n${block.content}\n$$`} />;
-    case 'table':
-      return (
-        <div className="chat-block-shell">
-          <MarkdownRenderer content={block.content} />
-        </div>
-      );
-    case 'markdown':
-    default:
-      return <MarkdownRenderer content={block.content} />;
+
+    // 模式2: [label](url) (没有 - 前缀)
+    const match2 = trimmed.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+    if (match2) {
+      sources.push({ label: match2[1], url: match2[2] });
+      continue;
+    }
+
+    // 模式3: 行内包含 markdown 链接
+    const match3 = trimmed.match(/\[([^\]]+)\]\(([^)]+)\)/);
+    if (match3) {
+      sources.push({ label: match3[1], url: match3[2] });
+      continue;
+    }
+
+    // 模式4: 纯 API URL
+    if (trimmed.includes('/api/v1/files/content')) {
+      const urlMatch = trimmed.match(/(\/api\/v1\/files\/content\?[^\s]+)/);
+      if (urlMatch) {
+        const fileName = decodeURIComponent(urlMatch[1].split('file_tag=').pop() || '').split('/').pop() || '来源文件';
+        sources.push({ label: fileName, url: urlMatch[1] });
+      }
+    }
   }
+
+  if (sources.length === 0) return null;
+
+  return (
+    <div className="mt-4 pt-3 border-t border-zinc-800">
+      <div className="text-xs font-medium text-zinc-400 mb-2">参考来源</div>
+      <div className="flex flex-wrap gap-2">
+        {sources.map((source, i) => {
+          let url = source.url;
+          if (token) {
+            const separator = url.includes('?') ? '&' : '?';
+            url = `${url}${separator}token=${encodeURIComponent(token)}`;
+          }
+          return (
+            <a
+              key={i}
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs text-primary-400 bg-primary-500/10 hover:bg-primary-500/20 hover:text-primary-300 transition-colors cursor-pointer"
+            >
+              {source.label}
+            </a>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 const MarkdownRenderer = memo(function MarkdownRenderer({ content }: { content: string }) {

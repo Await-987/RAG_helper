@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import type { ChatContentBlock, ChatMessage, ChatSessionSummary } from '@/types';
+import { normalizeChatAssets, normalizeChatSources } from '@/types';
+import type { ChatAsset, ChatContentBlock, ChatMessage, ChatSessionSummary, ChatSource } from '@/types';
 import { chatApi } from '@/api/chat';
 import { getAccessToken } from '@/utils/authToken';
 
@@ -9,7 +10,8 @@ interface SessionState {
   isLoading: boolean;
   streamingContent: string;
   streamingReasoning: string;
-  streamingSources: string[];
+  streamingSources: ChatSource[];
+  streamingAssets: ChatAsset[];
   abortController: AbortController | null;
 }
 
@@ -43,7 +45,8 @@ function createMessage(
   reasoning?: string,
   blocks?: ChatContentBlock[],
   reasoningBlocks?: ChatContentBlock[],
-  sources?: string[],
+  sources?: ChatSource[],
+  assets?: ChatAsset[],
 ): ChatMessage {
   return {
     id: generateId(),
@@ -53,6 +56,7 @@ function createMessage(
     reasoning,
     reasoningBlocks,
     sources,
+    assets,
     timestamp: new Date(),
   };
 }
@@ -68,6 +72,7 @@ function getEmptySessionState(): SessionState {
     streamingContent: '',
     streamingReasoning: '',
     streamingSources: [],
+    streamingAssets: [],
     abortController: null,
   };
 }
@@ -104,6 +109,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           streamingContent: '',
           streamingReasoning: '',
           streamingSources: [],
+          streamingAssets: [],
         },
       },
     }));
@@ -126,7 +132,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     try {
       let fullContent = '';
       let fullReasoning: string | undefined;
-      let finalSources: string[] = [];
+      let finalSources: ChatSource[] = [];
+      let finalAssets: ChatAsset[] = [];
       let finalBlocks: ChatContentBlock[] | undefined;
       let finalReasoningBlocks: ChatContentBlock[] | undefined;
 
@@ -181,11 +188,33 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             break;
 
           case 'done':
-            fullContent = event.content ?? fullContent;
-            fullReasoning = event.reasoning ?? fullReasoning;
-            finalBlocks = event.blocks;
-            finalReasoningBlocks = event.reasoning_blocks;
-            finalSources = event.sources ?? [];
+            {
+              // 从 done 事件中提取 sources block
+              let sourcesBlock = '';
+              if (event.content) {
+                const match = event.content.match(/<!-- SOURCE_REFS_START -->[\s\S]*<!-- SOURCE_REFS_END -->/);
+                if (match) {
+                  sourcesBlock = match[0];
+                }
+              }
+              // 确保 sources block 被追加到流式内容末尾
+              // 检查完整标记（不只是开头），避免流式中偶然出现的部分文本
+              const hasCompleteSourcesBlock =
+                fullContent.includes('<!-- SOURCE_REFS_START -->') &&
+                fullContent.includes('<!-- SOURCE_REFS_END -->');
+              if (sourcesBlock && !hasCompleteSourcesBlock) {
+                // 先移除可能存在的不完整片段
+                const cleaned = fullContent
+                  .replace(/<!-- SOURCE_REFS_START -->[\s\S]*$/, '')
+                  .trim();
+                fullContent = cleaned + '\n\n' + sourcesBlock;
+              }
+              fullReasoning = event.reasoning ?? fullReasoning;
+              finalBlocks = event.blocks;
+              finalReasoningBlocks = event.reasoning_blocks;
+              finalSources = normalizeChatSources(event.sources);
+              finalAssets = normalizeChatAssets(event.assets);
+            }
             break;
 
           case 'error':
@@ -202,22 +231,39 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         finalBlocks,
         finalReasoningBlocks,
         finalSources,
+        finalAssets,
       );
 
-      set((s) => ({
-        sessionStates: {
-          ...s.sessionStates,
-          [streamingKey]: {
-            ...s.sessionStates[streamingKey],
-            messages: [...s.sessionStates[streamingKey].messages, assistantMsg],
-            isLoading: false,
-            streamingContent: '',
-            streamingReasoning: '',
-            streamingSources: finalSources,
-            abortController: null,
+      console.log('[DEBUG] Adding assistant message:', {
+        streamingKey,
+        currentSessionId: get().currentSessionId,
+        msgId: assistantMsg.id,
+        msgContent: assistantMsg.content.substring(0, 50),
+        msgContentLength: assistantMsg.content.length,
+        existingMessages: get().sessionStates[streamingKey]?.messages?.length,
+      });
+
+      set((s) => {
+        const existingMsgs = s.sessionStates[streamingKey]?.messages ?? [];
+        console.log('[DEBUG] set state - existing messages:', existingMsgs.length);
+        return {
+          sessionStates: {
+            ...s.sessionStates,
+            [streamingKey]: {
+              ...s.sessionStates[streamingKey],
+              messages: [...existingMsgs, assistantMsg],
+              isLoading: false,
+              streamingContent: '',
+              streamingReasoning: '',
+              streamingSources: finalSources,
+              streamingAssets: finalAssets,
+              abortController: null,
+            },
           },
-        },
-      }));
+        };
+      });
+
+      console.log('[DEBUG] After set, messages count:', get().sessionStates[streamingKey]?.messages?.length);
 
       // Refresh sessions list
       get().loadSessions();
@@ -251,6 +297,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             abortController: null,
             streamingContent: '',
             streamingReasoning: '',
+            streamingSources: [],
+            streamingAssets: [],
           },
         },
       }));
@@ -260,15 +308,17 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   loadSession: async (sessionId: string) => {
     try {
       const detail = await chatApi.getSessionDetail(sessionId);
-      const loadedMessages: ChatMessage[] = detail.messages.map((msg, i) => ({
-        id: `${sessionId}-${i}`,
-        role: msg.role,
-        content: msg.content,
-        blocks: msg.blocks ?? undefined,
-        reasoning: msg.reasoning ?? undefined,
-        reasoningBlocks: msg.reasoning_blocks ?? undefined,
-        timestamp: new Date(msg.timestamp),
-      }));
+        const loadedMessages: ChatMessage[] = detail.messages.map((msg, i) => ({
+          id: `${sessionId}-${i}`,
+          role: msg.role,
+          content: msg.content,
+          blocks: msg.blocks ?? undefined,
+          reasoning: msg.reasoning ?? undefined,
+          reasoningBlocks: msg.reasoning_blocks ?? undefined,
+          sources: normalizeChatSources(msg.sources),
+          assets: normalizeChatAssets(msg.assets),
+          timestamp: new Date(msg.timestamp),
+        }));
 
       set((s) => ({
         currentSessionId: sessionId,
@@ -280,6 +330,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
             streamingContent: '',
             streamingReasoning: '',
             streamingSources: [],
+            streamingAssets: [],
             abortController: null,
           },
         },

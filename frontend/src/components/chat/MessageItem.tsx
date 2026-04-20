@@ -1,9 +1,9 @@
 import { useState, useCallback, memo } from 'react';
-import { Copy, Check, RotateCcw, User, Sparkles } from 'lucide-react';
+import { Copy, Check, User, Sparkles } from 'lucide-react';
 import type { ChatMessage } from '@/types';
 import { MessageContent } from './MessageContent';
 import { ReasoningBlock } from './ReasoningBlock';
-import { SourceCitation } from './SourceCitation';
+import { AssetGallery } from './AssetGallery';
 
 interface MessageItemProps {
   message: ChatMessage;
@@ -48,14 +48,14 @@ export const MessageItem = memo(function MessageItem({ message, isLast }: Messag
             <ReasoningBlock content={message.reasoning} />
           )}
 
-          {/* Main content */}
+          {/* Main content - sources 现在在正文中渲染 */}
           <div className="markdown-content">
             <MessageContent content={message.content} blocks={message.blocks} />
           </div>
 
-          {/* Sources */}
-          {message.sources && !isUser && message.sources.length > 0 && (
-            <SourceCitation sources={message.sources} />
+          {/* Assets - 表格图片等 */}
+          {message.assets && message.assets.length > 0 && !isUser && (
+            <AssetGallery assets={message.assets} />
           )}
 
           {/* Actions - appear on hover */}

@@ -8,6 +8,7 @@ from pathlib import Path
 from contextlib import suppress
 from datetime import datetime
 from typing import Dict, Optional, Generator, Any, Tuple, List
+from urllib.parse import urlencode
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -533,6 +534,8 @@ class SessionManager:
         blocks: Optional[List[Dict[str, Any]]] = None,
         reasoning: Optional[str] = None,
         reasoning_blocks: Optional[List[Dict[str, Any]]] = None,
+        sources: Optional[List[Dict[str, str]]] = None,
+        assets: Optional[List[Dict[str, str]]] = None,
     ) -> None:
         transcript = self._ensure_session_transcript(
             username,
@@ -550,6 +553,8 @@ class SessionManager:
                 "blocks": blocks,
                 "reasoning": reasoning,
                 "reasoning_blocks": reasoning_blocks,
+                "sources": sources,
+                "assets": assets,
                 "timestamp": datetime.now().isoformat(),
             }
         )
@@ -1087,15 +1092,11 @@ class ChatService:
             self._search_rewriter = ChatAgent(
                 system_message=BaseMessage.make_system_message(
                     content=(
-                        "你是一个知识库检索改写器。你的任务是结合最近对话上下文，"
-                        "把当前用户追问改写成适合检索的 query 和 intent_description。"
-                        "你必须解决代词、简称、追问、省略主语等问题，把被省略的主体补全。"
-                        "如果当前问题明显是在追问上一轮某个标准、文件、设备、流程、制度、表格、章节，"
-                        "必须把该主体完整补回 query 和 intent_description。"
-                        "expanded_queries 最多给 2 条，只能用于补充别名、简称、表号、同义表达或缺失维度；"
-                        "严禁给出无关扩展，严禁泛化到别的文档。"
-                        "如果用户明确在问'涉及的表/附表/表格/图片/图表/明细表'，"
-                        "expanded_queries 应优先补充表号、清单表、投标报价表、附表等检索词。"
+                        "你是检索改写器。任务：结合上下文，把追问改写成检索query。"
+                        "必须补全代词/简称/省略的主体（标准、文件、设备、表格等）。"
+                        "expanded_queries≤2条，仅用于别名/表号/同义词，禁无关扩展。"
+                        "只输出一行JSON，格式：{\"query\":\"...\",\"intent_description\":\"...\",\"expanded_queries\":[],\"referent\":\"...\",\"reason\":\"...\"}"
+                        "禁止输出任何其他内容。query≤32字，intent_description≤80字，reason≤20字。"
                     ),
                 ),
                 model=backend_model(
@@ -1167,33 +1168,40 @@ class ChatService:
                 context_lines.append(f"{role}: {content[:400]}")
 
         planner_prompt = (
-            "最近对话上下文：\n"
+            "上下文：\n"
             + ("\n".join(context_lines) if context_lines else "无")
-            + f"\n\n当前用户问题：{message}\n\n"
-            "请输出结构化检索改写结果：\n"
-            "1. query: 3-12 个核心检索词，必须补全被省略主体；\n"
-            "2. intent_description: 完整自然语言检索意图；\n"
-            "3. expanded_queries: 最多 2 条，仅用于别名/简称/表号/补充维度；\n"
-            "4. referent: 当前追问真正指向的主体；\n"
-            "5. reason: 简短说明。\n"
-            "如果当前消息本身已经完整明确，也要保持 query 足够具体，禁止只返回笼统词语。"
+            + f"\n当前问题：{message}\n\n"
+            "任务：结合上下文补全代词/省略主体，输出检索query。\n"
+            "严格只输出一行JSON，不要任何解释或对话：\n"
+            "{\"query\":\"关键词\",\"intent_description\":\"完整意图\",\"expanded_queries\":[\"补充词\"],\"referent\":\"主体\",\"reason\":\"简述\"}\n"
+            "限制：query≤32字，intent_description≤80字，expanded_queries最多2条。"
         )
 
         try:
             planner = self._get_search_rewriter()
-            response = planner.step(planner_prompt, response_format=SearchRewritePlan)
-            parsed = None
+            # 不使用 response_format，避免结构化输出的长度限制问题
+            response = planner.step(planner_prompt)
+            raw_content = ""
             if hasattr(response, "msgs") and response.msgs:
-                parsed = getattr(response.msgs[-1], "parsed", None)
-            if parsed is None:
-                raise ValueError("search rewriter returned no structured result")
+                raw_content = str(response.msgs[-1].content or "")
 
-            if isinstance(parsed, SearchRewritePlan):
-                plan = parsed
-            elif hasattr(SearchRewritePlan, "model_validate"):
-                plan = SearchRewritePlan.model_validate(parsed)
-            else:
-                plan = SearchRewritePlan.parse_obj(parsed)
+            # 手动解析 JSON
+            import json
+            import re
+            # 提取 JSON 内容（可能被包裹在其他文本中）
+            json_match = re.search(r"\{[\s\S]*\}", raw_content)
+            if not json_match:
+                raise ValueError(f"No JSON found in response: {raw_content[:200]}")
+            json_str = json_match.group()
+            data = json.loads(json_str)
+
+            plan = SearchRewritePlan(
+                query=str(data.get("query", ""))[:50],
+                intent_description=str(data.get("intent_description", ""))[:100],
+                expanded_queries=list(data.get("expanded_queries", []))[:2],
+                referent=str(data.get("referent", ""))[:50],
+                reason=str(data.get("reason", ""))[:30],
+            )
             logger.info(
                 "Search rewrite plan | session={} referent={} query={} expanded={}",
                 session_id,
@@ -1204,16 +1212,40 @@ class ChatService:
             return plan
         except Exception as exc:
             logger.warning(f"Search rewrite plan failed, fallback to heuristic rewrite: {exc}")
+            # 改进 fallback：从最近对话中提取主题
             referent = ""
-            for item in reversed(recent_messages[:-1]):
-                if item.get("role") != "user":
+            subject_keywords = []
+
+            # 从最近 assistant 回复中提取关键主体
+            for item in reversed(recent_messages):
+                content = str(item.get("content") or "").replace("\n", " ").strip()
+                if not content:
                     continue
-                prior = str(item.get("content") or "").replace("\n", " ").strip()
-                if not prior:
-                    continue
-                referent = prior[:80]
-                break
-            if referent and any(token in message for token in ("它", "这个", "这个规范", "该规范", "该标准", "涉及", "这些", "那些", "相关")):
+                # 提取可能的主体词（标准名、设备名等）
+                import re
+                # 匹配标准号如 GB/T 6451-2015, DL/T 5153-2014 等
+                standards = re.findall(r'[A-Z]+/T\s*\d+[-\d]*', content)
+                # 匹配中文主体词（变压器、短路阻抗等）
+                subjects = re.findall(r'[\u4e00-\u9fff]{2,8}(?:标准|参数|表格|规程|规范|规定)', content)
+                if standards:
+                    subject_keywords.extend(standards[:2])
+                if subjects:
+                    subject_keywords.extend(subjects[:2])
+                if item.get("role") == "user" and not referent:
+                    referent = content[:60]
+                if subject_keywords:
+                    break
+
+            # 判断是否是追问（消息短或包含追问词）
+            followup_tokens = ("表格", "表", "那些", "相关", "一些", "更多", "详细", "具体", "给出", "提供", "列出", "显示")
+            is_followup = len(message) < 15 or any(token in message for token in followup_tokens)
+
+            if is_followup and subject_keywords:
+                # 追问且有主题，合并主题和当前问题
+                combined_subject = " ".join(subject_keywords[:3])
+                query = self._keywordize_query(f"{combined_subject} {message}")
+                intent_description = f"{combined_subject}。追问：{message}"
+            elif referent and any(token in message for token in ("它", "这个", "这个规范", "该规范", "该标准", "涉及", "这些", "那些", "相关")):
                 query = self._keywordize_query(f"{referent} {message}")
                 intent_description = f"{referent}。当前追问：{message}"
             else:
@@ -1223,7 +1255,7 @@ class ChatService:
                 query=query,
                 intent_description=intent_description,
                 expanded_queries=[],
-                referent=referent,
+                referent=referent or " ".join(subject_keywords[:2]),
                 reason="fallback_heuristic",
             )
 
@@ -1237,10 +1269,76 @@ class ChatService:
         terms = [term for term in text.split(" ") if term and term not in stopwords]
         return " ".join(terms[:8]) or text[:80]
 
+    @staticmethod
+    def _is_table_or_numeric_query(message: str) -> bool:
+        text = (message or "").strip()
+        if not text:
+            return False
+
+        table_hints = (
+            "表", "表格", "表中", "表里", "列表", "清单", "汇总", "统计",
+            "参数", "参数表", "标准值", "数值", "取值", "数据", "阻抗",
+            "容量", "损耗", "电压", "电流", "系数", "百分比", "等级",
+        )
+        numeric_re = re.compile(
+            r"\d+(?:\.\d+)?\s*(?:kV|V|A|mA|MW|kW|W|Hz|%|℃|°C|mm|cm|m|km|kg|t|MPa|kPa|年|月|日|h|min|s|次|项|条|章)?",
+            re.IGNORECASE,
+        )
+        return any(token in text for token in table_hints) or bool(numeric_re.search(text))
+
+    @classmethod
+    def _build_gap_focused_queries(
+        cls,
+        primary_query: str,
+        intent_description: str,
+        referent: str = "",
+    ) -> List[str]:
+        """
+        Add a few high-signal follow-up retrieval queries for table/numeric turns.
+        These queries target missing table bodies / standard values instead of
+        repeating the same semantic query.
+        """
+        base = " ".join(part for part in (referent.strip(), primary_query.strip()) if part).strip()
+        if not base:
+            base = intent_description.strip()
+        if not cls._is_table_or_numeric_query(base or intent_description):
+            return []
+
+        candidates: List[str] = []
+        has_standard = bool(re.search(r"[A-Z]+/T\s*\d+[-\d]*", base or intent_description))
+        has_table = any(token in (base or intent_description) for token in ("表", "表格", "表中", "表里"))
+
+        if has_standard:
+            candidates.append(f"{base} 标准值")
+            candidates.append(f"{base} 表格")
+        if not has_table:
+            candidates.append(f"{base} 参数表")
+        candidates.append(f"{base} 数值")
+
+        normalized: List[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            query = cls._keywordize_query(candidate)
+            if not query or query == primary_query or query in seen:
+                continue
+            seen.add(query)
+            normalized.append(query)
+        return normalized[:2]
+
+    def _get_factual_evidence_budget(self, message: str) -> int:
+        budget = settings.FACTUAL_EVIDENCE_MAX_CHARS
+        if self._is_table_or_numeric_query(message):
+            return max(budget, 12000)
+        return budget
+
     def _build_factual_prompt_with_evidence(self, message: str, evidence: str) -> str:
         return (
-            "这是事实性问题。后端已经强制检索了知识库，你必须仅基于下面提供的检索结果回答。"
-            "如果证据不足，只能明确说知识库中未找到或证据不足；禁止脱离检索结果补充常识。\n\n"
+            "这是事实性问题。后端已经先行检索了一批候选证据。"
+            "你必须优先基于这些证据回答，但这些证据不是唯一来源。"
+            "如果现有证据不足以回答完整问题，尤其缺少表格正文、参数值、标准值、表号、范围、条件时，"
+            "你必须继续调用 `search_database` 做补充检索，而不是直接下结论说查不到。"
+            "只有在继续检索后仍然没有获得足够证据时，才能明确说明知识库中未找到或证据不足；"
+            "禁止脱离检索结果补充常识。\n\n"
             f"用户问题：{message}\n\n"
             f"本轮检索结果：\n{evidence}"
         )
@@ -1363,6 +1461,15 @@ class ChatService:
                     continue
                 candidate_queries.append((normalized, primary_intent))
 
+            for gap_query in self._build_gap_focused_queries(
+                primary_query=primary_query,
+                intent_description=primary_intent,
+                referent=plan.referent,
+            ):
+                if any(gap_query == existing_query for existing_query, _ in candidate_queries):
+                    continue
+                candidate_queries.append((gap_query, primary_intent))
+
             if not candidate_queries:
                 heuristic_query = self._keywordize_query(message)
                 if heuristic_query:
@@ -1389,13 +1496,63 @@ class ChatService:
                     "不要基于常识自行作答。"
                 )
             merged_evidence = "\n\n".join(evidence_parts)
-            return self._truncate_for_prompt(merged_evidence, settings.FACTUAL_EVIDENCE_MAX_CHARS)
+            return self._truncate_for_prompt(
+                merged_evidence,
+                self._get_factual_evidence_budget(message),
+            )
         except Exception as exc:
             logger.warning(f"Forced factual search failed: {exc}")
             return (
                 "知识库检索在本轮执行失败。你必须明确说明检索失败或证据不足，"
                 "不要基于历史记忆或常识自行作答。"
             )
+
+    def _backfill_turn_refs(self, username: str, session_id: str, message: str) -> None:
+        """Run lightweight retrieval only to populate per-turn source/asset refs."""
+        try:
+            from app.dependencies import get_database_toolkit
+
+            toolkit = get_database_toolkit()
+            plan = self._build_search_rewrite_plan(username, session_id, message)
+            candidate_queries: List[Tuple[str, str]] = []
+
+            primary_query = (plan.query or "").strip()
+            primary_intent = (plan.intent_description or message).strip()
+            if primary_query:
+                candidate_queries.append((primary_query, primary_intent))
+
+            for extra_query in plan.expanded_queries[:1]:
+                normalized = (extra_query or "").strip()
+                if not normalized:
+                    continue
+                if any(normalized == existing_query for existing_query, _ in candidate_queries):
+                    continue
+                candidate_queries.append((normalized, primary_intent))
+
+            if not candidate_queries:
+                heuristic_query = self._keywordize_query(message)
+                if heuristic_query:
+                    candidate_queries.append((heuristic_query, message))
+
+            for query, intent_description in candidate_queries[:2]:
+                toolkit.search_database(
+                    query=query,
+                    intent_description=intent_description,
+                )
+
+                if toolkit.get_turn_source_refs() or toolkit.get_turn_asset_refs():
+                    logger.info(
+                        "Backfilled turn refs | session={} query='{}' sources={} assets={}",
+                        session_id,
+                        query,
+                        len(toolkit.get_turn_source_refs()),
+                        len(toolkit.get_turn_asset_refs()),
+                    )
+                    return
+
+            logger.info("Backfill turn refs produced no metadata | session={}", session_id)
+        except Exception as exc:
+            logger.warning(f"Failed to backfill turn refs for session {session_id}: {exc}")
 
     def _session_needs_compaction(self, username: str, session_id: str) -> bool:
         if not settings.AGENT_COMPACT_ENABLED:
@@ -1657,27 +1814,53 @@ class ChatService:
                 elif hasattr(response, 'msgs') and len(response.msgs) > 0:
                     full_reasoning = self._extract_reasoning_text(response.msgs[-1])
 
+            raw_full_response = full_response
+
             # Send done event
             response_blocks = [block.model_dump() for block in _build_content_blocks(full_response)]
             reasoning_blocks = [block.model_dump() for block in _build_content_blocks(full_reasoning)] if full_reasoning else None
+            source_refs = self._collect_turn_source_refs(raw_full_response)
+            asset_refs = self._collect_turn_asset_refs(raw_full_response, source_refs=source_refs)
+            if not source_refs and not asset_refs:
+                self._backfill_turn_refs(username, session_id, message)
+                source_refs = self._collect_turn_source_refs(raw_full_response)
+                asset_refs = self._collect_turn_asset_refs(raw_full_response, source_refs=source_refs)
+            logger.info(
+                "Chat done payload | session={} sources={} assets={}",
+                session_id,
+                len(source_refs),
+                len(asset_refs),
+            )
+
+            # 将 sources 注入到正文末尾，作为特殊区块，前端解析后渲染超链接
+            if source_refs:
+                sources_block = self._build_sources_block(source_refs)
+                full_response_with_sources = full_response + "\n\n" + sources_block
+            else:
+                full_response_with_sources = full_response
+
+            # 保存到历史记录时也包含 sources block
             self.session_manager.append_transcript_message(
                 username,
                 session_id,
                 role="assistant",
-                content=full_response,
+                content=full_response_with_sources,
                 blocks=response_blocks,
                 reasoning=full_reasoning or None,
                 reasoning_blocks=reasoning_blocks,
+                sources=source_refs,
+                assets=asset_refs,
             )
             self.session_manager.save_session_memory(username, session_id)
 
             yield self._format_message_sse("done", {
                 "reasoning": full_reasoning,
                 "reasoning_blocks": reasoning_blocks,
-                "content": full_response,
+                "content": full_response_with_sources,
                 "blocks": response_blocks,
                 "session_id": session_id,
-                "sources": self._extract_sources(full_response),
+                "sources": source_refs,
+                "assets": asset_refs,
             })
 
         except Exception as e:
@@ -1690,6 +1873,7 @@ class ChatService:
                     "blocks": [block.model_dump() for block in _build_content_blocks(self._build_new_chat_required_message())],
                     "session_id": session_id if 'session_id' in locals() else None,
                     "sources": [],
+                    "assets": [],
                 })
                 return
             logger.exception(f"Chat streaming error: {e}")
@@ -1775,13 +1959,264 @@ class ChatService:
     @staticmethod
     def _extract_sources(content: str) -> List[str]:
         """Extract source file names from the response content."""
-        sources: set = set()
-        for match in re.finditer(r'来源[：:]\s*(.+?)(?:\n|$)', content):
-            for src in match.group(1).split('、'):
-                src = src.strip().strip('《》').strip('"').strip("'")
-                if src:
-                    sources.add(src)
-        return list(sources)
+        sources: List[str] = []
+        seen: set = set()
+        lines = (content or "").splitlines()
+
+        def add_source(raw: str) -> None:
+            src = (raw or "").strip().strip('《》').strip('"').strip("'")
+            src = re.sub(r'^[\-*•·●▪◦‣]+\s*', '', src)
+            src = re.sub(r'^\d+\s*[.、)\]]\s*', '', src)
+            src = re.sub(
+                r'[\s（(【\[](?:第\s*\d+(?:\.\d+){0,6}\s*(?:条|款|项|节|章)?|表\s*[A-Za-z]?\d+(?:[-—]\d+)?|图\s*[A-Za-z]?\d+(?:[-—]\d+)?|附录\s*[A-Za-z0-9一二三四五六七八九十]+).*$',
+                '',
+                src,
+                flags=re.IGNORECASE,
+            ).strip(" \t\r\n,，;；:：-—")
+            if not src or src in seen:
+                return
+            seen.add(src)
+            sources.append(src)
+
+        for index, line in enumerate(lines):
+            match = re.search(r'来源[：:]\s*(.*)$', line)
+            if not match:
+                continue
+
+            same_line_value = (match.group(1) or "").strip()
+            if same_line_value:
+                for part in re.split(r'[、;；]', same_line_value):
+                    add_source(part)
+
+            follow_index = index + 1
+            while follow_index < len(lines):
+                candidate = lines[follow_index].strip()
+                if not candidate:
+                    break
+                if re.match(r'^(总结|说明|注[:：]?|附加说明|补充说明)[:：]?', candidate):
+                    break
+                if re.match(r'^\d+\.\s+\S', candidate) or re.match(r'^[\-*•·●▪◦‣]\s*\S', candidate):
+                    add_source(candidate)
+                    follow_index += 1
+                    continue
+                if same_line_value:
+                    break
+                if re.search(r'(GB|DL|NB|Q/?GDW|CECS|IEC|ISO)', candidate, re.IGNORECASE):
+                    add_source(candidate)
+                    follow_index += 1
+                    continue
+                break
+
+        return sources
+
+    @staticmethod
+    def _normalize_source_refs(source_refs: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
+        """Normalize source refs, dedupe by file_tag, use full filename as label."""
+        normalized: List[Dict[str, str]] = []
+        seen_tags: set = set()
+        for ref in source_refs or []:
+            if not isinstance(ref, dict):
+                continue
+            file_tag = str(ref.get("file_tag", "")).strip()
+            if not file_tag or file_tag in seen_tags:
+                continue  # 去重
+
+            # label 就是完整文件名（去掉路径，保留原名）
+            label = str(ref.get("label", "")).strip() or file_tag.split("/")[-1].split("\\")[-1]
+
+            normalized.append({
+                "file_tag": file_tag,
+                "label": label,
+                "content_url": str(ref.get("content_url", "")).strip() or ChatService._build_content_url(file_tag),
+            })
+            seen_tags.add(file_tag)
+        return normalized
+
+    @staticmethod
+    def _normalize_asset_refs(asset_refs: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]]:
+        normalized: List[Dict[str, str]] = []
+        seen_tags: set = set()
+        for ref in asset_refs or []:
+            if not isinstance(ref, dict):
+                continue
+            asset_tag = str(ref.get("asset_tag", "")).strip()
+            if not asset_tag or asset_tag in seen_tags:
+                continue
+            normalized.append({
+                "asset_tag": asset_tag,
+                "label": str(ref.get("label", "")).strip() or asset_tag.split("/")[-1],
+                "kind": str(ref.get("kind", "")).strip() or "table_image",
+                "source_file_tag": str(ref.get("source_file_tag", "")).strip(),
+                "content_url": str(ref.get("content_url", "")).strip() or ChatService._build_content_url(asset_tag),
+            })
+            seen_tags.add(asset_tag)
+        return normalized
+
+    @staticmethod
+    def _build_content_url(file_tag: str) -> str:
+        query = urlencode({"file_tag": file_tag})
+        return f"/api/v1/files/content?{query}"
+
+    def _build_sources_block(self, source_refs: List[Dict[str, str]]) -> str:
+        """
+        构建 sources 区块，注入到正文末尾。
+        前端解析此区块后渲染成超链接列表。
+        格式：
+        <!-- SOURCE_REFS_START -->
+        - [文件名](file_tag)
+        <!-- SOURCE_REFS_END -->
+        """
+        if not source_refs:
+            return ""
+
+        lines = ["<!-- SOURCE_REFS_START -->"]
+        for ref in source_refs:
+            file_tag = ref.get("file_tag", "")
+            label = ref.get("label", file_tag.split("/")[-1] if file_tag else "")
+            if file_tag:
+                content_url = self._build_content_url(file_tag)
+                lines.append(f"- [{label}]({content_url})")
+        lines.append("<!-- SOURCE_REFS_END -->")
+        return "\n".join(lines)
+
+    def _collect_turn_source_refs(self, content: str) -> List[Dict[str, str]]:
+        try:
+            from app.dependencies import get_database_toolkit
+
+            toolkit_refs = self._normalize_source_refs(
+                get_database_toolkit().get_turn_source_refs()
+            )
+            if toolkit_refs:
+                return toolkit_refs
+        except Exception as exc:
+            logger.warning(f"Failed to collect tool-based source refs: {exc}")
+
+        fallback_refs: List[Dict[str, str]] = []
+        seen_tags: set = set()
+        for src in self._extract_sources(content):
+            file_tag = src.strip()
+            if not file_tag or file_tag in seen_tags:
+                continue
+            fallback_refs.append({
+                "file_tag": file_tag,
+                "label": file_tag.split("/")[-1],
+            })
+            seen_tags.add(file_tag)
+
+        if fallback_refs:
+            return fallback_refs
+
+        for ref in self._extract_source_refs_from_image_paths(content):
+            file_tag = ref["file_tag"]
+            if file_tag in seen_tags:
+                continue
+            fallback_refs.append(ref)
+            seen_tags.add(file_tag)
+        return fallback_refs
+
+    def _collect_turn_asset_refs(self, content: str, source_refs: Optional[List[Dict[str, str]]] = None) -> List[Dict[str, str]]:
+        try:
+            from app.dependencies import get_database_toolkit
+
+            toolkit_refs = self._normalize_asset_refs(
+                get_database_toolkit().get_turn_asset_refs()
+            )
+            if toolkit_refs:
+                return toolkit_refs
+        except Exception as exc:
+            logger.warning(f"Failed to collect tool-based asset refs: {exc}")
+
+        image_matches = self._extract_image_asset_refs_from_content(content, source_refs=source_refs)
+        return self._normalize_asset_refs(image_matches)
+
+    @staticmethod
+    def _extract_source_refs_from_image_paths(content: str) -> List[Dict[str, str]]:
+        refs: List[Dict[str, str]] = []
+        seen_tags: set = set()
+
+        for match in re.finditer(r'!\[[^\]]*\]\(([^)]+)\)', content or ""):
+            raw_path = (match.group(1) or "").strip().strip("<>").strip()
+            if not raw_path:
+                continue
+
+            normalized_path = raw_path.replace("\\", "/")
+            if "mineru_output/" not in normalized_path:
+                continue
+
+            image_name = normalized_path.rsplit("/", 1)[-1]
+            stem = Path(image_name).stem
+            stem = re.sub(r"_\d+$", "", stem)
+            if not stem:
+                continue
+
+            file_tag = f"data/stored_files/{stem}.pdf"
+            if file_tag in seen_tags:
+                continue
+
+            refs.append({
+                "file_tag": file_tag,
+                "label": f"{stem}.pdf",
+            })
+            seen_tags.add(file_tag)
+
+        return refs
+
+    @staticmethod
+    def _extract_image_asset_refs_from_content(
+        content: str,
+        *,
+        source_refs: Optional[List[Dict[str, str]]] = None,
+    ) -> List[Dict[str, str]]:
+        refs: List[Dict[str, str]] = []
+        seen_tags: set = set()
+        fallback_source_tag = ""
+        if source_refs:
+            fallback_source_tag = str(source_refs[0].get("file_tag", "")).strip()
+
+        for match in re.finditer(r'!\[[^\]]*\]\(([^)]+)\)', content or ""):
+            raw_path = (match.group(1) or "").strip().strip("<>").strip()
+            if not raw_path:
+                continue
+            normalized_path = raw_path.replace("\\", "/")
+            if "mineru_output/" not in normalized_path:
+                continue
+            asset_tag = normalized_path.lstrip("/")
+            if not asset_tag.startswith("data/stored_files/"):
+                if asset_tag.startswith("mineru_output/"):
+                    asset_tag = f"data/stored_files/{asset_tag}"
+                elif "mineru_output/" in asset_tag:
+                    asset_tag = f"data/stored_files/mineru_output/{asset_tag.split('mineru_output/', 1)[-1]}"
+            if asset_tag in seen_tags:
+                continue
+            source_file_tag = fallback_source_tag
+            if not source_file_tag:
+                image_name = asset_tag.rsplit("/", 1)[-1]
+                stem = Path(image_name).stem
+                stem = re.sub(r"_\d+$", "", stem)
+                if stem:
+                    source_file_tag = f"data/stored_files/{stem}.pdf"
+            refs.append({
+                "asset_tag": asset_tag,
+                "label": asset_tag.split("/")[-1],
+                "kind": "table_image",
+                "source_file_tag": source_file_tag,
+            })
+            seen_tags.add(asset_tag)
+        return refs
+
+    @staticmethod
+    def _strip_kb_image_markdown(content: str) -> str:
+        if not content:
+            return content
+
+        cleaned = re.sub(
+            r'^[ \t]*!\[[^\]]*\]\((?:[^)\n]*mineru_output/[^)\n]*)\)[ \t]*$',
+            '',
+            content,
+            flags=re.MULTILINE,
+        )
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        return cleaned.strip()
 
     def clear_session(self, username: str, session_id: str) -> bool:
         """Clear a chat session"""
@@ -1859,20 +2294,29 @@ class ChatService:
                 else:
                     full_response = "抱歉，无法生成回复。"
 
+            raw_full_response = full_response
+
             # Extract sources from response
-            sources = self._extract_sources(full_response)
+            sources = self._collect_turn_source_refs(raw_full_response)
+            assets = self._collect_turn_asset_refs(raw_full_response, source_refs=sources)
+            if not sources and not assets:
+                self._backfill_turn_refs(username="", session_id="sync", message=query)
+                sources = self._collect_turn_source_refs(raw_full_response)
+                assets = self._collect_turn_asset_refs(raw_full_response, source_refs=sources)
 
             logger.info(f"[RAG API] Query completed. Sources: {sources}")
 
             return {
                 "answer": full_response,
                 "sources": sources,
+                "assets": assets,
             }
         except Exception as e:
             logger.exception(f"[RAG API] Query failed: {e}")
             return {
                 "answer": f"查询失败: {str(e)}",
                 "sources": [],
+                "assets": [],
             }
         finally:
             with suppress(Exception):

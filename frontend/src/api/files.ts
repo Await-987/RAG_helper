@@ -82,11 +82,10 @@ export const fileApi = {
     return response.data;
   },
 
-  getContentUrl: (fileTag: string): string =>
-    `${getApiBaseUrl()}/files/content/${fileTag
-      .split('/')
-      .map((segment) => encodeURIComponent(segment))
-      .join('/')}`,
+  getContentUrl: (fileTag: string): string => {
+    const params = new URLSearchParams({ file_tag: fileTag });
+    return `${getApiBaseUrl()}/files/content?${params.toString()}`;
+  },
 
   fetchContentBlobUrl: async (fileTag: string): Promise<string> => {
     const token = getAccessToken();

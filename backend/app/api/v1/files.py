@@ -2,7 +2,8 @@
 File management API routes.
 """
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query
+from pathlib import Path
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Query, Request
 from fastapi.responses import FileResponse
 
 from app.schemas.file import (
@@ -11,8 +12,58 @@ from app.schemas.file import (
 )
 from app.services.file_service import FileService
 from app.dependencies import get_file_service, get_current_user, get_current_admin_user
+from app.core.security import verify_token
+from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/files", tags=["Files"])
+
+
+async def get_user_from_header_or_token(
+    request: Request,
+    token: Optional[str] = Query(None)
+) -> dict:
+    """
+    Get current user from Authorization header or token query parameter.
+    Used for endpoints that need direct link access (e.g., file preview).
+    """
+    # Try header first
+    auth_header = request.headers.get("Authorization", "")
+    jwt_token = None
+
+    if auth_header.startswith("Bearer "):
+        jwt_token = auth_header[7:]
+    elif token:
+        jwt_token = token
+
+    if not jwt_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required"
+        )
+
+    payload = verify_token(jwt_token)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token"
+        )
+
+    username = payload.get("sub")
+    if username is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token"
+        )
+
+    auth_service = AuthService()
+    user = auth_service.get_user_by_username(username)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found"
+        )
+
+    return user
 
 
 @router.get("", response_model=FileListResponse)
@@ -84,19 +135,7 @@ async def upload_file(
     )
 
 
-@router.get("/content/{file_tag:path}")
-async def get_file_content(
-    file_tag: str,
-    current_user: dict = Depends(get_current_user),
-    file_service: FileService = Depends(get_file_service)
-):
-    """
-    Serve a stored file or generated image for preview/download.
-
-    - **file_tag**: Relative storage path such as `data/stored_files/a.pdf`
-      or `shared-files/stored_files/a.pdf`
-      or `mineru_output/example.jpg`
-    """
+def _serve_file_content(file_tag: str, file_service: FileService) -> FileResponse:
     file_path = file_service.get_file_path(file_tag)
 
     if file_path is None or not file_path.exists():
@@ -106,6 +145,45 @@ async def get_file_content(
         )
 
     return FileResponse(path=file_path)
+
+
+@router.get("/content")
+async def get_file_content_by_query(
+    request: Request,
+    file_tag: str = Query(..., description="Stable file tag such as `data/stored_files/a.pdf`"),
+    token: Optional[str] = Query(None, description="JWT token (alternative to header)"),
+    current_user: dict = Depends(get_user_from_header_or_token),
+    file_service: FileService = Depends(get_file_service)
+):
+    """
+    Serve a stored file or generated image via query parameter.
+
+    This is the preferred endpoint because `file_tag` is treated as an opaque
+    identifier instead of being split by the router path parser.
+    """
+    return _serve_file_content(file_tag=file_tag, file_service=file_service)
+
+
+@router.get("/content/{file_tag:path}")
+async def get_file_content(
+    file_tag: str,
+    request: Request,
+    token: Optional[str] = Query(None, description="JWT token (alternative to header)"),
+    current_user: dict = Depends(get_user_from_header_or_token),
+    file_service: FileService = Depends(get_file_service)
+):
+    """
+    Serve a stored file or generated image for preview/download.
+
+    Authentication: Authorization header or ?token=xxx query parameter
+
+    - **file_tag**: Relative storage path such as `data/stored_files/a.pdf`
+      or `shared-files/stored_files/a.pdf`
+      or `mineru_output/example.jpg`
+      or just filename: `GB50229-2019.pdf`
+    - **token**: Optional JWT token via query parameter (for direct link access)
+    """
+    return _serve_file_content(file_tag=file_tag, file_service=file_service)
 
 
 @router.post("/import", response_model=FileImportResponse)
