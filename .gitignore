@@ -137,3 +137,4 @@ rag-deploy-bundle-20260318.tar.gz
 *.png
 .codex
 deploy_bundle_legacy_images
+revitai_new/
