@@ -54,24 +54,23 @@ docker compose images
 给 4 个镜像打 tag：
 
 ```bash
-docker tag $(docker compose images -q backend) rag-backend:20260318
-docker tag $(docker compose images -q web) rag-web:20260318
-docker tag redis:8-alpine rag-redis:8-alpine
-docker tag qdrant/qdrant:latest rag-qdrant:latest
+docker tag $(docker compose images -q backend) rag-backend:v2
+docker tag $(docker compose images -q web) rag-web:v2
+docker tag redis:8-alpine redis:v2
+docker tag qdrant/qdrant:latest qdrant:v2
 ```
 
 说明：
 
-- `20260318` 只是示例版本号
-- 你可以替换成自己的日期或版本，例如 `2026-03-18`、`v1`
+- 这里统一使用 `v2` 作为本次离线包版本号
 
 ## 4. 导出 4 个镜像
 
 ```bash
-docker save -o deploy_bundle/images/rag-backend-20260318.tar rag-backend:20260318
-docker save -o deploy_bundle/images/rag-web-20260318.tar rag-web:20260318
-docker save -o deploy_bundle/images/rag-redis-8-alpine.tar rag-redis:8-alpine
-docker save -o deploy_bundle/images/rag-qdrant-latest.tar rag-qdrant:latest
+docker save -o deploy_bundle/images/rag-backend-v2.tar rag-backend:v2
+docker save -o deploy_bundle/images/rag-web-v2.tar rag-web:v2
+docker save -o deploy_bundle/images/redis-v2.tar redis:v2
+docker save -o deploy_bundle/images/qdrant-v2.tar qdrant:v2
 ```
 
 ## 5. 准备部署文件
@@ -89,17 +88,17 @@ cp .env deploy_bundle/.env
 cat > deploy_bundle/docker-compose.deploy.yml <<'EOF'
 services:
   redis:
-    image: rag-redis:8-alpine
+    image: redis:v2
 
   qdrant:
-    image: rag-qdrant:latest
+    image: qdrant:v2
 
   backend:
-    image: rag-backend:20260318
+    image: rag-backend:v2
     build: null
 
   web:
-    image: rag-web:20260318
+    image: rag-web:v2
     build: null
 EOF
 ```
@@ -128,10 +127,10 @@ deploy_bundle/
 ├── docker-compose.yml
 ├── docker-compose.deploy.yml
 ├── images/
-│   ├── rag-backend-20260318.tar
-│   ├── rag-web-20260318.tar
-│   ├── rag-redis-8-alpine.tar
-│   └── rag-qdrant-latest.tar
+│   ├── rag-backend-v2.tar
+│   ├── rag-web-v2.tar
+│   ├── redis-v2.tar
+│   └── qdrant-v2.tar
 ├── data/
 ├── models/
 └── .user/
@@ -140,7 +139,7 @@ deploy_bundle/
 ## 8. 打成一个总包带走
 
 ```bash
-tar -czf rag-deploy-bundle-20260318.tar.gz deploy_bundle
+tar -czf rag-deploy-bundle-v2.tar.gz deploy_bundle
 ```
 
 ## 9. 到目标服务器后怎么部署
@@ -150,17 +149,17 @@ tar -czf rag-deploy-bundle-20260318.tar.gz deploy_bundle
 ```bash
 mkdir -p /home/ubuntu/rag_project
 cd /home/ubuntu/rag_project
-tar -xzf rag-deploy-bundle-20260318.tar.gz
+tar -xzf rag-deploy-bundle-v2.tar.gz
 cd deploy_bundle
 ```
 
 ### 9.2 导入 4 个镜像
 
 ```bash
-docker load -i images/rag-backend-20260318.tar
-docker load -i images/rag-web-20260318.tar
-docker load -i images/rag-redis-8-alpine.tar
-docker load -i images/rag-qdrant-latest.tar
+docker load -i images/rag-backend-v2.tar
+docker load -i images/rag-web-v2.tar
+docker load -i images/redis-v2.tar
+docker load -i images/qdrant-v2.tar
 ```
 
 ### 9.3 如果目标服务器模型地址不同，先改 `.env`
@@ -221,15 +220,15 @@ docker logs rag-web --tail 50
 cd /home/ubuntu/rag_project/rag
 mkdir -p deploy_bundle/images
 
-docker tag $(docker compose images -q backend) rag-backend:20260318
-docker tag $(docker compose images -q web) rag-web:20260318
-docker tag redis:8-alpine rag-redis:8-alpine
-docker tag qdrant/qdrant:latest rag-qdrant:latest
+docker tag $(docker compose images -q backend) rag-backend:v2
+docker tag $(docker compose images -q web) rag-web:v2
+docker tag redis:8-alpine redis:v2
+docker tag qdrant/qdrant:latest qdrant:v2
 
-docker save -o deploy_bundle/images/rag-backend-20260318.tar rag-backend:20260318
-docker save -o deploy_bundle/images/rag-web-20260318.tar rag-web:20260318
-docker save -o deploy_bundle/images/rag-redis-8-alpine.tar rag-redis:8-alpine
-docker save -o deploy_bundle/images/rag-qdrant-latest.tar rag-qdrant:latest
+docker save -o deploy_bundle/images/rag-backend-v2.tar rag-backend:v2
+docker save -o deploy_bundle/images/rag-web-v2.tar rag-web:v2
+docker save -o deploy_bundle/images/redis-v2.tar redis:v2
+docker save -o deploy_bundle/images/qdrant-v2.tar qdrant:v2
 
 cp docker-compose.yml deploy_bundle/
 cp .env deploy_bundle/.env
@@ -237,17 +236,17 @@ cp .env deploy_bundle/.env
 cat > deploy_bundle/docker-compose.deploy.yml <<'EOF'
 services:
   redis:
-    image: rag-redis:8-alpine
+    image: redis:v2
 
   qdrant:
-    image: rag-qdrant:latest
+    image: qdrant:v2
 
   backend:
-    image: rag-backend:20260318
+    image: rag-backend:v2
     build: null
 
   web:
-    image: rag-web:20260318
+    image: rag-web:v2
     build: null
 EOF
 
@@ -255,7 +254,7 @@ rsync -a data deploy_bundle/
 rsync -a models deploy_bundle/
 rsync -a .user deploy_bundle/
 
-tar -czf rag-deploy-bundle-20260318.tar.gz deploy_bundle
+tar -czf rag-deploy-bundle-v2.tar.gz deploy_bundle
 ```
 
 ### 11.2 目标服务器
@@ -263,13 +262,13 @@ tar -czf rag-deploy-bundle-20260318.tar.gz deploy_bundle
 ```bash
 mkdir -p /home/ubuntu/rag_project
 cd /home/ubuntu/rag_project
-tar -xzf rag-deploy-bundle-20260318.tar.gz
+tar -xzf rag-deploy-bundle-v2.tar.gz
 cd deploy_bundle
 
-docker load -i images/rag-backend-20260318.tar
-docker load -i images/rag-web-20260318.tar
-docker load -i images/rag-redis-8-alpine.tar
-docker load -i images/rag-qdrant-latest.tar
+docker load -i images/rag-backend-v2.tar
+docker load -i images/rag-web-v2.tar
+docker load -i images/redis-v2.tar
+docker load -i images/qdrant-v2.tar
 
 docker compose -f docker-compose.yml -f docker-compose.deploy.yml up -d
 ```
@@ -323,13 +322,13 @@ cd /home/ubuntu/rag_project
 把你的离线包上传到这个目录，例如：
 
 ```text
-/home/ubuntu/rag_project/rag-deploy-bundle-20260318.tar.gz
+/home/ubuntu/rag_project/rag-deploy-bundle-v2.tar.gz
 ```
 
 ### 13.2 解压
 
 ```bash
-tar -xzf rag-deploy-bundle-20260318.tar.gz
+tar -xzf rag-deploy-bundle-v2.tar.gz
 cd deploy_bundle
 ```
 
@@ -342,10 +341,10 @@ cd /home/ubuntu/rag_project/deploy_bundle
 ### 13.3 导入 4 个镜像
 
 ```bash
-docker load -i images/rag-backend-latest.tar
-docker load -i images/rag-web-latest.tar
-docker load -i images/redis-8-alpine.tar
-docker load -i images/qdrant-latest.tar
+docker load -i images/rag-backend-v2.tar
+docker load -i images/rag-web-v2.tar
+docker load -i images/redis-v2.tar
+docker load -i images/qdrant-v2.tar
 ```
 
 ### 13.4 修改 `.env`
@@ -436,7 +435,7 @@ C:\Users\<用户名>\Desktop\...
 mkdir C:\rag_deploy
 ```
 
-然后把 `rag-deploy-bundle-20260318.tar.gz` 放到：
+然后把 `rag-deploy-bundle-v2.tar.gz` 放到：
 
 ```text
 C:\rag_deploy\
@@ -454,14 +453,14 @@ wsl
 
 ```bash
 mkdir -p /home/ubuntu/rag_project
-cp /mnt/c/rag_deploy/rag-deploy-bundle-20260318.tar.gz /home/ubuntu/rag_project/
+cp /mnt/c/rag_deploy/rag-deploy-bundle-v2.tar.gz /home/ubuntu/rag_project/
 cd /home/ubuntu/rag_project
 ```
 
 ### 14.4 解压
 
 ```bash
-tar -xzf rag-deploy-bundle-20260318.tar.gz
+tar -xzf rag-deploy-bundle-v2.tar.gz
 cd deploy_bundle
 ```
 
@@ -472,10 +471,10 @@ cd deploy_bundle
 在 WSL 或 PowerShell 中均可执行：
 
 ```bash
-docker load -i images/rag-backend-latest.tar
-docker load -i images/rag-web-latest.tar
-docker load -i images/redis-8-alpine.tar
-docker load -i images/qdrant-latest.tar
+docker load -i images/rag-backend-v2.tar
+docker load -i images/rag-web-v2.tar
+docker load -i images/redis-v2.tar
+docker load -i images/qdrant-v2.tar
 ```
 
 ### 14.6 修改 `.env`

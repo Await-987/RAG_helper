@@ -11,6 +11,8 @@ const SUGGESTION_CATEGORIES = [
     title: '文档查询',
     color: 'text-blue-400',
     bg: 'bg-blue-500/10',
+    border: 'border-blue-500/10',
+    hoverBorder: 'group-hover:border-blue-500/25',
     suggestions: ['变压器短路阻抗标准值是多少？', '电力线路保护配置有哪些要求？'],
   },
   {
@@ -18,6 +20,8 @@ const SUGGESTION_CATEGORIES = [
     title: '数据分析',
     color: 'text-emerald-400',
     bg: 'bg-emerald-500/10',
+    border: 'border-emerald-500/10',
+    hoverBorder: 'group-hover:border-emerald-500/25',
     suggestions: ['绝缘配合的基本原则是什么？', '计算导线载流量的方法'],
   },
   {
@@ -25,6 +29,8 @@ const SUGGESTION_CATEGORIES = [
     title: '概念解释',
     color: 'text-purple-400',
     bg: 'bg-purple-500/10',
+    border: 'border-purple-500/10',
+    hoverBorder: 'group-hover:border-purple-500/25',
     suggestions: ['什么是短路电流？', '解释无功补偿的作用'],
   },
 ];
@@ -42,11 +48,11 @@ export function WelcomeScreen({ onSend }: WelcomeScreenProps) {
       {/* Main content area */}
       <div className="flex-1 flex flex-col items-center justify-center px-4 pt-8 pb-4">
         {/* Brand and greeting */}
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center gap-2 mb-3 px-3 py-1.5 rounded-full bg-primary-500/10 border border-primary-500/20">
+        <div className="text-center mb-10">
+          <div className="inline-flex items-center gap-2 mb-4 px-3 py-1.5 rounded-full bg-primary-500/10 border border-primary-500/15">
             <span className="text-xs font-medium text-primary-400">RAG Knowledge Base</span>
           </div>
-          <h1 className="text-2xl font-semibold text-white mb-2">
+          <h1 className="text-3xl font-semibold text-white mb-2">
             今天需要什么帮助？
           </h1>
           <p className="text-zinc-400">
@@ -54,12 +60,14 @@ export function WelcomeScreen({ onSend }: WelcomeScreenProps) {
           </p>
         </div>
 
-        {/* Suggestion cards - ChatGPT style grid */}
+        {/* Suggestion cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 max-w-2xl w-full mb-8">
           {SUGGESTION_CATEGORIES.map((category) => (
-            <div key={category.title} className="suggestion-card">
+            <div key={category.title} className={`group suggestion-card ${category.border} ${category.hoverBorder}`}>
               <div className={`inline-flex items-center gap-2 mb-3 ${category.color}`}>
-                <category.icon size={18} />
+                <div className={`p-1.5 rounded-lg ${category.bg}`}>
+                  <category.icon size={16} />
+                </div>
                 <span className="font-medium">{category.title}</span>
               </div>
               <div className="space-y-2">
@@ -67,7 +75,7 @@ export function WelcomeScreen({ onSend }: WelcomeScreenProps) {
                   <button
                     key={text}
                     onClick={() => onSend(text)}
-                    className="block w-full text-left text-sm text-zinc-400 hover:text-zinc-200 transition-colors py-1"
+                    className="block w-full text-left text-sm text-zinc-400 hover:text-zinc-200 transition-colors py-1 px-2 -mx-2 rounded-lg hover:bg-white/[0.03]"
                   >
                     {text}
                   </button>
@@ -78,7 +86,7 @@ export function WelcomeScreen({ onSend }: WelcomeScreenProps) {
         </div>
       </div>
 
-      {/* Bottom input area - ChatGPT style */}
+      {/* Bottom input area */}
       <div className="px-4 pb-4">
         <div className="max-w-2xl mx-auto">
           <div className="relative">
@@ -100,7 +108,7 @@ export function WelcomeScreen({ onSend }: WelcomeScreenProps) {
             <button
               onClick={handleSubmit}
               disabled={!input.trim()}
-              className="absolute right-3 bottom-3 w-9 h-9 rounded-xl bg-primary-600 hover:bg-primary-700 disabled:bg-zinc-600 disabled:opacity-50 flex items-center justify-center transition-colors"
+              className="absolute right-3 bottom-3 w-9 h-9 rounded-xl bg-primary-600 hover:bg-primary-700 disabled:bg-zinc-600 disabled:opacity-50 flex items-center justify-center transition-all duration-150 hover:shadow-lg hover:shadow-primary-600/30 hover:translate-y-[-1px] active:scale-95"
             >
               <Send size={18} className="text-white" />
             </button>

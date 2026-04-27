@@ -61,24 +61,24 @@ export function Sidebar() {
 
   return (
     <div className="w-60 h-full flex flex-col sidebar-container">
-      {/* Assistant Name */}
-      <div className="px-3 pt-4 pb-2">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
+      {/* Brand area */}
+      <div className="px-3 pt-5 pb-3">
+        <div className="flex items-center gap-2.5">
+          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg shadow-blue-600/20">
             <MessageSquare size={18} className="text-white" />
           </div>
           <div>
             <h1 className="text-base font-semibold text-zinc-100">智能助手</h1>
-            <p className="text-xs text-zinc-500">知识库检索问答</p>
+            <p className="text-[11px] text-zinc-500">知识库检索问答</p>
           </div>
         </div>
       </div>
 
       {/* New chat */}
-      <div className="p-3">
+      <div className="px-3 pb-2">
         <button
           onClick={handleNewChat}
-          className="sidebar-item w-full justify-center gap-2 rounded-xl border border-zinc-700 text-sm"
+          className="sidebar-item w-full justify-center gap-2 rounded-xl border border-zinc-700/50 text-sm hover:border-zinc-600 transition-all"
         >
           <Plus size={16} />
           新对话
@@ -94,13 +94,16 @@ export function Sidebar() {
             placeholder="搜索..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-zinc-800/50 border-none outline-none text-zinc-300 placeholder-zinc-500 focus:bg-zinc-800"
+            className="w-full pl-9 pr-3 py-2 text-sm rounded-xl bg-zinc-800/50 border border-white/[0.04] outline-none text-zinc-300 placeholder-zinc-500 focus:bg-zinc-800 focus:border-white/[0.08] transition-all"
           />
         </div>
       </div>
 
+      {/* Divider */}
+      <div className="mx-3 border-t border-white/[0.04]" />
+
       {/* Session list */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar px-2">
+      <div className="flex-1 overflow-y-auto custom-scrollbar px-2 pt-2">
         {sessionsLoading ? (
           <div className="flex items-center justify-center py-6">
             <Loader2 size={16} className="animate-spin text-zinc-500" />
@@ -112,7 +115,7 @@ export function Sidebar() {
             <div
               key={session.session_id}
               onClick={() => handleSelectSession(session.session_id)}
-              className={`group flex items-center gap-2 px-2 py-2 rounded-xl cursor-pointer mb-1 ${
+              className={`group flex items-center gap-2 px-2 py-2 rounded-xl cursor-pointer mb-1 transition-all duration-150 ${
                 currentSessionId === session.session_id
                   ? 'sidebar-item-active'
                   : 'sidebar-item'
@@ -130,6 +133,9 @@ export function Sidebar() {
           ))
         )}
       </div>
+
+      {/* Divider */}
+      <div className="mx-3 border-t border-white/[0.04]" />
 
       {/* Navigation */}
       <div className="px-2 py-2 space-y-1">
@@ -151,13 +157,16 @@ export function Sidebar() {
         )}
       </div>
 
+      {/* Divider */}
+      <div className="mx-3 border-t border-white/[0.04]" />
+
       {/* User */}
       <div className="p-3">
         <button
           onClick={() => setShowUserMenu(!showUserMenu)}
           className="w-full flex items-center gap-2 px-2 py-2 rounded-xl text-sm text-zinc-300 hover:bg-zinc-800/50 transition-colors"
         >
-          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-primary-500 to-primary-600 flex items-center justify-center text-xs font-medium text-white">
+          <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-primary-500 to-primary-600 flex items-center justify-center text-xs font-medium text-white shadow-sm shadow-primary-600/20">
             {user?.username?.charAt(0).toUpperCase()}
           </div>
           <span className="flex-1 truncate">{user?.username}</span>
@@ -165,7 +174,7 @@ export function Sidebar() {
         </button>
 
         {showUserMenu && (
-          <div className="mt-1 rounded-xl bg-zinc-800/80 overflow-hidden">
+          <div className="mt-1 rounded-xl bg-zinc-800/80 border border-white/[0.04] overflow-hidden">
             <button
               onClick={() => { navigate('/change-password'); setShowUserMenu(false); }}
               className="w-full flex items-center gap-2 px-3 py-2 text-sm text-zinc-400 hover:text-zinc-200 hover:bg-zinc-700/50 transition-colors"

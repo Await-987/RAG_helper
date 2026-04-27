@@ -8,6 +8,7 @@ import 'katex/dist/katex.min.css';
 import { CodeBlock } from './CodeBlock';
 import { AuthenticatedImage } from './AuthenticatedImage';
 import { getAccessToken } from '@/utils/authToken';
+import { FileText } from 'lucide-react';
 
 interface MessageContentProps {
   content: string;
@@ -29,12 +30,6 @@ function extractSourcesBlock(content: string): { mainContent: string; sourcesCon
 export const MessageContent = memo(function MessageContent({ content }: MessageContentProps) {
   // 解析 sources 区块
   const { mainContent, sourcesContent } = extractSourcesBlock(content);
-
-  console.log('[DEBUG] MessageContent:', {
-    contentLength: content.length,
-    mainContentPreview: mainContent.substring(0, 200),
-    hasSourcesBlock: !!sourcesContent,
-  });
 
   // 用 MarkdownRenderer 渲染内容（包含图片），SourcesBlock 渲染超链接
   return (
@@ -91,8 +86,11 @@ function SourcesBlock({ content }: { content: string }) {
   if (sources.length === 0) return null;
 
   return (
-    <div className="mt-4 pt-3 border-t border-zinc-800">
-      <div className="text-xs font-medium text-zinc-400 mb-2">参考来源</div>
+    <div className="mt-4 pt-3 border-t border-zinc-800/50">
+      <div className="text-xs font-medium text-zinc-500 mb-2 flex items-center gap-1.5">
+        <FileText size={12} />
+        参考来源
+      </div>
       <div className="flex flex-wrap gap-2">
         {sources.map((source, i) => {
           let url = source.url;
@@ -106,8 +104,9 @@ function SourcesBlock({ content }: { content: string }) {
               href={url}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-xs text-primary-400 bg-primary-500/10 hover:bg-primary-500/20 hover:text-primary-300 transition-colors cursor-pointer"
+              className="source-card"
             >
+              <span className="text-[10px] text-primary-500/60 font-medium">[{i + 1}]</span>
               {source.label}
             </a>
           );

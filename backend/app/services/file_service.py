@@ -68,6 +68,7 @@ class FileService:
         page_size: int = 20,
         file_type: Optional[str] = None,
         search: Optional[str] = None,
+        force_refresh: bool = False,
     ) -> FileListResponse:
         """
         Get paginated file list.
@@ -84,7 +85,10 @@ class FileService:
         from app.core.file_catalog import get_local_files_with_db_status
 
         # Get all files
-        file_info_list, total_chunks = get_local_files_with_db_status(self.storage_dir)
+        file_info_list, total_chunks = get_local_files_with_db_status(
+            self.storage_dir,
+            force_refresh=force_refresh,
+        )
         all_file_info_list = list(file_info_list)
 
         global_stats = {

@@ -35,6 +35,20 @@ def build_safe_name_prefix(original_stem: str, max_stem_length: int = 80) -> str
     """
     return build_safe_debug_filename(original_stem, "", max_stem_length=max_stem_length)
 
+
+def sanitize_utf8_text(value: Any) -> str:
+    """
+    Remove invalid surrogate code points so downstream hashing, prompting,
+    JSON serialization and vector DB writes are UTF-8 safe.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.encode("utf-8", errors="ignore").decode("utf-8")
+    if isinstance(value, list):
+        return "".join(sanitize_utf8_text(item) for item in value)
+    return str(value).encode("utf-8", errors="ignore").decode("utf-8")
+
 def rename_images_for_document(
     content_list: list,
     document_name: str,
@@ -166,6 +180,9 @@ def generate_table_summary(table_content: str, table_caption: str = "", use_llm_
     Returns:
         表格摘要（200字以内）
     """
+    table_content = sanitize_utf8_text(table_content)
+    table_caption = sanitize_utf8_text(table_caption)
+
     # 如果不使用 LLM 摘要，直接返回原始内容（截断）
     if not use_llm_summary:
         # 返回截断的原始内容
@@ -198,6 +215,7 @@ def generate_table_summary(table_content: str, table_caption: str = "", use_llm_
         summary = generate_table_summary_local(prompt)
 
         if summary:
+            summary = sanitize_utf8_text(summary)
             # 限制摘要长度
             if len(summary) > 250:
                 summary = summary[:250] + "..."
@@ -461,7 +479,7 @@ def preprocess(data: list, chunk_min_size: int = 2000, overlap_size: int = 300, 
         if footnote:
             content_parts.append('图片脚注: ' + ' '.join(footnote))
 
-        return '\n'.join(content_parts)
+        return sanitize_utf8_text('\n'.join(content_parts))
 
     def latex_to_plain_text(latex_str: str) -> str:
         """
@@ -536,12 +554,12 @@ def preprocess(data: list, chunk_min_size: int = 2000, overlap_size: int = 300, 
         caption = table_item.get('table_caption', [])
 
         if debug and caption:
-            print(f"[DEBUG] extract_table_content: 标题长度={len(' '.join(caption))}")
+            print(f"[DEBUG] extract_table_content: 标题长度={len(sanitize_utf8_text(' '.join(caption)))}")
         # 正确处理空标题：[] 或 [''] 都视为无标题
         has_valid_caption = caption and not (len(caption) == 1 and caption[0] == '')
 
         if has_valid_caption:
-            caption_text = ' '.join(caption)
+            caption_text = sanitize_utf8_text(' '.join(caption))
 
             # 将LaTeX公式转换为普通文本用于向量匹配
             import re
@@ -571,7 +589,7 @@ def preprocess(data: list, chunk_min_size: int = 2000, overlap_size: int = 300, 
         # 直接添加 table_body 原始内容，不做任何处理
         has_body = table_body in table_item and table_item[table_body]
         if has_body:
-            body_content = table_item[table_body]
+            body_content = sanitize_utf8_text(table_item[table_body])
             if debug:
                 print(f"[DEBUG] extract_table_content: table_body 长度={len(body_content)}")
             if body_content and body_content.strip():
@@ -584,13 +602,13 @@ def preprocess(data: list, chunk_min_size: int = 2000, overlap_size: int = 300, 
         # 添加表格脚注
         footnote = table_item.get('table_footnote', [])
         if footnote:
-            content_parts.append(' '.join(footnote))
+            content_parts.append(sanitize_utf8_text(' '.join(footnote)))
 
         if debug:
             separator = '\n'
             print(f"[DEBUG] extract_table_content: 返回，总长度={len(separator.join(content_parts))}")
 
-        return '\n'.join(content_parts)
+        return sanitize_utf8_text('\n'.join(content_parts))
 
     def extract_context(data_list: list, table_idx: int, direction: str = 'before', max_chars: int = 500) -> str:
         """
@@ -626,9 +644,9 @@ def preprocess(data: list, chunk_min_size: int = 2000, overlap_size: int = 300, 
                     else:
                         key = type2key[item_type]
                         if isinstance(item.get(key), str):
-                            content = item[key]
+                            content = sanitize_utf8_text(item[key])
                         elif isinstance(item.get(key), list):
-                            content = ','.join(item[key])
+                            content = sanitize_utf8_text(','.join(item[key]))
                         else:
                             content = ''
 
@@ -653,9 +671,9 @@ def preprocess(data: list, chunk_min_size: int = 2000, overlap_size: int = 300, 
                     else:
                         key = type2key[item_type]
                         if isinstance(item.get(key), str):
-                            content = item[key]
+                            content = sanitize_utf8_text(item[key])
                         elif isinstance(item.get(key), list):
-                            content = ','.join(item[key])
+                            content = sanitize_utf8_text(','.join(item[key]))
                         else:
                             content = ''
 
@@ -664,7 +682,7 @@ def preprocess(data: list, chunk_min_size: int = 2000, overlap_size: int = 300, 
                         current_chars += len(content)
                 idx += 1
 
-        result = '\n'.join(context_parts)
+        result = sanitize_utf8_text('\n'.join(context_parts))
         # 截断到 max_chars
         if len(result) > max_chars:
             if direction == 'before':
@@ -701,8 +719,8 @@ def preprocess(data: list, chunk_min_size: int = 2000, overlap_size: int = 300, 
             child = text_content[start:start + child_size]
             if child.strip():
                 chunks.append({
-                    'child': child,
-                    'parent': parent_content,
+                    'child': sanitize_utf8_text(child),
+                    'parent': sanitize_utf8_text(parent_content),
                     'types': types_list.copy()
                 })
             if start + child_size >= len(text_content):
@@ -834,9 +852,9 @@ def preprocess(data: list, chunk_min_size: int = 2000, overlap_size: int = 300, 
         else:
             key = type2key[item_type]
             if isinstance(item.get(key), str):
-                content = item[key]
+                content = sanitize_utf8_text(item[key])
             elif isinstance(item.get(key), list):
-                content = ','.join(item[key])
+                content = sanitize_utf8_text(','.join(item[key]))
 
         if content:
             accumulated_text += content
@@ -881,9 +899,9 @@ def preprocess(data: list, chunk_min_size: int = 2000, overlap_size: int = 300, 
                     else:
                         key = type2key[overlap_type]
                         if isinstance(overlap_item.get(key), str):
-                            overlap_content = overlap_item[key]
+                            overlap_content = sanitize_utf8_text(overlap_item[key])
                         elif isinstance(overlap_item.get(key), list):
-                            overlap_content = ','.join(overlap_item[key])
+                            overlap_content = sanitize_utf8_text(','.join(overlap_item[key]))
                         else:
                             overlap_content = ''
                     overlap_text = overlap_content + overlap_text

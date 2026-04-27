@@ -269,14 +269,17 @@ def delete_local_file(file_path: Path, delete_images: bool = False) -> bool:
 def get_local_files_with_db_status(
     storage_dir: Path,
     cache_ttl_seconds: int = 60,
+    force_refresh: bool = False,
 ) -> Tuple[List[Dict], int]:
     cache_key = str(storage_dir.resolve())
+    if force_refresh:
+        _local_file_status_cache.pop(cache_key, None)
     cached = _local_file_status_cache.get(cache_key)
     now = time.monotonic()
     if cached and now - cached[0] < cache_ttl_seconds:
         return _clone_file_info_list(cached[1]), cached[2]
 
-    db_stats, total_chunks = get_database_stats()
+    db_stats, total_chunks = get_database_stats(use_cache=not force_refresh)
     file_info_list = []
 
     local_files = []

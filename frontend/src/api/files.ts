@@ -17,7 +17,8 @@ export const fileApi = {
     page: number = 1,
     pageSize: number = 20,
     fileType?: string,
-    search?: string
+    search?: string,
+    forceRefresh: boolean = false
   ): Promise<FileListResponse> => {
     const params = new URLSearchParams({
       page: String(page),
@@ -28,6 +29,9 @@ export const fileApi = {
     }
     if (search && search.trim()) {
       params.append('search', search.trim());
+    }
+    if (forceRefresh) {
+      params.append('force_refresh', 'true');
     }
     const response = await api.get<FileListResponse>(`/files?${params}`);
     return response.data;

@@ -21,16 +21,18 @@ export function ReasoningBlock({ content, defaultOpen = false }: ReasoningBlockP
         <span>思考过程</span>
         <ChevronDown
           size={14}
-          className={`transition-transform ${open ? 'rotate-180' : ''}`}
+          className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
         />
       </button>
-      {open && (
-        <div className="mt-2 p-3 rounded-xl text-sm text-zinc-400 leading-relaxed max-h-[50vh] overflow-y-auto custom-scrollbar"
-          style={{ background: 'rgba(255,255,255,0.03)' }}
-        >
-          {content}
+      <div className={`collapse-wrapper ${open ? 'open' : ''}`}>
+        <div className="collapse-inner">
+          <div className="mt-2 p-3 rounded-xl text-sm text-zinc-400 leading-relaxed max-h-[50vh] overflow-y-auto custom-scrollbar border border-white/[0.04]"
+            style={{ background: 'rgba(255,255,255,0.03)' }}
+          >
+            {content}
+          </div>
         </div>
-      )}
+      </div>
     </div>
   );
 }

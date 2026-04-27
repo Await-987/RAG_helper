@@ -72,6 +72,7 @@ async def list_files(
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     file_type: Optional[str] = Query(None, description="Filter by type: 'imported', 'not_imported', 'ghost'"),
     search: Optional[str] = Query(None, description="Keyword search across the full file list before pagination"),
+    force_refresh: bool = Query(False, description="Bypass file-status caches and recompute the latest state"),
     current_user: dict = Depends(get_current_user),
     file_service: FileService = Depends(get_file_service)
 ):
@@ -88,6 +89,7 @@ async def list_files(
         page_size=page_size,
         file_type=file_type,
         search=search,
+        force_refresh=force_refresh,
     )
 
 

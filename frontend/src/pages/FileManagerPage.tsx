@@ -17,25 +17,29 @@ import {
   XCircle,
   AlertCircle,
   Database,
+  ArrowUpFromLine,
 } from 'lucide-react';
 
 const PAGE_SIZE = 10;
 
-const STATUS_CONFIG: Record<FileType, { label: string; icon: React.ReactNode; color: string }> = {
+const STATUS_CONFIG: Record<FileType, { label: string; icon: React.ReactNode; color: string; rowClass: string }> = {
   imported: {
     label: '已入库',
     icon: <CheckCircle size={12} />,
     color: 'text-emerald-400',
+    rowClass: 'file-row-imported',
   },
   not_imported: {
     label: '待处理',
     icon: <AlertCircle size={12} />,
     color: 'text-amber-400',
+    rowClass: 'file-row-not_imported',
   },
   ghost: {
     label: '残留',
     icon: <XCircle size={12} />,
     color: 'text-red-400',
+    rowClass: 'file-row-ghost',
   },
 };
 
@@ -69,10 +73,10 @@ export function FileManagerPage() {
   const [previewError, setPreviewError] = useState<string | null>(null);
 
   const fetchFiles = useCallback(
-    async (page = currentPage, type = filterType, search = deferredSearch) => {
+    async (page = currentPage, type = filterType, search = deferredSearch, forceRefresh = false) => {
       setLoading(true);
       try {
-        const res = await fileApi.getFiles(page, PAGE_SIZE, type || undefined, search || undefined);
+        const res = await fileApi.getFiles(page, PAGE_SIZE, type || undefined, search || undefined, forceRefresh);
         setFiles(res.files);
         setTotalPages(res.total_pages);
         setStats(res.stats);
@@ -112,7 +116,7 @@ export function FileManagerPage() {
           setImporting(false);
           setCurrentPage(1);
           setSelected({});
-          await fetchFiles(1, filterType, deferredSearch);
+          await fetchFiles(1, filterType, deferredSearch, true);
         }
       } catch {
         clearInterval(interval);
@@ -161,7 +165,7 @@ export function FileManagerPage() {
         for (const file of Array.from(fileList)) await fileApi.uploadFile(file);
         setCurrentPage(1);
         setFilterType('not_imported');
-        await fetchFiles(1, 'not_imported', deferredSearch);
+        await fetchFiles(1, 'not_imported', deferredSearch, true);
       } catch (err) {
         console.error('Upload failed:', err);
       } finally {
@@ -189,11 +193,11 @@ export function FileManagerPage() {
     if (!confirm('删除此文件？')) return;
     try {
       await fileApi.deleteFile(tag);
-      await fetchFiles();
+      await fetchFiles(currentPage, filterType, deferredSearch, true);
     } catch (err) {
       console.error('Delete failed:', err);
     }
-  }, [fetchFiles]);
+  }, [currentPage, deferredSearch, fetchFiles, filterType]);
 
   const handleBatchDelete = useCallback(async () => {
     const tags = Object.keys(selected);
@@ -202,11 +206,11 @@ export function FileManagerPage() {
     try {
       await fileApi.deleteFiles({ file_tags: tags });
       setSelected({});
-      await fetchFiles();
+      await fetchFiles(currentPage, filterType, deferredSearch, true);
     } catch (err) {
       console.error('Batch delete failed:', err);
     }
-  }, [selected, fetchFiles]);
+  }, [currentPage, deferredSearch, selected, fetchFiles, filterType]);
 
   const toggleFile = useCallback((tag: string, type: FileType) => {
     setSelected((prev) => {
@@ -311,27 +315,27 @@ export function FileManagerPage() {
               value={searchQuery}
               onChange={(e) => { setSearchQuery(e.target.value); setCurrentPage(1); }}
               placeholder="搜索..."
-              className="pl-9 pr-3 py-2 text-sm rounded-xl bg-zinc-800/50 border-none outline-none text-zinc-300 placeholder-zinc-500 focus:bg-zinc-800 w-40"
+              className="pl-9 pr-3 py-2 text-sm rounded-xl bg-zinc-800/50 border border-white/[0.04] outline-none text-zinc-300 placeholder-zinc-500 focus:bg-zinc-800 focus:border-white/[0.08] w-40 transition-all"
             />
           </div>
           <select
             value={filterType}
             onChange={(e) => { setFilterType(e.target.value); setCurrentPage(1); }}
-            className="py-2 text-sm rounded-xl bg-zinc-800/50 border-none outline-none text-zinc-300"
+            className="py-2 text-sm rounded-xl bg-zinc-800/50 border border-white/[0.04] outline-none text-zinc-300"
           >
             <option value="">全部</option>
             <option value="imported">已入库</option>
             <option value="not_imported">待处理</option>
             <option value="ghost">残留</option>
           </select>
-          <button onClick={() => fetchFiles()} className="p-2 rounded-xl text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition-colors">
+          <button onClick={() => fetchFiles(currentPage, filterType, deferredSearch, true)} className="p-2 rounded-xl text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition-colors">
             <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
           </button>
         </div>
 
         {/* Import progress */}
         {importJob && ['queued', 'running'].includes(importJob.status) && (
-          <div className="mb-3 px-4 py-3 rounded-xl bg-primary-500/10 text-sm">
+          <div className="mb-3 px-4 py-3 rounded-xl bg-primary-500/10 border border-primary-500/10 text-sm">
             <div className="flex justify-between">
               <span className="text-zinc-300">索引任务：{importJob.status === 'queued' ? '排队' : '执行'}</span>
               <span className="text-zinc-400">{importJob.current_index}/{importJob.total}</span>
@@ -345,9 +349,19 @@ export function FileManagerPage() {
             <Loader2 size={20} className="animate-spin text-zinc-500" />
           </div>
         ) : files.length === 0 ? (
-          <div className="text-center py-12 text-zinc-500">
-            <FileText size={32} className="mx-auto mb-2 opacity-50" />
-            <p>{deferredSearch ? '无匹配文件' : '暂无文件'}</p>
+          <div className="text-center py-16 text-zinc-500">
+            {isAdmin ? (
+              <div className="border-2 border-dashed border-zinc-700 rounded-2xl p-10 max-w-md mx-auto hover:border-zinc-500 transition-colors cursor-pointer" onClick={handleUpload}>
+                <ArrowUpFromLine size={36} className="mx-auto mb-3 opacity-40" />
+                <p className="text-zinc-400 mb-1">拖拽文件到此处或点击上传</p>
+                <p className="text-xs text-zinc-600">支持 PDF、DOC、DOCX、TXT、MD</p>
+              </div>
+            ) : (
+              <>
+                <FileText size={32} className="mx-auto mb-2 opacity-50" />
+                <p>{deferredSearch ? '无匹配文件' : '暂无文件'}</p>
+              </>
+            )}
           </div>
         ) : (
           <>
@@ -370,11 +384,11 @@ export function FileManagerPage() {
               </div>
             )}
 
-            <div className="card overflow-hidden divide-y divide-zinc-800">
+            <div className="card overflow-hidden divide-y divide-zinc-800/50">
               {files.map((file) => {
                 const st = STATUS_CONFIG[file.type];
                 return (
-                  <div key={file.tag} className="flex items-center gap-3 px-3 py-2.5 hover:bg-zinc-800/30 transition-colors">
+                  <div key={file.tag} className={`flex items-center gap-3 px-3 py-2.5 hover:bg-zinc-800/30 transition-colors ${st.rowClass}`}>
                     {isAdmin && (
                       <input
                         type="checkbox"
@@ -422,11 +436,11 @@ export function FileManagerPage() {
 
         {/* Preview modal */}
         {previewFile && (
-          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setPreviewFile(null)}>
-            <div className="w-full max-w-3xl h-[80vh] card flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
-              <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-800">
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 modal-overlay-enter" onClick={() => setPreviewFile(null)}>
+            <div className="w-full max-w-3xl h-[80vh] card-glass flex flex-col overflow-hidden modal-enter" onClick={(e) => e.stopPropagation()}>
+              <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-800/50">
                 <span className="text-sm text-zinc-300 truncate">{previewFile.split('/').pop()}</span>
-                <button onClick={() => setPreviewFile(null)} className="p-1 rounded-lg text-zinc-400 hover:text-white">
+                <button onClick={() => setPreviewFile(null)} className="p-1 rounded-lg text-zinc-400 hover:text-white transition-colors">
                   <X size={16} />
                 </button>
               </div>

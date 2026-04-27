@@ -73,6 +73,27 @@ class save2Qdrant_Input:
     meta_data: dict = None
 
 
+def _sanitize_utf8_value(value: Any) -> Any:
+    """
+    Recursively drop invalid surrogate code points so payloads can be serialized
+    to UTF-8 safely before being sent to Qdrant.
+    """
+    if isinstance(value, str):
+        if not value:
+            return value
+        return value.encode("utf-8", errors="ignore").decode("utf-8")
+    if isinstance(value, dict):
+        return {
+            _sanitize_utf8_value(key): _sanitize_utf8_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_utf8_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_utf8_value(item) for item in value)
+    return value
+
+
 class QdrantDB:
     """
     Vector search + (optional) keyword BM25-like search + hybrid fusion.
@@ -197,18 +218,20 @@ class QdrantDB:
         base_payload = {'Original_file': '', 'metadata': {}, 'Content': ''}
 
         if input.origin_file:
-            base_payload["Original_file"] = input.origin_file
+            base_payload["Original_file"] = _sanitize_utf8_value(input.origin_file)
         if input.meta_data:
-            base_payload["metadata"] = input.meta_data
+            base_payload["metadata"] = _sanitize_utf8_value(input.meta_data)
 
         records = []
         texts_to_embed = [input.text] if isinstance(input.text, str) else input.text
+        texts_to_embed = _sanitize_utf8_value(texts_to_embed)
 
         # 新增：如果传了 vector_text 就用它算向量，否则和原来一样用 input.text
         if vector_text is not None:
             texts_for_vector = [vector_text] if isinstance(vector_text, str) else [vector_text]
         else:
             texts_for_vector = texts_to_embed
+        texts_for_vector = _sanitize_utf8_value(texts_for_vector)
 
         vectors = self.embedding_instance.embed_list(list(texts_for_vector))
         # 改为 DEBUG 级别，避免大量日志输出

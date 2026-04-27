@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from 'react';
+import { useRef, useEffect, useCallback, useState } from 'react';
 import {
   useChatStore,
   useCurrentMessages,
@@ -12,7 +12,7 @@ import { WelcomeScreen } from './WelcomeScreen';
 import { ReasoningBlock } from './ReasoningBlock';
 import { MessageContent } from './MessageContent';
 import { ChatInput } from './ChatInput';
-import { Sparkles } from 'lucide-react';
+import { Sparkles, ArrowDown } from 'lucide-react';
 
 export function ChatView() {
   const currentSessionId = useCurrentSessionId();
@@ -27,18 +27,21 @@ export function ChatView() {
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
+  const [showScrollBottom, setShowScrollBottom] = useState(false);
 
   const checkIfNearBottom = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return true;
-    return el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   }, []);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
     const handleScroll = () => {
-      isNearBottomRef.current = checkIfNearBottom();
+      const nearBottom = checkIfNearBottom();
+      isNearBottomRef.current = nearBottom;
+      setShowScrollBottom(!nearBottom);
     };
     el.addEventListener('scroll', handleScroll, { passive: true });
     return () => el.removeEventListener('scroll', handleScroll);
@@ -51,6 +54,13 @@ export function ChatView() {
     el.scrollTop = el.scrollHeight;
   }, [messages, streamingContent, streamingReasoning, isLoading]);
 
+  const scrollToBottom = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (el) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
+    }
+  }, []);
+
   const showWelcome = messages.length === 0 && !isLoading && !currentSessionId;
   const isActivelyStreaming = isLoading && (!!streamingContent || !!streamingReasoning);
 
@@ -59,23 +69,24 @@ export function ChatView() {
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full relative">
       {/* Messages */}
       <div ref={scrollContainerRef} className="flex-1 overflow-y-auto custom-scrollbar">
         {messages.map((msg, idx) => (
-          <MessageItem
-            key={msg.id}
-            message={msg}
-            isLast={idx === messages.length - 1}
-          />
+          <div key={msg.id} className="message-enter">
+            <MessageItem
+              message={msg}
+              isLast={idx === messages.length - 1}
+            />
+          </div>
         ))}
 
         {/* Streaming message */}
         {isActivelyStreaming && (
-          <div className="px-4 py-6">
+          <div className="px-4 py-6 message-enter">
             <div className="max-w-3xl mx-auto flex gap-4">
               <div className="shrink-0">
-                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-600 flex items-center justify-center">
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-600 flex items-center justify-center avatar-glow">
                   <Sparkles size={16} className="text-white" />
                 </div>
               </div>
@@ -93,20 +104,27 @@ export function ChatView() {
           </div>
         )}
 
-        {/* Loading indicator */}
+        {/* Loading indicator - skeleton pulse */}
         {isLoading && !streamingContent && !streamingReasoning && (
-          <div className="px-4 py-6">
+          <div className="px-4 py-6 message-enter">
             <div className="max-w-3xl mx-auto flex gap-4">
-              <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-600 flex items-center justify-center">
-                <Sparkles size={16} className="text-white animate-pulse" />
-              </div>
-              <div className="flex items-center gap-3 text-zinc-400 text-sm">
-                <div className="flex gap-1">
-                  <span className="w-1.5 h-1.5 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                  <span className="w-1.5 h-1.5 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                  <span className="w-1.5 h-1.5 bg-zinc-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+              <div className="shrink-0">
+                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary-500 to-primary-600 flex items-center justify-center avatar-glow">
+                  <Sparkles size={16} className="text-white" />
                 </div>
-                <span>思考中...</span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium mb-2 text-zinc-300">知识库助手</div>
+                <div className="flex items-center gap-3 text-zinc-400 text-sm">
+                  <div className="thinking-skeleton">
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                  <span>思考中...</span>
+                </div>
               </div>
             </div>
           </div>
@@ -114,6 +132,16 @@ export function ChatView() {
 
         <div className="h-32" />
       </div>
+
+      {/* Scroll to bottom button */}
+      {showScrollBottom && (
+        <button
+          onClick={scrollToBottom}
+          className="scroll-bottom-btn"
+        >
+          <ArrowDown size={16} />
+        </button>
+      )}
 
       {/* Bottom input */}
       <div className="px-4 pb-4">

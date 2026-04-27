@@ -66,6 +66,10 @@ COPY tools ./tools
 # 复制共享路径入口模块。
 COPY storage_paths.py ./
 
+# 修补 CAMEL 对 OpenAI-compatible reasoning 字段的兼容性，
+# 确保流式 `delta.reasoning` 能透传到后端 SSE。
+RUN python scripts/patch_camel_chat_agent_reasoning.py
+
 # 预创建运行时会用到的目录，避免首次启动时路径不存在。
 RUN mkdir -p \
     /app/data/lex_index \

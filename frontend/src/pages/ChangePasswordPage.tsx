@@ -41,9 +41,9 @@ export function ChangePasswordPage() {
   if (success) {
     return (
       <div className="h-full flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-12 h-12 mx-auto mb-4 rounded-xl bg-emerald-500/10 flex items-center justify-center">
-            <CheckCircle size={24} className="text-emerald-400" />
+        <div className="text-center card-glass p-8">
+          <div className="w-14 h-14 mx-auto mb-4 rounded-2xl bg-emerald-500/10 flex items-center justify-center">
+            <CheckCircle size={28} className="text-emerald-400" />
           </div>
           <h2 className="text-lg font-medium text-white mb-2">密码已更新</h2>
           <button onClick={() => navigate('/')} className="btn btn-primary mt-4">
@@ -56,7 +56,7 @@ export function ChangePasswordPage() {
 
   return (
     <div className="h-full flex items-center justify-center p-6">
-      <div className="w-full max-w-sm">
+      <div className="w-full max-w-sm card-glass p-6">
         <h1 className="text-xl font-medium text-white mb-6 text-center">修改密码</h1>
         <form onSubmit={handleSubmit} className="space-y-4">
           {error && (

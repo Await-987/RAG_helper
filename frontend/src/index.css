@@ -58,26 +58,26 @@
   }
 
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.15);
     border-radius: 4px;
   }
 
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.3);
+    background: rgba(255, 255, 255, 0.25);
   }
 
   /* Input styles - clean */
   .input-field {
     @apply w-full rounded-2xl px-4 py-3
            text-zinc-100 placeholder-zinc-400
-           transition-colors duration-200;
+           transition-all duration-200;
     background: #2f2f2f;
-    border: 1px solid transparent;
+    border: 1px solid rgba(255, 255, 255, 0.06);
   }
 
   .input-field:focus {
-    @apply outline-none;
-    border-color: rgba(255, 255, 255, 0.1);
+    @apply outline-none ring-2 ring-primary-500/30;
+    border-color: rgba(59, 130, 246, 0.4);
     background: #3f3f3f;
   }
 
@@ -85,67 +85,82 @@
   .input-chat {
     @apply w-full rounded-3xl px-5 py-4
            text-base text-zinc-100 placeholder-zinc-500
-           transition-colors duration-200;
+           transition-all duration-200;
     background: #2f2f2f;
-    border: 1px solid transparent;
+    border: 1px solid rgba(255, 255, 255, 0.06);
   }
 
   .input-chat:focus {
-    @apply outline-none;
+    @apply outline-none ring-2 ring-primary-500/20;
+    border-color: rgba(59, 130, 246, 0.3);
     background: #3f3f3f;
-    border-color: rgba(255, 255, 255, 0.15);
   }
 
-  /* Button styles - flat and clean */
+  /* Button styles - with micro-interaction */
   .btn {
-    @apply px-4 py-2.5 rounded-2xl font-medium transition-colors duration-150
-           disabled:opacity-50 disabled:cursor-not-allowed;
+    @apply px-4 py-2.5 rounded-2xl font-medium transition-all duration-150
+           disabled:opacity-50 disabled:cursor-not-allowed
+           active:scale-[0.97];
   }
 
   .btn-primary {
-    @apply text-white;
+    @apply text-white shadow-lg shadow-primary-600/20;
     background: #2563eb;
   }
 
   .btn-primary:hover:not(:disabled) {
     background: #1d4ed8;
+    @apply shadow-xl shadow-primary-600/30 translate-y-[-1px];
+  }
+
+  .btn-primary:active:not(:disabled) {
+    @apply shadow-md shadow-primary-600/20 translate-y-0;
   }
 
   .btn-secondary {
     @apply text-zinc-300;
     background: #2f2f2f;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.08);
   }
 
   .btn-secondary:hover:not(:disabled) {
     background: #3f3f3f;
-    @apply text-zinc-100;
+    @apply text-zinc-100 border-white/[0.12];
   }
 
   .btn-danger {
-    @apply text-white;
+    @apply text-white shadow-lg shadow-red-600/20;
     background: #dc2626;
   }
 
   .btn-danger:hover:not(:disabled) {
     background: #b91c1c;
+    @apply shadow-xl shadow-red-600/30 translate-y-[-1px];
   }
 
-  /* Card styles - flat */
+  /* Card styles - layered */
   .card {
-    @apply rounded-2xl;
+    @apply rounded-2xl border border-white/[0.06] shadow-lg shadow-black/10;
     background: #2f2f2f;
     @apply p-4;
   }
 
-  /* Sidebar - minimal */
+  /* Card with glass effect */
+  .card-glass {
+    @apply rounded-2xl border border-white/[0.08] backdrop-blur-xl;
+    background: rgba(47, 47, 47, 0.6);
+    @apply p-4;
+  }
+
+  /* Sidebar - with refined borders */
   .sidebar-container {
     background: #171717;
+    border-right: 1px solid rgba(255, 255, 255, 0.04);
   }
 
   .sidebar-item {
     @apply flex items-center gap-3 px-3 py-2 rounded-xl cursor-pointer
-           text-zinc-400 transition-colors duration-150;
+           text-zinc-400 transition-all duration-150;
   }
 
   .sidebar-item:hover {
@@ -154,23 +169,25 @@
   }
 
   .sidebar-item-active {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(59, 130, 246, 0.1);
+    border: 1px solid rgba(59, 130, 246, 0.15);
     @apply text-zinc-100;
   }
 
-  /* Suggestion cards - ChatGPT style */
+  /* Suggestion cards - elevated */
   .suggestion-card {
-    @apply rounded-2xl p-4 text-sm cursor-pointer transition-colors duration-200;
+    @apply rounded-2xl p-4 text-sm cursor-pointer transition-all duration-200;
     background: #2f2f2f;
-    border: 1px solid rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.06);
   }
 
   .suggestion-card:hover {
     background: #3f3f3f;
-    border-color: rgba(255, 255, 255, 0.15);
+    border-color: rgba(255, 255, 255, 0.12);
+    @apply translate-y-[-2px] shadow-lg shadow-black/20;
   }
 
-  /* Loading animation - minimal */
+  /* Loading animation - gradient sweep */
   .loading-wave {
     display: flex;
     gap: 4px;
@@ -180,7 +197,7 @@
   .loading-wave span {
     width: 6px;
     height: 6px;
-    background: rgba(255, 255, 255, 0.4);
+    background: rgba(59, 130, 246, 0.5);
     border-radius: 50%;
     animation: wave-dot 1.4s ease-in-out infinite;
   }
@@ -196,13 +213,181 @@
     }
     40% {
       transform: scale(1.3);
-      opacity: 0.8;
+      opacity: 0.9;
     }
+  }
+
+  /* Thinking skeleton pulse bars */
+  .thinking-skeleton {
+    display: flex;
+    gap: 6px;
+    align-items: flex-end;
+    height: 20px;
+  }
+
+  .thinking-skeleton span {
+    width: 3px;
+    border-radius: 2px;
+    background: linear-gradient(180deg, rgba(59, 130, 246, 0.6), rgba(59, 130, 246, 0.2));
+    animation: thinking-pulse 1.2s ease-in-out infinite;
+  }
+
+  .thinking-skeleton span:nth-child(1) { height: 40%; animation-delay: 0s; }
+  .thinking-skeleton span:nth-child(2) { height: 70%; animation-delay: 0.15s; }
+  .thinking-skeleton span:nth-child(3) { height: 100%; animation-delay: 0.3s; }
+  .thinking-skeleton span:nth-child(4) { height: 60%; animation-delay: 0.45s; }
+  .thinking-skeleton span:nth-child(5) { height: 30%; animation-delay: 0.6s; }
+
+  @keyframes thinking-pulse {
+    0%, 100% { opacity: 0.4; transform: scaleY(1); }
+    50% { opacity: 1; transform: scaleY(0.6); }
+  }
+
+  /* Breathing glow for avatar */
+  .avatar-glow {
+    animation: breathing-glow 2s ease-in-out infinite;
+  }
+
+  @keyframes breathing-glow {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+    50% { box-shadow: 0 0 12px 3px rgba(59, 130, 246, 0.3); }
   }
 
   /* Typing indicator */
   .typing-indicator {
     @apply flex items-center gap-3 text-zinc-400 text-sm;
+  }
+
+  /* Modal enter animation */
+  .modal-enter {
+    animation: modal-enter 0.2s ease-out forwards;
+  }
+
+  @keyframes modal-enter {
+    from {
+      opacity: 0;
+      transform: scale(0.95) translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1) translateY(0);
+    }
+  }
+
+  .modal-overlay-enter {
+    animation: modal-overlay-enter 0.15s ease-out forwards;
+  }
+
+  @keyframes modal-overlay-enter {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  /* Message fade-in */
+  .message-enter {
+    animation: message-enter 0.3s ease-out forwards;
+  }
+
+  @keyframes message-enter {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* Collapse/expand animation via grid */
+  .collapse-wrapper {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows 0.25s ease-out;
+  }
+
+  .collapse-wrapper.open {
+    grid-template-rows: 1fr;
+  }
+
+  .collapse-inner {
+    overflow: hidden;
+  }
+
+  /* Scroll to bottom button */
+  .scroll-bottom-btn {
+    @apply absolute bottom-4 left-1/2 -translate-x-1/2 z-10
+           w-9 h-9 rounded-full flex items-center justify-center
+           bg-dark-tertiary border border-white/10 shadow-lg shadow-black/30
+           text-zinc-400 hover:text-zinc-100 hover:bg-zinc-600
+           transition-all duration-200
+           hover:scale-110 active:scale-95;
+  }
+
+  /* Login page background orbs */
+  .login-bg-orb {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(80px);
+    opacity: 0.3;
+    animation: orb-float 8s ease-in-out infinite;
+  }
+
+  .login-bg-orb-1 {
+    width: 300px;
+    height: 300px;
+    background: #2563eb;
+    top: 15%;
+    left: 20%;
+    animation-delay: 0s;
+  }
+
+  .login-bg-orb-2 {
+    width: 250px;
+    height: 250px;
+    background: #7c3aed;
+    bottom: 20%;
+    right: 25%;
+    animation-delay: -3s;
+  }
+
+  .login-bg-orb-3 {
+    width: 200px;
+    height: 200px;
+    background: #06b6d4;
+    top: 50%;
+    right: 15%;
+    animation-delay: -5s;
+  }
+
+  @keyframes orb-float {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    25% { transform: translate(20px, -15px) scale(1.05); }
+    50% { transform: translate(-10px, 10px) scale(0.95); }
+    75% { transform: translate(15px, 5px) scale(1.02); }
+  }
+
+  /* File list status border accent */
+  .file-row-imported { border-left: 3px solid #34d399; }
+  .file-row-not_imported { border-left: 3px solid #fbbf24; }
+  .file-row-ghost { border-left: 3px solid #f87171; }
+
+  /* Source card */
+  .source-card {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs
+           text-primary-400 bg-primary-500/10 border border-primary-500/10
+           hover:bg-primary-500/20 hover:text-primary-300 hover:border-primary-500/20
+           transition-all duration-150 cursor-pointer;
+  }
+
+  /* Select dark mode fix */
+  select {
+    color-scheme: dark;
+  }
+
+  select option {
+    background: #2f2f2f;
+    color: #e4e4e7;
   }
 }
 
@@ -272,13 +457,21 @@
 
 .markdown-content th,
 .markdown-content td {
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   @apply px-4 py-2.5;
 }
 
 .markdown-content th {
-  background: #2f2f2f;
-  @apply font-medium text-left;
+  background: rgba(255, 255, 255, 0.05);
+  @apply font-medium text-left border-b-2 border-b-white/10;
+}
+
+.markdown-content tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.markdown-content tr:hover td {
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .markdown-content img {
@@ -295,6 +488,22 @@
 }
 
 .markdown-content blockquote {
-  border-left: 3px solid rgba(255, 255, 255, 0.2);
-  @apply pl-4 py-2 my-4 text-zinc-400;
+  border-left: 3px solid rgba(59, 130, 246, 0.4);
+  @apply pl-4 py-2 my-4 text-zinc-400 bg-primary-500/[0.03] rounded-r-lg;
+}
+
+/* Authenticated image transitions */
+.kb-image {
+  border-radius: 1rem;
+  max-width: 100%;
+  transition: opacity 0.3s ease-out;
+}
+
+.kb-image-visible {
+  opacity: 1;
+}
+
+.kb-image-hidden {
+  opacity: 0;
+  height: 0;
 }

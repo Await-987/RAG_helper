@@ -130,8 +130,8 @@ export function UserManagementPage() {
 
         {/* Create modal */}
         {showCreate && (
-          <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowCreate(false)}>
-            <div className="card w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 modal-overlay-enter" onClick={() => setShowCreate(false)}>
+            <div className="card w-full max-w-sm modal-enter" onClick={(e) => e.stopPropagation()}>
               <div className="flex items-center justify-between mb-4">
                 <h2 className="text-base font-medium text-white">添加用户</h2>
                 <button onClick={() => setShowCreate(false)} className="p-1 rounded-lg text-zinc-400 hover:text-white">

@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { createJSONStorage, persist } from 'zustand/middleware';
+import { safeLocalStorage } from '@/utils/browserStorage';
 
 interface UIState {
   sidebarOpen: boolean;
@@ -23,6 +24,7 @@ export const useUIStore = create<UIState>()(
     }),
     {
       name: 'rag-ui-store',
+      storage: createJSONStorage(() => safeLocalStorage),
       partialize: (state) => ({ theme: state.theme }),
     }
   )
