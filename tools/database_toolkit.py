@@ -50,6 +50,8 @@ class DatabaseToolkit(BaseToolkit):
         self._turn_seen_keys: Optional[set[str]] = None
         self._turn_source_refs: List[Dict[str, str]] = []
         self._turn_asset_refs: List[Dict[str, str]] = []
+        # 本轮所有 search_database 调用的溯源记录（供前端“问题溯源”面板使用）
+        self._turn_retrieval_traces: List[Dict[str, Any]] = []
 
     def warmup_lexical_index(self):
         """
@@ -89,12 +91,14 @@ class DatabaseToolkit(BaseToolkit):
         self._turn_seen_keys = set()
         self._turn_source_refs = []
         self._turn_asset_refs = []
+        self._turn_retrieval_traces = []
 
     def end_turn(self) -> None:
         """Clear per-turn evidence dedup state."""
         self._turn_seen_keys = None
         self._turn_source_refs = []
         self._turn_asset_refs = []
+        self._turn_retrieval_traces = []
 
     def __enter__(self):
         return self
@@ -545,6 +549,70 @@ class DatabaseToolkit(BaseToolkit):
         refs = self._turn_asset_refs or []
         return [dict(ref) for ref in refs if ref.get("asset_tag")]
 
+    def _build_chunk_preview(self, content: str, max_chars: int = 280) -> str:
+        """构建 chunk 的省略版预览，用于前端溯源面板展示。
+
+        注意：这里不能用 @staticmethod，因为 BaseToolkit.__init_subclass__ 会遍历子类
+        所有可调用属性并用 with_timeout 包一层 wrapper(*args, **kwargs)，staticmethod 的
+        描述符会被这层 wrapper 覆盖，导致 `self.method(x)` 变成 wrapper(self, x)，
+        最终多传一个位置参数而报 TypeError。改成普通实例方法可以避开这个劫持。
+        """
+        if not content:
+            return ""
+        text = re.sub(r"!\[[^\]]*\]\([^)]+\)", " ", content)
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            return ""
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars].rstrip() + "…"
+
+    def _record_turn_retrieval_trace(
+        self,
+        *,
+        query: str,
+        intent_description: Optional[str],
+        hits: List[Dict[str, Any]],
+    ) -> None:
+        """记录一次 search_database 调用的溯源信息（只保留送给模型的最终 chunks）。"""
+        chunks: List[Dict[str, Any]] = []
+        for hit in hits:
+            payload = hit.get("payload", {}) or {}
+            source = str(payload.get("Original_file", "")).strip()
+            content = payload.get("Content", "") or payload.get("content", "")
+            if not isinstance(content, str):
+                content = str(content)
+            label = source.split("\\")[-1].split("/")[-1] if source else "未知来源"
+            chunks.append(
+                {
+                    "file_tag": source,
+                    "label": label or "未知来源",
+                    "score": float(hit.get("score", 0.0)),
+                    "preview": self._build_chunk_preview(content),
+                }
+            )
+
+        self._turn_retrieval_traces.append(
+            {
+                "query": (query or "").strip(),
+                "intent_description": (intent_description or "").strip(),
+                "chunks": chunks,
+            }
+        )
+
+    def get_turn_retrieval_traces(self) -> List[Dict[str, Any]]:
+        """返回本轮所有 search_database 调用的溯源信息（含 query / intent / chunks 预览）。"""
+        traces: List[Dict[str, Any]] = []
+        for trace in self._turn_retrieval_traces or []:
+            traces.append(
+                {
+                    "query": trace.get("query", ""),
+                    "intent_description": trace.get("intent_description", ""),
+                    "chunks": [dict(chunk) for chunk in trace.get("chunks", []) or []],
+                }
+            )
+        return traces
+
     def _select_full_chunk_hits(
         self,
         hits: List[Dict[str, Any]],
@@ -755,6 +823,11 @@ class DatabaseToolkit(BaseToolkit):
         )
         self._record_turn_source_refs(hits)
         self._record_turn_asset_refs(hits)
+        self._record_turn_retrieval_trace(
+            query=query,
+            intent_description=intent_description,
+            hits=hits,
+        )
 
         _log_search(f"✅ 搜索完成: 最终返回 {len(hits)} 条完整原文结果")
 

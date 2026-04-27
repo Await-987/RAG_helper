@@ -58,6 +58,70 @@ export function normalizeChatSources(input: unknown): ChatSource[] {
   return normalized;
 }
 
+export interface RetrievalChunkRef {
+  file_tag: string;
+  label: string;
+  score: number;
+  preview: string;
+}
+
+export interface RetrievalTrace {
+  query: string;
+  intent_description: string;
+  chunks: RetrievalChunkRef[];
+}
+
+export function normalizeRetrievalTraces(input: unknown): RetrievalTrace[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+
+  const normalized: RetrievalTrace[] = [];
+  for (const item of input) {
+    if (!item || typeof item !== 'object') {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const query = String(record.query ?? '').trim();
+    const intentDescription = String(record.intent_description ?? '').trim();
+    const rawChunks = Array.isArray(record.chunks) ? record.chunks : [];
+
+    const chunks: RetrievalChunkRef[] = [];
+    for (const chunkItem of rawChunks) {
+      if (!chunkItem || typeof chunkItem !== 'object') {
+        continue;
+      }
+      const chunkRecord = chunkItem as Record<string, unknown>;
+      const fileTag = String(chunkRecord.file_tag ?? '').trim();
+      const preview = String(chunkRecord.preview ?? '').trim();
+      if (!fileTag && !preview) {
+        continue;
+      }
+      const label = String(chunkRecord.label ?? '').trim()
+        || (fileTag ? fileTag.split('/').pop() || fileTag : '未知来源');
+      const rawScore = Number(chunkRecord.score ?? 0);
+      const score = Number.isFinite(rawScore) ? rawScore : 0;
+      chunks.push({
+        file_tag: fileTag,
+        label,
+        score,
+        preview,
+      });
+    }
+
+    if (!query && !intentDescription && chunks.length === 0) {
+      continue;
+    }
+
+    normalized.push({
+      query,
+      intent_description: intentDescription,
+      chunks,
+    });
+  }
+  return normalized;
+}
+
 export function normalizeChatAssets(input: unknown): ChatAsset[] {
   if (!Array.isArray(input)) {
     return [];
@@ -114,6 +178,7 @@ export interface ChatMessage {
   reasoningBlocks?: ChatContentBlock[];
   sources?: ChatSource[];
   assets?: ChatAsset[];
+  retrievalTraces?: RetrievalTrace[];
   timestamp: Date;
 }
 
@@ -143,6 +208,7 @@ export interface ChatSessionDetailResponse {
     reasoning_blocks?: ChatContentBlock[] | null;
     sources?: ChatSource[] | null;
     assets?: ChatAsset[] | null;
+    retrieval_traces?: RetrievalTrace[] | null;
     timestamp: string;
   }>;
 }
@@ -163,6 +229,7 @@ export interface SSEEvent {
   message?: string;
   sources?: ChatSource[];
   assets?: ChatAsset[];
+  retrieval_traces?: RetrievalTrace[];
 }
 
 export interface ChatState {

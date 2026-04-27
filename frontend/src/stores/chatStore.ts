@@ -1,6 +1,13 @@
 import { create } from 'zustand';
-import { normalizeChatAssets, normalizeChatSources } from '@/types';
-import type { ChatAsset, ChatContentBlock, ChatMessage, ChatSessionSummary, ChatSource } from '@/types';
+import { normalizeChatAssets, normalizeChatSources, normalizeRetrievalTraces } from '@/types';
+import type {
+  ChatAsset,
+  ChatContentBlock,
+  ChatMessage,
+  ChatSessionSummary,
+  ChatSource,
+  RetrievalTrace,
+} from '@/types';
 import { chatApi } from '@/api/chat';
 import { getAccessToken } from '@/utils/authToken';
 
@@ -47,6 +54,7 @@ function createMessage(
   reasoningBlocks?: ChatContentBlock[],
   sources?: ChatSource[],
   assets?: ChatAsset[],
+  retrievalTraces?: RetrievalTrace[],
 ): ChatMessage {
   return {
     id: generateId(),
@@ -57,6 +65,7 @@ function createMessage(
     reasoningBlocks,
     sources,
     assets,
+    retrievalTraces,
     timestamp: new Date(),
   };
 }
@@ -136,6 +145,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       let finalAssets: ChatAsset[] = [];
       let finalBlocks: ChatContentBlock[] | undefined;
       let finalReasoningBlocks: ChatContentBlock[] | undefined;
+      let finalRetrievalTraces: RetrievalTrace[] = [];
 
       // Helper to update the session we're streaming for
       const updateStreamingSession = (updates: Partial<SessionState>) => {
@@ -214,6 +224,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
               finalReasoningBlocks = event.reasoning_blocks;
               finalSources = normalizeChatSources(event.sources);
               finalAssets = normalizeChatAssets(event.assets);
+              finalRetrievalTraces = normalizeRetrievalTraces(event.retrieval_traces);
             }
             break;
 
@@ -232,6 +243,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         finalReasoningBlocks,
         finalSources,
         finalAssets,
+        finalRetrievalTraces,
       );
 
       console.log('[DEBUG] Adding assistant message:', {
@@ -317,6 +329,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           reasoningBlocks: msg.reasoning_blocks ?? undefined,
           sources: normalizeChatSources(msg.sources),
           assets: normalizeChatAssets(msg.assets),
+          retrievalTraces: normalizeRetrievalTraces(msg.retrieval_traces),
           timestamp: new Date(msg.timestamp),
         }));
 

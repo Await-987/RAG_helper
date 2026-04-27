@@ -536,6 +536,7 @@ class SessionManager:
         reasoning_blocks: Optional[List[Dict[str, Any]]] = None,
         sources: Optional[List[Dict[str, str]]] = None,
         assets: Optional[List[Dict[str, str]]] = None,
+        retrieval_traces: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         transcript = self._ensure_session_transcript(
             username,
@@ -555,6 +556,7 @@ class SessionManager:
                 "reasoning_blocks": reasoning_blocks,
                 "sources": sources,
                 "assets": assets,
+                "retrieval_traces": retrieval_traces,
                 "timestamp": datetime.now().isoformat(),
             }
         )
@@ -1825,11 +1827,13 @@ class ChatService:
                 self._backfill_turn_refs(username, session_id, message)
                 source_refs = self._collect_turn_source_refs(raw_full_response)
                 asset_refs = self._collect_turn_asset_refs(raw_full_response, source_refs=source_refs)
+            retrieval_traces = self._collect_turn_retrieval_traces()
             logger.info(
-                "Chat done payload | session={} sources={} assets={}",
+                "Chat done payload | session={} sources={} assets={} traces={}",
                 session_id,
                 len(source_refs),
                 len(asset_refs),
+                len(retrieval_traces),
             )
 
             # 将 sources 注入到正文末尾，作为特殊区块，前端解析后渲染超链接
@@ -1850,6 +1854,7 @@ class ChatService:
                 reasoning_blocks=reasoning_blocks,
                 sources=source_refs,
                 assets=asset_refs,
+                retrieval_traces=retrieval_traces or None,
             )
             self.session_manager.save_session_memory(username, session_id)
 
@@ -1861,6 +1866,7 @@ class ChatService:
                 "session_id": session_id,
                 "sources": source_refs,
                 "assets": asset_refs,
+                "retrieval_traces": retrieval_traces,
             })
 
         except Exception as e:
@@ -1874,6 +1880,7 @@ class ChatService:
                     "session_id": session_id if 'session_id' in locals() else None,
                     "sources": [],
                     "assets": [],
+                    "retrieval_traces": [],
                 })
                 return
             logger.exception(f"Chat streaming error: {e}")
@@ -2078,6 +2085,59 @@ class ChatService:
                 lines.append(f"- [{label}]({content_url})")
         lines.append("<!-- SOURCE_REFS_END -->")
         return "\n".join(lines)
+
+    @staticmethod
+    def _collect_turn_retrieval_traces() -> List[Dict[str, Any]]:
+        """Pull per-turn retrieval traces recorded by DatabaseToolkit."""
+        try:
+            from app.dependencies import get_database_toolkit
+
+            raw_traces = get_database_toolkit().get_turn_retrieval_traces()
+        except Exception as exc:
+            logger.warning(f"Failed to collect retrieval traces: {exc}")
+            return []
+
+        normalized: List[Dict[str, Any]] = []
+        for trace in raw_traces or []:
+            if not isinstance(trace, dict):
+                continue
+            query = str(trace.get("query", "")).strip()
+            intent = str(trace.get("intent_description", "")).strip()
+            raw_chunks = trace.get("chunks") or []
+            chunks: List[Dict[str, Any]] = []
+            for chunk in raw_chunks:
+                if not isinstance(chunk, dict):
+                    continue
+                preview = str(chunk.get("preview", "")).strip()
+                file_tag = str(chunk.get("file_tag", "")).strip()
+                label = str(chunk.get("label", "")).strip() or (
+                    file_tag.split("/")[-1].split("\\")[-1] if file_tag else ""
+                )
+                try:
+                    score = float(chunk.get("score", 0.0))
+                except Exception:
+                    score = 0.0
+                if not preview and not file_tag:
+                    continue
+                chunks.append(
+                    {
+                        "file_tag": file_tag,
+                        "label": label or "未知来源",
+                        "score": round(score, 4),
+                        "preview": preview,
+                    }
+                )
+            # 允许 chunks 为空（例如无新结果），但只记录有 query 或 intent 的 trace
+            if not query and not intent and not chunks:
+                continue
+            normalized.append(
+                {
+                    "query": query,
+                    "intent_description": intent,
+                    "chunks": chunks,
+                }
+            )
+        return normalized
 
     def _collect_turn_source_refs(self, content: str) -> List[Dict[str, str]]:
         try:
