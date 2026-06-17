@@ -48,10 +48,14 @@ COPY requirements.txt /tmp/requirements.txt
 COPY backend/requirements.txt /tmp/backend-requirements.txt
 
 # 安装 Python 依赖，包含主依赖和后端依赖。
+# 使用清华镜像加速国内下载，PyTorch CUDA 包仍从官方 extra-index 获取。
 RUN export HTTP_PROXY="${HTTP_PROXY}" HTTPS_PROXY="${HTTPS_PROXY}" NO_PROXY="${NO_PROXY}" \
     http_proxy="${http_proxy:-$HTTP_PROXY}" https_proxy="${https_proxy:-$HTTPS_PROXY}" no_proxy="${no_proxy:-$NO_PROXY}" \
     && pip install --upgrade pip setuptools wheel \
-    && pip install --extra-index-url https://download.pytorch.org/whl/cu128 \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn \
+    && pip install \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple --trusted-host pypi.tuna.tsinghua.edu.cn \
+        --extra-index-url https://mirror.sjtu.edu.cn/pytorch-wheels/cu128 \
         -r /tmp/requirements.txt \
         -r /tmp/backend-requirements.txt
 

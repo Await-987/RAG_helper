@@ -1,140 +1,149 @@
+# Environment and secrets
 .env
 .env.*
-.json
-.claude
+claude_code_env.sh
+.user/
+
+# Local agent/tooling state
+.agents/
 .claude/
+.codex
+.codex/
+.codex-skill-build/
+.local_tools/
+
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
+*.egg-info/
+*.egg
 .eggs/
-lib/
-lib64/
+eggs/
+develop-eggs/
 parts/
 sdist/
-var/
 wheels/
 pip-wheel-metadata/
 share/python-wheels/
-*.egg-info/
 .installed.cfg
-*.egg
 MANIFEST
 
-# Virtual Environment
-venv/
-ENV/
-env/
+# Virtual environments
 .venv/
+venv/
+env/
+ENV/
 
-# IDEs
+# Node / frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.cache/
+node-v20.7.0-linux-x64/
+node-v20.7.0-linux-x64.tar.xz
+
+# Build and cache output
+build/
+dist/
+downloads/
+lib/
+lib64/
+var/
+.cache/
+.pytest_cache/
+.hypothesis/
+.coverage
+htmlcov/
+*.cover
+
+# IDE / OS
+.idea/
 .vscode/
 *.swp
 *.swo
 *~
 .DS_Store
-
-# Jupyter Notebook
-.ipynb_checkpoints
-
-# PyCharm
-.idea/
-
-# Streamlit
-.streamlit/secrets.toml
-
-# User Data (sensitive information)
-.user/
-
-# Frontend
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/
-frontend/.cache/
-
-# data/storages/
-data/import_jobs
-data/storages/*
-#  .gitkeep
-!data/storages/.gitkeep
-data/chat_sessions
-data/agent_memory
-#  models/Conan-embedding-v1/
-models/Conan-embedding-v1/*
-#  .gitkeep
-!models/Conan-embedding-v1/.gitkeep
-
-# Logs
-*.log
-logs/
-import.log
-
-# OS
 Thumbs.db
 Desktop.ini
+.ipynb_checkpoints/
+.streamlit/secrets.toml
 
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/
-*.cover
-.hypothesis/
-
-# Temporary files
+# Logs and temporary files
+logs/
+*.log
+import.log
+smoke_out.txt
 *.tmp
 *.temp
 tmp/
 temp/
 
-# Vector Database
+# Runtime data
+backend/context_files/
+data/agent_memory/
+data/chat_sessions/
+data/content_lists/
+data/exported_chunks/
+data/import_jobs/
+data/lex_index/
+data/qdrant/
+data/redis/
+data/storages/*
+!data/storages/.gitkeep
+snapshots/
+
+# Knowledge-base generated data
+data/stored_files/*.pdf
+data/stored_files_classified/
+data/stored_files/mineru_output/
+data/knowledge_graph/
+data/knowledge_domain_classification.*
+data/scripts/
+
+# Vector database state
 qdrant_storage/
 .qdrant/
 .qdrant-initialized
 
-# Runtime service data
-data/qdrant/
-data/redis/
-data/lex_index/
-backend/context_files/
-
-# Model Cache
-.cache/
+# Models and model cache
+models/
+models/Conan-embedding-v1/*
+!models/Conan-embedding-v1/.gitkeep
 *.safetensors
 *.bin
 
-# Backup files
-*.bak
-*.backup
+# Generated reports and local deliverables
+reports/
+technical_report_latex/
+word_output/
+/*.doc
+/*.docx
+/*.ppt
+/*.pptx
+/*.pdf
+/*.png
+/*.zip
+知识库文件.zip
+rag-deploy-bundle-*.tar.gz
+deploy_bundle/
+deploy_bundle_legacy_images/
 
-data/stored_files/*.pdf
-data/stored_files/mineru_output/
-smoke_out.txt
-models/
-# local-only smoke scripts
+# Root-level scratch markdown reports
+/技术报告*.md
+/答辩提问预测*.md
+
+# Local smoke/test scratch files
 tests/smoke_ingest_retrieve_pdfs.py
 tests/tools/smoke_test_mineru_embedding.py
-
-claude_code_env.sh
-data/content_lists
-data/exported_chunks
-new_tools
 test_export_chunks.py
 test_model_think.py
 test_qwq_response.py
-node-v20.7.0-linux-x64
-node-v20.7.0-linux-x64.tar.xz
-知识库文件.zip
-*.zip
-
-deploy_bundle/
-rag-deploy-bundle-20260318.tar.gz
-*.png
-.codex
-deploy_bundle_legacy_images
+new_tools/
 revitai_new/
+
+# Backups
+*.bak
+*.backup

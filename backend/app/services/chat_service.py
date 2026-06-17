@@ -4,6 +4,7 @@ Chat service with session management.
 import uuid
 import json
 import re
+from difflib import SequenceMatcher
 from pathlib import Path
 from contextlib import suppress
 from datetime import datetime
@@ -902,6 +903,16 @@ class SessionManager:
                 self._get_session_path(username, session_id).unlink()
             logger.info(f"Persisted session cleared: {session_id}")
             return True
+
+        if metadata is not None:
+            self._session_metadata.pop(session_id, None)
+            self._session_store.delete_session(username, session_id)
+            with suppress(FileNotFoundError):
+                self._get_memory_path(username, session_id).unlink()
+            with suppress(FileNotFoundError):
+                self._get_session_path(username, session_id).unlink()
+            logger.info(f"Stale session metadata cleared: {session_id}")
+            return True
         return False
 
     def get_session_info(self, session_id: str) -> Optional[dict]:
@@ -929,12 +940,72 @@ class SessionManager:
 class ChatService:
     """Chat service handling streaming responses"""
 
+    SOURCE_REFS_BLOCK_REGEX = re.compile(
+        r'<!-- SOURCE_REFS_START -->\s*[\s\S]*?\s*<!-- SOURCE_REFS_END -->'
+    )
     TOKEN_LIMIT_ERROR_MARKERS = (
         "maximum context length",
         "context length",
         "max_tokens_exceeded",
         "input tokens",
         "token limit",
+    )
+    MODEL_ERROR_RESPONSE_MARKERS = (
+        "error code:",
+        "badrequesterror",
+        "maximum context length",
+        "max_tokens_exceeded",
+        "this model's maximum context length",
+    )
+    STREAM_CONTENT_HOLD_CHARS = 32
+    INTERNAL_ANALYSIS_START_PATTERNS = (
+        r"^\s*用户询问",
+        r"^\s*这是一个非常?广泛的问题",
+        r"^\s*目前的?检索结果",
+        r"^\s*本轮检索结果",
+        r"^\s*需要补充检索",
+        r"^\s*缺失信息",
+        r"^\s*构造查询",
+        r"^\s*策略[:：]",
+    )
+    INTERNAL_ANALYSIS_MARKERS = (
+        "search_database",
+        "intent_description",
+        "query:",
+        "query：",
+        "调用工具",
+        "工具调用",
+        "调用search_database",
+        "需要补充检索",
+        "缺失信息",
+        "构造查询",
+        "检索结果",
+        "本轮检索",
+        "目前检索",
+        "先检索",
+        "再检索",
+    )
+    ABRUPT_ANSWER_ENDINGS = (
+        "是否",
+        "是否具备",
+        "是否满足",
+        "是否符合",
+        "是否采用",
+        "是否设置",
+        "应",
+        "应按",
+        "应符合",
+        "及",
+        "以及",
+        "与",
+        "和",
+        "或",
+        "、",
+        "，",
+        "；",
+        "：",
+        "(",
+        "（",
     )
     FACTUAL_QUERY_PATTERNS = (
         "是什么",
@@ -998,6 +1069,26 @@ class ChatService:
         r".*(要求|规定|依据|标准|规范|流程|步骤|条件|范围|职责|作用|用途|参数|区别|原因).*[？?]?$",
         r".*(怎么规定|如何规定|怎么要求|如何要求|怎么计算|如何计算).*[？?]?$",
     )
+    CASUAL_MESSAGE_NORMALIZED = {
+        "你好",
+        "您好",
+        "你好啊",
+        "您好啊",
+        "嗨",
+        "哈喽",
+        "hello",
+        "hi",
+        "在吗",
+        "谢谢",
+        "感谢",
+        "好的",
+        "好",
+        "ok",
+        "收到",
+        "明白",
+        "再见",
+        "拜拜",
+    }
 
     def __init__(self):
         self.session_manager = SessionManager()
@@ -1055,9 +1146,17 @@ class ChatService:
         text = (message or "").strip()
         if not text:
             return False
+        if self._is_casual_message(text):
+            return False
         if any(pattern in text for pattern in self.FACTUAL_QUERY_PATTERNS):
             return True
         return any(re.search(pattern, text) for pattern in self.FACTUAL_QUERY_REGEXES)
+
+    @classmethod
+    def _is_casual_message(cls, message: str) -> bool:
+        normalized = re.sub(r"[\s，。！？!?,.、~～]+", "", (message or "")).lower()
+        casual_messages = {item.lower() for item in cls.CASUAL_MESSAGE_NORMALIZED}
+        return normalized in casual_messages
 
     def _get_intent_router(self) -> ChatAgent:
         if self._intent_router is None:
@@ -1115,6 +1214,10 @@ class ChatService:
         return self._search_rewriter
 
     def _route_requires_search(self, username: str, session_id: str, message: str) -> bool:
+        if self._is_casual_message(message):
+            logger.info("Intent router skipped casual message | session={}", session_id)
+            return False
+
         transcript = self.session_manager.get_session_detail(username, session_id) or {}
         recent_messages = transcript.get("messages", [])[-4:]
         context_lines: List[str] = []
@@ -1350,6 +1453,268 @@ class ChatService:
         if not text or len(text) <= max_chars:
             return text
         return text[:max_chars].rstrip() + "\n...[检索证据过长，已截断]"
+
+    @staticmethod
+    def _merge_stream_text(current: str, incoming: str) -> Tuple[str, bool]:
+        """Merge cumulative or delta stream text without duplicating prefixes."""
+        if not incoming:
+            return current, False
+        if not current:
+            return incoming, True
+        if incoming == current:
+            return current, False
+        if incoming.startswith(current):
+            return incoming, True
+        if current.startswith(incoming) or current.endswith(incoming):
+            return current, False
+        if ChatService._looks_like_cumulative_restart(current, incoming):
+            return incoming, True
+        return current + incoming, True
+
+    @staticmethod
+    def _normalize_stream_prefix(text: str, max_chars: int = 120) -> str:
+        text = ChatService._visible_answer_text(text)
+        text = re.sub(r"\s+", "", text)
+        return text[:max_chars]
+
+    @staticmethod
+    def _looks_like_cumulative_restart(current: str, incoming: str) -> bool:
+        """
+        Some providers resend the whole accumulated answer after editing an
+        earlier token. In that case `incoming.startswith(current)` is false,
+        but appending would duplicate the answer.
+        """
+        current_prefix = ChatService._normalize_stream_prefix(current)
+        incoming_prefix = ChatService._normalize_stream_prefix(incoming)
+        if len(current_prefix) < 24 or len(incoming_prefix) < 24:
+            return False
+
+        prefix_len = min(len(current_prefix), len(incoming_prefix), 80)
+        current_sample = current_prefix[:prefix_len]
+        incoming_sample = incoming_prefix[:prefix_len]
+        common_prefix_len = 0
+        for left, right in zip(current_sample, incoming_sample):
+            if left != right:
+                break
+            common_prefix_len += 1
+
+        if common_prefix_len >= 16:
+            return True
+
+        similarity = SequenceMatcher(None, current_sample, incoming_sample).ratio()
+        return similarity >= 0.88
+
+    @classmethod
+    def _visible_answer_text(cls, content: str) -> str:
+        """Return user-visible answer text after removing internal source blocks."""
+        return cls.SOURCE_REFS_BLOCK_REGEX.sub("", content or "").strip()
+
+    @classmethod
+    def _is_model_error_response(cls, content: str) -> bool:
+        """Return True when the streamed content is an API/runtime error, not an answer."""
+        text = cls._visible_answer_text(content)
+        if not text:
+            return False
+        lower_text = text.lower()
+        if lower_text.startswith(("error:", "openai.badrequesterror", "badrequesterror")):
+            return True
+        return any(marker in lower_text for marker in cls.MODEL_ERROR_RESPONSE_MARKERS)
+
+    @classmethod
+    def _has_repeated_answer_start(cls, content: str) -> bool:
+        """Detect duplicated answer openings caused by switching stream channels."""
+        visible = cls._visible_answer_text(content)
+        if len(visible) < 400:
+            return False
+
+        first_line = next((line.strip() for line in visible.splitlines() if line.strip()), "")
+        if len(first_line) < 30:
+            return False
+
+        return visible.find(first_line, len(first_line)) >= 0
+
+    @classmethod
+    def _looks_abruptly_truncated(cls, content: str) -> bool:
+        """Detect answers that stop mid-sentence before source injection."""
+        visible = cls._visible_answer_text(content)
+        if len(visible) < 80:
+            return False
+
+        tail = visible.rstrip()
+        if not tail:
+            return False
+        if tail.endswith(("。", "！", "？", ".", "!", "?", "）", ")", "」", "】", "]", "》")):
+            return False
+        if any(tail.endswith(marker) for marker in cls.ABRUPT_ANSWER_ENDINGS):
+            return True
+
+        last_line = tail.splitlines()[-1].strip()
+        if re.match(r"^[\-*]\s+", last_line) and not re.search(r"[。！？.!?）)\]】》]$", last_line):
+            return True
+        return False
+
+    @classmethod
+    def _internal_analysis_content_reason(cls, content: str) -> str:
+        """Detect model planning/tool-call text that leaked into visible content."""
+        visible = cls._visible_answer_text(content)
+        if not visible:
+            return ""
+
+        sample = visible[:3000]
+        normalized = re.sub(r"\s+", "", sample)
+        for pattern in cls.INTERNAL_ANALYSIS_START_PATTERNS:
+            if re.search(pattern, sample, flags=re.IGNORECASE | re.DOTALL):
+                return "internal_analysis_start"
+
+        marker_hits = sum(1 for marker in cls.INTERNAL_ANALYSIS_MARKERS if marker in sample)
+        if marker_hits >= 3:
+            return "internal_analysis_markers"
+
+        has_tool_shape = (
+            "search_database" in sample
+            or "intent_description" in sample
+            or re.search(r"\bquery\s*[:：]", sample, flags=re.IGNORECASE)
+        )
+        if has_tool_shape and ("检索" in sample or "调用" in sample or "用户询问" in sample):
+            return "internal_tool_plan"
+
+        if "用户询问" in sample and ("需要补充检索" in sample or "缺失" in sample):
+            return "internal_retrieval_plan"
+
+        if normalized.count("调用search_database补充") >= 2:
+            return "internal_loop"
+
+        return ""
+
+    @classmethod
+    def _unusable_answer_reason(cls, content: str) -> str:
+        visible = cls._visible_answer_text(content)
+        if not visible:
+            return "empty_visible_content"
+        if cls._is_model_error_response(visible):
+            return "model_error_content"
+        internal_reason = cls._internal_analysis_content_reason(visible)
+        if internal_reason:
+            return internal_reason
+        if cls._has_repeated_answer_start(visible):
+            return "repeated_answer_start"
+        if cls._looks_abruptly_truncated(visible):
+            return "abruptly_truncated"
+        return ""
+
+    @classmethod
+    def _is_unusable_answer_response(cls, content: str) -> bool:
+        return bool(cls._unusable_answer_reason(content))
+
+    def _format_retrieval_traces_for_prompt(
+        self,
+        retrieval_traces: List[Dict[str, Any]],
+        *,
+        max_chars: int = 6000,
+    ) -> str:
+        lines: List[str] = []
+        for trace_index, trace in enumerate(retrieval_traces or [], start=1):
+            query = str(trace.get("query") or "").strip()
+            intent = str(trace.get("intent_description") or "").strip()
+            chunks = trace.get("chunks") or []
+            if not query and not intent and not chunks:
+                continue
+
+            lines.append(f"[检索记录 {trace_index}]")
+            if query:
+                lines.append(f"query: {query}")
+            if intent:
+                lines.append(f"intent_description: {intent}")
+
+            for chunk_index, chunk in enumerate(chunks[:5], start=1):
+                if not isinstance(chunk, dict):
+                    continue
+                label = str(chunk.get("label") or chunk.get("file_tag") or "未知来源").strip()
+                preview = str(chunk.get("preview") or "").strip()
+                if not preview:
+                    continue
+                lines.append(f"- 证据 {chunk_index}｜{label}: {preview}")
+            lines.append("")
+
+        return self._truncate_for_prompt("\n".join(lines).strip(), max_chars)
+
+    def _build_empty_answer_message(self) -> str:
+        return (
+            "抱歉，本轮模型没有生成可显示的正文答案。"
+            "系统已保留本轮检索来源；请重试，或把问题拆成更小的范围后再问。"
+        )
+
+    def _generate_final_answer_from_evidence(
+        self,
+        *,
+        message: str,
+        factual_evidence: Optional[str],
+        retrieval_traces: List[Dict[str, Any]],
+    ) -> str:
+        evidence_parts: List[str] = []
+        if factual_evidence:
+            evidence_parts.append(str(factual_evidence).strip())
+
+        trace_evidence = self._format_retrieval_traces_for_prompt(retrieval_traces)
+        if trace_evidence:
+            evidence_parts.append(trace_evidence)
+
+        evidence = "\n\n".join(part for part in evidence_parts if part).strip()
+        if not evidence:
+            return ""
+
+        prompt = (
+            "请基于下面的知识库检索证据，直接生成给用户看的最终答案。\n"
+            "要求：\n"
+            "- 只输出最终正文，不要输出思考过程、检索计划或工具调用意图。\n"
+            "- 不要调用任何工具。\n"
+            "- 只能使用证据中能支撑的内容；证据不足的部分要明确写“现有资料不足以确认”。\n"
+            "- 使用清晰的 Markdown 结构回答。\n"
+            "- 不要使用 emoji 或装饰性符号。\n\n"
+            f"用户问题：{message}\n\n"
+            f"检索证据：\n{self._truncate_for_prompt(evidence, 12000)}"
+        )
+
+        try:
+            from app.core.model_runtime import backend_model
+
+            finalizer = ChatAgent(
+                system_message=BaseMessage.make_system_message(
+                    content=(
+                        "你是知识库问答的最终答案整理器。"
+                        "你没有工具可用，只能把已给出的检索证据整理成正文答案。"
+                    ),
+                ),
+                model=backend_model(
+                    model_name=settings.MAIN_AGENT_MODEL_NAME,
+                    api_key=settings.MAIN_AGENT_API_KEY,
+                    url=settings.MAIN_AGENT_API_URL,
+                    temperature=0.0,
+                    top_p=1.0,
+                    max_tokens=settings.MAIN_AGENT_MAX_TOKENS,
+                ),
+                tools=[],
+                stream_accumulate=True,
+            )
+            response = finalizer.step(prompt)
+
+            candidates: List[str] = []
+            if hasattr(response, "msg") and getattr(response.msg, "content", None):
+                candidates.append(str(response.msg.content))
+            if hasattr(response, "msgs"):
+                for msg in response.msgs or []:
+                    content = getattr(msg, "content", None)
+                    if content:
+                        candidates.append(str(content))
+
+            for candidate in candidates:
+                visible = self._visible_answer_text(candidate)
+                if visible:
+                    return visible
+        except Exception as exc:
+            logger.warning(f"Failed to generate final answer from evidence: {exc}")
+
+        return ""
 
     def _build_fallback_compact_summary(self, transcript_messages: List[dict]) -> str:
         recent_messages = transcript_messages[-6:]
@@ -1730,6 +2095,8 @@ class ChatService:
             # Stream response
             full_reasoning = ""
             full_response = ""
+            content_stream_released = False
+            suppressed_content_reason = ""
             retry_after_compact = True
             needs_forced_search = self._route_requires_search(username, session_id, message)
             factual_evidence = self._force_search_evidence(username, session_id, message) if needs_forced_search else None
@@ -1753,26 +2120,55 @@ class ChatService:
 
                                 # Filter tool-related content
                                 if not self._is_tool_content(reasoning_text):
-                                    if reasoning_text.startswith(full_reasoning):
-                                        full_reasoning = reasoning_text
-                                    else:
-                                        full_reasoning += reasoning_text
+                                    merged_reasoning, reasoning_changed = self._merge_stream_text(
+                                        full_reasoning,
+                                        reasoning_text,
+                                    )
+                                    full_reasoning = merged_reasoning
 
-                                    yield self._format_message_sse("reasoning", {
-                                        "content": reasoning_text,
-                                    })
+                                    if reasoning_changed and full_reasoning:
+                                        yield self._format_message_sse("reasoning", {
+                                            "content": full_reasoning,
+                                        })
 
                             # Handle response content
                             content_text = msg.content
                             if content_text and not self._is_tool_content(content_text):
-                                if content_text.startswith(full_response):
-                                    full_response = content_text
-                                else:
-                                    full_response += content_text
+                                merged_response, response_changed = self._merge_stream_text(
+                                    full_response,
+                                    content_text,
+                                )
+                                full_response = merged_response
 
-                                yield self._format_message_sse("content", {
-                                    "content": content_text,
-                                })
+                                if response_changed:
+                                    internal_content_reason = self._internal_analysis_content_reason(full_response)
+                                    if internal_content_reason:
+                                        if suppressed_content_reason != internal_content_reason:
+                                            logger.warning(
+                                                "Suppressing internal-looking assistant content stream | session={} reason={} visible_len={}",
+                                                session_id,
+                                                internal_content_reason,
+                                                len(self._visible_answer_text(full_response)),
+                                            )
+                                        suppressed_content_reason = internal_content_reason
+                                        continue
+
+                                    if suppressed_content_reason:
+                                        continue
+
+                                    visible_response = self._visible_answer_text(full_response)
+                                    if (
+                                        not content_stream_released
+                                        and len(visible_response) < self.STREAM_CONTENT_HOLD_CHARS
+                                        and not re.search(r"[。！？.!?\n]", visible_response)
+                                    ):
+                                        continue
+
+                                    stream_content = full_response if not content_stream_released else content_text
+                                    content_stream_released = True
+                                    yield self._format_message_sse("content", {
+                                        "content": stream_content,
+                                    })
                     break
                 except Exception as exc:
                     if retry_after_compact and self._is_token_limit_error(exc):
@@ -1790,6 +2186,8 @@ class ChatService:
                             retry_after_compact = False
                             full_reasoning = ""
                             full_response = ""
+                            content_stream_released = False
+                            suppressed_content_reason = ""
                             continue
                     if self._is_token_limit_error(exc):
                         logger.warning(
@@ -1816,6 +2214,33 @@ class ChatService:
                 elif hasattr(response, 'msgs') and len(response.msgs) > 0:
                     full_reasoning = self._extract_reasoning_text(response.msgs[-1])
 
+            retrieval_traces = self._collect_turn_retrieval_traces()
+            unusable_reason = self._unusable_answer_reason(full_response)
+            if unusable_reason:
+                recovered_response = self._generate_final_answer_from_evidence(
+                    message=message,
+                    factual_evidence=factual_evidence,
+                    retrieval_traces=retrieval_traces,
+                )
+                if recovered_response:
+                    logger.warning(
+                        "Recovered invalid assistant content from retrieval evidence | session={} reason={} visible_len={} traces={}",
+                        session_id,
+                        unusable_reason,
+                        len(self._visible_answer_text(full_response)),
+                        len(retrieval_traces),
+                    )
+                    full_response = recovered_response
+                else:
+                    logger.warning(
+                        "Assistant response had no usable visible content and finalizer failed | session={} reason={} visible_len={} traces={}",
+                        session_id,
+                        unusable_reason,
+                        len(self._visible_answer_text(full_response)),
+                        len(retrieval_traces),
+                    )
+                    full_response = self._build_empty_answer_message()
+
             raw_full_response = full_response
 
             # Send done event
@@ -1823,11 +2248,12 @@ class ChatService:
             reasoning_blocks = [block.model_dump() for block in _build_content_blocks(full_reasoning)] if full_reasoning else None
             source_refs = self._collect_turn_source_refs(raw_full_response)
             asset_refs = self._collect_turn_asset_refs(raw_full_response, source_refs=source_refs)
-            if not source_refs and not asset_refs:
+            should_backfill_refs = needs_forced_search or self._is_factual_query_fallback(message)
+            if not source_refs and not asset_refs and should_backfill_refs:
                 self._backfill_turn_refs(username, session_id, message)
                 source_refs = self._collect_turn_source_refs(raw_full_response)
                 asset_refs = self._collect_turn_asset_refs(raw_full_response, source_refs=source_refs)
-            retrieval_traces = self._collect_turn_retrieval_traces()
+                retrieval_traces = self._collect_turn_retrieval_traces()
             logger.info(
                 "Chat done payload | session={} sources={} assets={} traces={}",
                 session_id,

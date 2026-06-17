@@ -1,10 +1,12 @@
 import { useState, useCallback, memo } from 'react';
+import { motion } from 'framer-motion';
 import { Copy, Check, User, Sparkles, HelpCircle } from 'lucide-react';
 import type { ChatMessage } from '@/types';
 import { MessageContent } from './MessageContent';
 import { ReasoningBlock } from './ReasoningBlock';
 import { AssetGallery } from './AssetGallery';
 import { RetrievalTracePanel } from './RetrievalTracePanel';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface MessageItemProps {
   message: ChatMessage;
@@ -24,7 +26,12 @@ export const MessageItem = memo(function MessageItem({ message, isLast }: Messag
   }, [message.content]);
 
   return (
-    <div className="px-4 py-6 group">
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.25, ease: 'easeOut' }}
+      className="px-4 py-6 group"
+    >
       <div className="max-w-3xl mx-auto flex gap-4">
         {/* Avatar */}
         <div className="shrink-0 select-none">
@@ -69,29 +76,40 @@ export const MessageItem = memo(function MessageItem({ message, isLast }: Messag
           {/* Actions - appear on message hover */}
           {!isUser && (
             <div className="flex items-center gap-2 mt-3 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity duration-200">
-              <button
-                onClick={handleCopy}
-                className="text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1.5 text-xs px-2 py-1 rounded-lg hover:bg-zinc-800/50"
-              >
-                {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
-                {copied ? '已复制' : '复制'}
-              </button>
-              <button
-                onClick={() => setTracesOpen((v) => !v)}
-                title={hasTraces ? '查看本轮检索的 query、意图和文本块（问题溯源）' : '本轮未触发知识库检索'}
-                className={`transition-colors flex items-center gap-1.5 text-xs ${
-                  tracesOpen
-                    ? 'text-primary-400 hover:text-primary-300'
-                    : 'text-zinc-500 hover:text-zinc-300'
-                }`}
-              >
-                <HelpCircle size={14} />
-                {tracesOpen ? '收起溯源' : '问题溯源'}
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={handleCopy}
+                    className="text-zinc-500 hover:text-zinc-300 transition-colors flex items-center gap-1.5 text-xs px-2 py-1 rounded-lg hover:bg-zinc-800/50"
+                  >
+                    {copied ? <Check size={14} className="text-green-500" /> : <Copy size={14} />}
+                    {copied ? '已复制' : '复制'}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>复制回答内容</TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={() => setTracesOpen((v) => !v)}
+                    className={`transition-colors flex items-center gap-1.5 text-xs ${
+                      tracesOpen
+                        ? 'text-primary-400 hover:text-primary-300'
+                        : 'text-zinc-500 hover:text-zinc-300'
+                    }`}
+                  >
+                    <HelpCircle size={14} />
+                    {tracesOpen ? '收起溯源' : '问题溯源'}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {hasTraces ? '查看本轮检索的 query、意图和文本块' : '本轮未触发知识库检索'}
+                </TooltipContent>
+              </Tooltip>
             </div>
           )}
         </div>
       </div>
-    </div>
+    </motion.div>
   );
 });

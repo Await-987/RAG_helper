@@ -1,248 +1,479 @@
-﻿# 智能设计助手 RAG
+# 智能设计助手 RAG 项目
 
-面向电力系统与国家电网业务场景的 RAG 项目。当前主线是前后端分离架构：
+面向电网工程设计、建设管理、规范检索和技术资料问答的本地化 RAG 系统。项目采用前后端分离架构，使用 FastAPI 提供鉴权、文件入库、RAG 检索、流式问答和知识图谱接口，使用 React + Vite 提供聊天、文件管理、用户管理和知识图谱可视化页面，使用 Qdrant 持久化向量库，使用 Redis 管理会话索引。
 
-- `frontend/`：React + Vite 前端，负责聊天、文件管理、用户管理、消息渲染
-- `backend/`：FastAPI 后端，负责鉴权、会话、流式回答、文件服务接口
-- `tools/`、`config/`、`data/`、`models/`：前后端共享的知识库、解析、检索和模型资源
+本 README 是项目唯一维护入口，覆盖开发、部署、目录结构、环境变量、数据管理、API、常用脚本和排障。项目内旧的分散 README 已合并到本文档。
 
-旧的 `Streamlit` 入口和相关运行逻辑已经移除，当前部署主线只保留前后端分离架构。
+## 目录
 
-## 1. 项目概览
+- [项目能力](#项目能力)
+- [整体架构](#整体架构)
+- [技术栈](#技术栈)
+- [目录结构](#目录结构)
+- [运行数据和 Git 管理](#运行数据和-git-管理)
+- [环境要求](#环境要求)
+- [环境变量](#环境变量)
+- [Docker 部署](#docker-部署)
+- [本地开发启动](#本地开发启动)
+- [首次使用流程](#首次使用流程)
+- [前端功能](#前端功能)
+- [后端 API](#后端-api)
+- [知识库入库与检索流程](#知识库入库与检索流程)
+- [知识图谱](#知识图谱)
+- [常用脚本](#常用脚本)
+- [测试和验证](#测试和验证)
+- [运维和排障](#运维和排障)
+- [安全注意事项](#安全注意事项)
 
-这个项目主要解决以下问题：
+## 项目能力
 
-- 上传 PDF / 文档并完成知识库入库
-- 使用 MinerU 提取正文、图片、表格
-- 使用 Qdrant 做向量检索与混合检索
-- 对复杂表格做独立切块、表格摘要、证据回溯
-- 在前端以聊天形式展示答案、来源、表格和附件图片
+### 已实现能力
 
-核心特点：
+- 用户登录、JWT 鉴权、管理员和普通用户角色控制。
+- 多轮聊天，支持 SSE 流式输出。
+- 模型 reasoning 内容透传和前端折叠展示。
+- 上传 PDF、DOC、DOCX、TXT、MD 文件。
+- 管理员触发文件入库，后台任务跟踪导入状态。
+- 使用 MinerU 解析 PDF，提取正文、图片、表格、公式等内容。
+- 文档切块后写入 Qdrant collection。
+- 支持向量检索、词汇索引和混合检索。
+- 支持 reranker 对召回片段重排。
+- 支持表格独立切块和本地表格摘要模型。
+- 文件管理页展示 imported、not_imported、ghost 三类状态。
+- 聊天会话列表、会话详情和删除会话。
+- 会话索引写入 Redis，完整 transcript 落盘。
+- Agent memory 和长对话 compact。
+- 外部 RAG API，可用 API Key 直接查询或纯检索。
+- 知识图谱 JSON 接口、统计接口、预览图接口和子图接口。
+- 前端知识图谱页面，使用 G6 可视化。
+- Docker Compose 一键启动 web、backend、qdrant、redis。
 
-- 面向中文、电力行业、国网业务资料
-- 支持图片与表格证据回溯
-- 支持流式回答
-- 支持用户鉴权与管理员文件管理
-- 当前部署统一走前后端分离入口
+### 适用场景
 
-## 2. 当前架构
+- 电网设计规范问答。
+- 国网基建、技经、环保、施工、验收、安全等资料检索。
+- 大批量规范 PDF 的解析和结构化入库。
+- 将 RAG 能力作为外部系统的检索/问答服务。
+- 从 Qdrant 片段抽取实体关系并展示知识图谱。
 
-### 2.1 总体拓扑
+## 整体架构
 
-当前主线由四类组件组成：
-
-- `frontend`：React + Vite 前端，负责页面、登录态、聊天 UI、文件管理 UI
-- `backend`：FastAPI 后端，负责鉴权、会话、SSE 流式问答、文件接口
-- `qdrant`：向量库服务，负责持久化向量、payload 和相似度检索
-- `redis`：会话索引与元数据服务，负责会话列表、标题、最近活跃时间、消息数
-
-运行拓扑如下：
+当前主线是四服务架构：
 
 ```text
-浏览器
+Browser
   |
+  | http://127.0.0.1:8080
   v
-frontend
+web: Nginx + React 静态资源
   |
-  |  /api
+  | /api/*
   v
-backend
+backend: FastAPI
   |
-  +--> qdrant        向量库服务
-  +--> redis         会话索引与元数据
-  +--> models/       本地 embedding / reranker / summary 模型
-  +--> .user/        用户与鉴权数据
-  +--> SHARED_STORAGE_ROOT/
-       ├── stored_files/
-       │   └── mineru_output/
-       ├── content_lists/
-       ├── exported_chunks/
-       ├── agent_memory/
-       └── chat_sessions/
+  +-- qdrant:6333
+  |     向量、payload、collection 持久化
+  |
+  +-- redis:6379
+  |     会话列表、标题、消息数、更新时间
+  |
+  +-- models/
+  |     embedding、reranker、table summary 模型
+  |
+  +-- data/
+  |     上传文件、MinerU 输出、内容列表、索引缓存、会话文件、知识图谱
+  |
+  +-- .user/
+        用户账号文件
 ```
 
-### 2.2 状态分层
+### 状态分层
 
-当前项目的状态分成三层：
+项目状态分为三层：
 
-1. 持久化服务层
-   - `qdrant`：知识库向量、payload、collection 数据
-   - `redis`：会话索引、会话元信息
+1. 服务持久化层
+   - `data/qdrant/`：Qdrant Server 存储。
+   - `data/redis/`：Redis AOF/RDB 数据。
 
 2. 文件持久化层
-   - `SHARED_STORAGE_ROOT/stored_files`：上传原始文件
-   - `SHARED_STORAGE_ROOT/stored_files/mineru_output`：图片、表格截图
-   - `SHARED_STORAGE_ROOT/agent_memory`：memory 快照
-   - `SHARED_STORAGE_ROOT/chat_sessions`：完整 transcript
+   - `data/stored_files/`：上传原始文件。
+   - `data/stored_files/mineru_output/`：MinerU 生成图片、表格截图、公式截图等。
+   - `data/content_lists/`：MinerU 内容列表。
+   - `data/lex_index/`：词汇索引和文件级统计缓存。
+   - `data/agent_memory/`：Agent memory 快照。
+   - `data/chat_sessions/`：完整聊天 transcript。
+   - `data/knowledge_graph/`：知识图谱 JSON 和预览图。
 
-3. 进程内运行态
-   - backend 进程内 `ChatAgent`
-   - backend 进程内热模型缓存
-   - backend 进程内 session 执行态
+3. 进程运行态
+   - backend 内存中的 ChatAgent。
+   - backend 模型缓存。
+   - 后台文件导入任务状态。
 
-这也是当前仍然保持 `BACKEND_WORKERS=1` 的原因：会话索引已经外置，但 `ChatAgent` 执行态还没有完全无状态化。
+因此生产部署仍建议 `BACKEND_WORKERS=1`。虽然 Redis 已经保存会话索引，但 ChatAgent 执行态和模型缓存还不是完全无状态。
 
-### 2.3 当前支持的运行模式
+## 技术栈
 
-当前代码支持三种模式：
+### 前端
 
-- 本地最小模式
-  - `QDRANT_MODE=local`
-  - `REDIS_URL=` 为空
-  - 用于先验证前后端主流程
+- React 19
+- TypeScript
+- Vite 7
+- React Router 7
+- Zustand
+- Axios
+- Tailwind CSS 4
+- Radix UI
+- lucide-react
+- react-markdown、remark-gfm、remark-math、rehype-katex、rehype-raw
+- react-virtuoso
+- AntV G6
+- sonner
 
-- 本地完整链路模式
-  - backend / frontend 本地启动
-  - `qdrant` 和 `redis` 作为独立服务运行
-  - 用于验证完整服务链
+### 后端
 
-- Docker 部署模式
-  - `web + backend + qdrant + redis`
-  - 用于标准化部署
+- Python 3.10
+- FastAPI
+- Uvicorn
+- Pydantic settings
+- CAMEL AI
+- OpenAI-compatible LLM API
+- SentenceTransformer embedding
+- CrossEncoder reranker
+- Transformers 表格摘要模型
+- MinerU 文档解析
+- Qdrant Client
+- Redis
 
-## 3. 目录结构
+### 部署
+
+- Docker Compose
+- Nginx
+- Qdrant
+- Redis
+- NVIDIA Container Runtime，按需使用 GPU
+
+## 目录结构
 
 ```text
 rag/
+├── backend/                         # FastAPI 后端
+│   ├── app/
+│   │   ├── api/v1/                  # auth、chat、files、users、rag、knowledge_graph 路由
+│   │   ├── core/                    # 安全、Redis、Agent、模型运行时、文件目录
+│   │   ├── schemas/                 # Pydantic schema
+│   │   ├── services/                # auth/chat/file/user 服务
+│   │   ├── config.py                # 环境变量和设置
+│   │   ├── dependencies.py          # 依赖注入、启动预热、资源清理
+│   │   └── main.py                  # FastAPI 应用入口
+│   ├── tests/
+│   ├── requirements.txt
+│   └── run.py
+│
 ├── frontend/                        # React + Vite 前端
 │   ├── src/
-│   │   ├── api/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   ├── stores/
-│   │   └── types/
+│   │   ├── api/                     # API client
+│   │   ├── components/              # 布局、聊天、UI、命令面板
+│   │   ├── pages/                   # Chat、Files、Users、KnowledgeGraph 等页面
+│   │   ├── stores/                  # auth/chat/ui 状态
+│   │   ├── types/                   # TS 类型
+│   │   └── utils/
 │   ├── package.json
 │   └── vite.config.ts
 │
-├── backend/                         # FastAPI 后端
-│   ├── app/
-│   │   ├── api/v1/                  # 路由层
-│   │   ├── core/                    # 安全、中间件、Redis 客户端
-│   │   ├── schemas/                 # Pydantic schema
-│   │   ├── services/                # chat / file / user / auth
-│   │   ├── config.py                # 后端配置入口
-│   │   ├── dependencies.py          # 依赖注入与资源缓存
-│   │   └── main.py                  # FastAPI 应用入口
-│   ├── run.py
-│   └── requirements.txt
+├── tools/                           # RAG 核心工具链
+│   ├── load_files.py                # 文件解析、切块、入库
+│   ├── mineru_toolkit.py            # MinerU 封装
+│   ├── qdrant.py                    # Qdrant 读写、检索、混合检索
+│   ├── database_toolkit.py          # Agent 检索工具
+│   ├── file_stats.py                # 文件级 chunk 统计
+│   ├── kg_extractor.py              # 知识图谱抽取
+│   ├── kg_layout.py                 # 知识图谱布局预计算
+│   └── user_auth.py                 # 用户文件和权限管理
 │
-├── tools/                           # MinerU、入库、检索、Qdrant 工具链
-├── config/                          # MinerU 等公共配置
-├── deploy/nginx/                    # Docker Nginx 反向代理配置
-├── scripts/                         # 迁移、调试、smoke、评测脚本
-├── docs/                            # 设计与改动日志
-├── storage_paths.py                 # 共享存储路径统一入口
+├── scripts/                         # 运维、导入、测试、审计脚本
+├── config/                          # MinerU 和系统提示词配置
+│   ├── mineru.json
+│   ├── mineru.resolved.json
+│   └── prompts/main_agent_system.txt
+│
+├── deploy/nginx/default.conf        # 前端 Nginx 和 API 反向代理配置
+├── docs/                            # 设计说明、变更记录和规划文档
+├── data/                            # 运行数据，默认不提交
+├── models/                          # 本地模型，默认不提交
+├── .user/                           # 用户账号文件，默认不提交
 ├── Dockerfile.backend
 ├── Dockerfile.frontend
 ├── docker-compose.yml
-├── README.md
-└── .gitignore
+├── storage_paths.py                 # 共享存储路径统一入口
+├── requirements.txt
+└── README.md
 ```
 
-### 3.1 运行数据目录
+## 运行数据和 Git 管理
 
-默认 `SHARED_STORAGE_ROOT=data`，因此当前运行数据目录如下：
+项目源码、配置模板、脚本、Dockerfile、Compose 文件应提交到 GitHub。运行时数据、模型、上传文件、向量库、缓存和本地报告不应提交。
+
+### 默认忽略的关键目录
 
 ```text
-data/
-├── qdrant/                          # Qdrant Server 数据目录
-├── redis/                           # Redis AOF / RDB 数据目录
-├── lex_index/                       # 后端词汇索引缓存
-├── stored_files/                    # 上传的原始文件
-│   └── mineru_output/               # 图片、表格截图、方程截图
-├── content_lists/                   # 文档解析中间结果
-├── exported_chunks/                 # 调试导出的 chunk
-├── agent_memory/                    # memory 快照
-├── chat_sessions/                   # transcript 文件
-└── storages/                        # 历史 local Qdrant 数据目录（兼容旧库）
+.env
+.user/
+.venv/
+frontend/node_modules/
+frontend/dist/
+models/
+data/stored_files/*.pdf
+data/stored_files_classified/
+data/content_lists/
+data/knowledge_graph/
+data/lex_index/
+data/qdrant/
+data/redis/
+data/agent_memory/
+data/chat_sessions/
+data/scripts/
+reports/
+technical_report_latex/
+word_output/
 ```
 
-## 4. 模块职责
+### 需要提交的关键文件
 
-### 4.1 前端
+```text
+README.md
+docker-compose.yml
+Dockerfile.backend
+Dockerfile.frontend
+deploy/nginx/default.conf
+requirements.txt
+backend/requirements.txt
+backend/app/**
+frontend/src/**
+frontend/package.json
+frontend/package-lock.json
+tools/**
+scripts/**
+config/**
+storage_paths.py
+docs/**
+```
 
-前端负责：
+`data/storages/.gitkeep` 是为了保留历史 local Qdrant 目录占位，可以提交。
 
-- 登录与用户态维护
-- 聊天页面与历史会话列表
-- 文件管理、导入、删除
-- SSE 流式渲染
-- Markdown / 表格 / 数学公式 / 附件图片区渲染
+## 环境要求
 
-关键模块：
+### Docker 部署
 
-- `frontend/src/pages/Chat.tsx`
-- `frontend/src/components/Chat/`
-- `frontend/src/stores/`
-- `frontend/src/api/`
+- Linux
+- Docker Engine
+- Docker Compose v2
+- 可选：NVIDIA Driver + NVIDIA Container Toolkit
+- 建议磁盘空间：
+  - 代码和镜像：10GB+
+  - 模型：20GB+
+  - 知识库 PDF 和 Qdrant：按资料规模预留，当前项目数据可能达到几十 GB
 
-### 4.2 后端
+### 本地开发
 
-后端负责：
+- Python 3.10
+- Node.js 22，或满足 Vite 要求的 Node.js 20.19+
+- npm
+- Redis，可选
+- Qdrant，可选
+- 推荐 Linux 或 WSL2
 
-- JWT 鉴权
-- Chat SSE 流式响应
-- ChatAgent 会话生命周期管理
-- transcript / memory 持久化
-- 文件上传、入库、删除、预览
-- 调用 `backend/app/core/` 与 `tools/`
+## 环境变量
 
-关键模块：
+项目从根目录 `.env` 读取配置。`.env` 不提交 Git。
 
-- `backend/app/services/chat_service.py`
-- `backend/app/services/file_service.py`
-- `backend/app/services/user_service.py`
-- `backend/app/core/redis_client.py`
-- `backend/app/dependencies.py`
+### 最小 `.env` 示例
 
-### 4.3 检索与入库层
+```bash
+# 安全配置
+SECRET_KEY=请替换为足够长的随机字符串
+AUTH_INSTANCE_ID=local-dev
 
-共享核心能力：
+# 首次启动时创建管理员。只在 .user/users.json 不存在时生效。
+INITIAL_ADMIN_USERNAME=admin
+INITIAL_ADMIN_PASSWORD=请替换为至少6位的密码
 
-- `tools/mineru_toolkit.py`
-  - PDF 解析
-  - 图片、表格、方程输出
+# OpenAI-compatible LLM
+OPENAI_API_KEY=你的模型服务key
+url=https://你的模型服务地址/v1
+MODEL_NAME=你的模型名称
 
-- `tools/load_files.py`
-  - 内容预处理
-  - chunk 切分
-  - 表格摘要
-  - Qdrant 写入
+# 主回答 Agent，可不填，默认继承 OPENAI_API_KEY / url / MODEL_NAME
+MAIN_AGENT_API_KEY=
+MAIN_AGENT_API_URL=
+MAIN_AGENT_MODEL_NAME=
+MAIN_AGENT_TEMPERATURE=0.2
+MAIN_AGENT_TOP_P=0.9
+MAIN_AGENT_MAX_TOKENS=4000
 
-- `tools/qdrant.py`
-  - 支持 `local` / `server` 双模式
-  - 向量检索
-  - 词汇索引缓存
-  - hybrid 检索
+# 外部 RAG API Key，调用 /api/v1/rag/* 时使用
+RAG_API_KEY=请替换为外部服务调用密钥
 
-- `tools/database_toolkit.py`
-  - 对 Agent 暴露 `search_database`
-  - rerank
-  - 动态裁剪和去重
+# 本地模型路径
+conan_path=models/bge-base-zh-v1.5
+reranker_path=models/bge-reranker-base
+TABLE_SUMMARY_MODEL_PATH=models/Qwen2.5-1.5B-Instruct
 
-### 4.4 后端运行时层
+# 设备。留空时自动 cuda/cpu
+EMBEDDING_DEVICE=
+RERANKER_DEVICE=
+TABLE_SUMMARY_DEVICE=
 
-- `backend/app/core/model_runtime.py`
-  - LLM
-  - embedding
-  - reranker
-  - table summary model
+# Compose 对外端口
+APP_PORT=8080
 
-- `backend/app/core/agent_factory.py`
-  - 问答 Agent 工厂
-  - 系统提示词与行为约束
+# Backend worker，当前建议保持 1
+BACKEND_WORKERS=1
 
-## 5. 依赖要求
+# Redis / Qdrant 在 Docker Compose 中会由 compose 覆盖
+REDIS_PREFIX=rag
+QDRANT_TIMEOUT_SEC=30
+QDRANT_INIT_RETRIES=20
+QDRANT_INIT_DELAY_SEC=3
+```
 
-- Python 3.10+
-- Node.js 20.19+ 或 22.12+
-- 推荐 Linux 环境
-- 推荐使用虚拟环境
+### 关键变量说明
 
-## 6. 安装与初始化
+| 变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `SECRET_KEY` | JWT 签名密钥，生产必须替换 | `your-secret-key-change-in-production` |
+| `AUTH_INSTANCE_ID` | 鉴权实例 ID，可用于 token 失效隔离 | 随机 |
+| `INITIAL_ADMIN_USERNAME` | 首次创建管理员用户名 | 空 |
+| `INITIAL_ADMIN_PASSWORD` | 首次创建管理员密码 | 空 |
+| `OPENAI_API_KEY` | OpenAI-compatible 模型服务 key | 空 |
+| `url` | OpenAI-compatible base URL，代码中用于 `OPENAI_API_URL` | 空 |
+| `MODEL_NAME` | 默认模型名称 | `qwq32b` |
+| `MAIN_AGENT_*` | 主回答 Agent 模型、采样和上下文配置 | 见 `.env` 示例 |
+| `RAG_API_KEY` | 外部 RAG API 鉴权密钥 | 空 |
+| `conan_path` | embedding 模型路径 | 空，必填 |
+| `reranker_path` | reranker 模型路径 | 空，可选 |
+| `TABLE_SUMMARY_MODEL_PATH` | 表格摘要模型路径 | `models/Qwen2.5-1.5B-Instruct` |
+| `SHARED_STORAGE_ROOT` | 共享运行数据根目录 | `data` |
+| `QDRANT_MODE` | `local` 或 `server` | `local` |
+| `QDRANT_URL` | Qdrant Server 地址 | 空 |
+| `QDRANT_LOCAL_PATH` | local Qdrant 路径 | `data/storages` |
+| `QDRANT_LEXICAL_INDEX_DIR` | 词汇索引缓存目录 | `data/lex_index` |
+| `REDIS_URL` | Redis 连接地址 | 空 |
+| `BACKEND_WORKERS` | Uvicorn worker 数 | `1` |
 
-### 6.1 Python 环境
+### 首次管理员创建规则
+
+用户数据保存在 `.user/users.json`。首次启动时：
+
+- 如果 `.user/users.json` 不存在，并且同时设置了 `INITIAL_ADMIN_USERNAME`、`INITIAL_ADMIN_PASSWORD`，系统会创建首个管理员。
+- 如果 `.user/users.json` 已存在，环境变量不会覆盖已有用户。
+- 如果首次启动没有设置初始管理员，系统会创建空用户文件，需要删除 `.user/users.json` 后重启，或手动写入用户。
+
+## Docker 部署
+
+### 1. 准备目录
+
+```bash
+mkdir -p data/redis data/qdrant data/stored_files data/lex_index data/content_lists data/agent_memory data/chat_sessions models .user
+```
+
+### 2. 准备 `.env`
+
+按 [环境变量](#环境变量) 写入根目录 `.env`。至少需要：
+
+- `SECRET_KEY`
+- `INITIAL_ADMIN_USERNAME`
+- `INITIAL_ADMIN_PASSWORD`
+- `OPENAI_API_KEY`
+- `url`
+- `MODEL_NAME`
+- `conan_path`
+
+如果使用 reranker 或表格摘要，也要准备：
+
+- `reranker_path`
+- `TABLE_SUMMARY_MODEL_PATH`
+
+### 3. 准备本地模型
+
+至少需要 embedding 模型：
+
+```text
+models/bge-base-zh-v1.5/
+```
+
+推荐准备 reranker：
+
+```text
+models/bge-reranker-base/
+```
+
+表格摘要模型默认路径：
+
+```text
+models/Qwen2.5-1.5B-Instruct/
+```
+
+可用脚本下载表格摘要模型：
+
+```bash
+python scripts/download_table_summary_model.py --source modelscope
+```
+
+MinerU 相关模型应按 `config/mineru.json` 和 `config/mineru.resolved.json` 指向的路径准备。
+
+### 4. 构建并启动
+
+```bash
+docker compose up -d --build
+```
+
+如镜像已构建，只启动：
+
+```bash
+docker compose up -d
+```
+
+### 5. 查看状态
+
+```bash
+docker compose ps
+docker logs -f rag-backend
+docker logs -f rag-web
+docker logs -f rag-qdrant
+docker logs -f rag-redis
+```
+
+### 6. 访问服务
+
+默认地址：
+
+```text
+前端：http://127.0.0.1:8080
+API 文档：http://127.0.0.1:8080/docs
+后端健康检查：http://127.0.0.1:8080/health
+Qdrant：http://127.0.0.1:6333
+```
+
+如果宿主机设置了代理，检查本机服务时建议绕过代理：
+
+```bash
+curl --noproxy '*' -sSI http://127.0.0.1:8080
+curl --noproxy '*' -sS http://127.0.0.1:6333
+```
+
+### 7. 停止服务
+
+```bash
+docker compose down
+```
+
+停止并删除容器不会删除挂载在宿主机的 `data/`、`models/`、`.user/`。
+
+## 本地开发启动
+
+本地开发可以分开启动后端、前端、Qdrant 和 Redis。
+
+### Python 环境
 
 ```bash
 python3 -m venv .venv
@@ -252,1227 +483,560 @@ pip install -r requirements.txt
 pip install -r backend/requirements.txt
 ```
 
-说明：
-
-- 根目录 [`requirements.txt`](/home/ubuntu/rag_project/rag/requirements.txt) 已包含主工程依赖和后端运行时依赖
-- [`backend/requirements.txt`](/home/ubuntu/rag_project/rag/backend/requirements.txt) 用于和 Docker 镜像安装链路保持一致，建议继续安装
-
-### 6.2 前端环境
+### 前端依赖
 
 ```bash
 cd frontend
-npm install
+npm ci
 cd ..
 ```
 
-### 6.3 独立服务准备
+### 启动 Qdrant 和 Redis
 
-如果要跑完整服务链，需要额外准备：
+使用 Compose 只启动基础服务：
 
-- `qdrant` 服务
-- `redis` 服务
-
-你可以：
-
-- 用 Docker 起这两个服务
-- 或者在系统里单独安装它们并本地启动
-
-## 7. 环境变量与配置模式
-
-在项目根目录创建 `.env`。推荐直接复制 `.env.example` 后按实际环境修改。
-
-示例：
-
-```env
-# ------------------------------
-# 基础运行配置
-# ------------------------------
-DEBUG=false
-SECRET_KEY=change-me
-
-# ------------------------------
-# OpenAI 兼容模型服务
-# ------------------------------
-OPENAI_API_KEY=your-api-key
-url=https://your-openai-compatible-endpoint/v1
-MODEL_NAME=qwq32b
-
-# ------------------------------
-# 主回答 Agent 参数
-# ------------------------------
-MAIN_AGENT_MODEL_NAME=qwq32b
-MAIN_AGENT_TEMPERATURE=0.2
-MAIN_AGENT_TOP_P=0.9
-MAIN_AGENT_MAX_TOKENS=4000
-MAIN_AGENT_MESSAGE_WINDOW_SIZE=12
-MAIN_AGENT_SUMMARIZE_THRESHOLD=20
-MAIN_AGENT_PRUNE_TOOL_CALLS=true
-MAIN_AGENT_STREAM_ACCUMULATE=false
-MAIN_AGENT_SYSTEM_PROMPT_PATH=config/prompts/main_agent_system.txt
-
-# ------------------------------
-# 辅助 Agent 参数
-# ------------------------------
-INTENT_ROUTER_MODEL_NAME=qwq32b
-INTENT_ROUTER_TEMPERATURE=0.0
-INTENT_ROUTER_TOP_P=1.0
-INTENT_ROUTER_MAX_TOKENS=800
-
-SEARCH_REWRITER_MODEL_NAME=qwq32b
-SEARCH_REWRITER_TEMPERATURE=0.1
-SEARCH_REWRITER_TOP_P=1.0
-SEARCH_REWRITER_MAX_TOKENS=1200
-
-# ------------------------------
-# 本地模型路径
-# ------------------------------
-conan_path=models/bge-base-zh-v1.5
-reranker_path=models/bge-reranker-base
-TABLE_SUMMARY_MODEL_PATH=models/Qwen2.5-1.5B-Instruct
-EMBEDDING_DEVICE=
-RERANKER_DEVICE=
-TABLE_SUMMARY_DEVICE=
-
-# ------------------------------
-# Agent Memory
-# ------------------------------
-AGENT_MEMORY_ENABLED=true
-AGENT_MEMORY_TOKEN_LIMIT=12000
-AGENT_MEMORY_RETRIEVE_LIMIT=6
-AGENT_MEMORY_KEEP_RATE=0.9
-MEMORY_TOKEN_COUNTER_MODEL=GPT_4O_MINI
-CHAT_CONTEXT_BUDGET_LOG_ENABLED=false
-AGENT_COMPACT_ENABLED=true
-AGENT_COMPACT_TRIGGER_MESSAGES=12
-AGENT_COMPACT_TRIGGER_CHARS=24000
-AGENT_COMPACT_KEEP_RECENT_MESSAGES=4
-FACTUAL_EVIDENCE_MAX_CHARS=6000
-
-# ------------------------------
-# Qdrant / Redis / 共享存储
-# ------------------------------
-SHARED_STORAGE_ROOT=data
-QDRANT_MODE=server
-QDRANT_URL=http://127.0.0.1:6333
-QDRANT_API_KEY=
-QDRANT_LOCAL_PATH=data/storages
-QDRANT_LEXICAL_INDEX_DIR=data/lex_index
-
-REDIS_URL=redis://127.0.0.1:6379/0
-REDIS_PREFIX=rag
-REDIS_SOCKET_TIMEOUT_SEC=5
-REDIS_SOCKET_CONNECT_TIMEOUT_SEC=5
+```bash
+docker compose up -d qdrant redis
 ```
 
-### 7.1 常用变量说明
+本地后端 `.env` 中可设置：
 
-| 变量 | 作用 |
-|---|---|
-| `OPENAI_API_KEY` | 主对话模型 API Key |
-| `url` | OpenAI 兼容接口地址 |
-| `MODEL_NAME` | 默认模型名称；未给子 agent 单独指定时会回退到这里 |
-| `MAIN_AGENT_MODEL_NAME` | 主回答 agent 使用的模型名 |
-| `MAIN_AGENT_TEMPERATURE` | 主回答 agent 采样温度 |
-| `MAIN_AGENT_TOP_P` | 主回答 agent 的 `top_p` |
-| `MAIN_AGENT_MAX_TOKENS` | 主回答 agent 最大生成 token 数 |
-| `MAIN_AGENT_MESSAGE_WINDOW_SIZE` | 主回答 agent 的短窗口消息数 |
-| `MAIN_AGENT_SUMMARIZE_THRESHOLD` | 主回答 agent 的摘要触发阈值 |
-| `MAIN_AGENT_PRUNE_TOOL_CALLS` | 是否裁掉工具调用痕迹 |
-| `MAIN_AGENT_STREAM_ACCUMULATE` | 流式输出时是否累积完整内容 |
-| `MAIN_AGENT_SYSTEM_PROMPT_PATH` | 主回答 agent 系统提示词文件路径 |
-| `INTENT_ROUTER_MODEL_NAME` | 意图路由器模型名 |
-| `INTENT_ROUTER_TEMPERATURE` | 意图路由器温度 |
-| `SEARCH_REWRITER_MODEL_NAME` | 检索改写器模型名 |
-| `SEARCH_REWRITER_TEMPERATURE` | 检索改写器温度 |
-| `conan_path` | embedding 模型路径 |
-| `reranker_path` | reranker 模型路径 |
-| `TABLE_SUMMARY_MODEL_PATH` | 表格摘要模型路径 |
-| `EMBEDDING_DEVICE` | embedding 模型设备，留空为自动检测 |
-| `RERANKER_DEVICE` | reranker 模型设备，留空为自动检测 |
-| `TABLE_SUMMARY_DEVICE` | 表格摘要模型设备，留空为自动检测 |
-| `SECRET_KEY` | 后端 JWT 密钥 |
-| `DEBUG` | 后端调试模式 |
-| `AGENT_MEMORY_ENABLED` | 是否启用 CAMEL 长期记忆 |
-| `AGENT_MEMORY_TOKEN_LIMIT` | 长期记忆 token 上限 |
-| `AGENT_MEMORY_RETRIEVE_LIMIT` | 长期记忆召回条数 |
-| `AGENT_MEMORY_KEEP_RATE` | 历史消息保留系数 |
-| `QDRANT_MODE` | Qdrant 运行模式，`local` 或 `server` |
-| `QDRANT_URL` | Qdrant 服务地址，服务模式必填 |
-| `QDRANT_LEXICAL_INDEX_DIR` | BM25 词汇索引缓存目录 |
-| `REDIS_URL` | Redis 地址，用于会话索引和元数据共享 |
-| `REDIS_PREFIX` | Redis key 前缀 |
-| `SHARED_STORAGE_ROOT` | 共享文件根目录，默认 `data` |
-
-### 7.2 推荐配置模式
-
-#### 本地最小模式
-
-用于先跑通前后端主流程：
-
-```env
-QDRANT_MODE=local
-QDRANT_URL=
-REDIS_URL=
-SHARED_STORAGE_ROOT=data
-```
-
-#### 本地完整链路模式
-
-用于验证独立服务链：
-
-```env
+```bash
 QDRANT_MODE=server
 QDRANT_URL=http://127.0.0.1:6333
 REDIS_URL=redis://127.0.0.1:6379/0
-SHARED_STORAGE_ROOT=data
 ```
 
-#### Docker 模式
+如果不使用 Redis，可留空 `REDIS_URL`，系统会退化到文件会话能力；完整功能推荐 Redis。
 
-Docker Compose 会覆盖为：
-
-```env
-QDRANT_MODE=server
-QDRANT_URL=http://qdrant:6333
-REDIS_URL=redis://redis:6379/0
-SHARED_STORAGE_ROOT=data
-```
-
-## 8. 模型与数据目录
-
-以下目录默认不提交远程仓库：
-
-- `models/`
-- `data/qdrant/`
-- `data/redis/`
-- `data/lex_index/`
-- `data/stored_files/`
-- `data/content_lists/`
-- `data/exported_chunks/`
-- `data/agent_memory/`
-- `data/chat_sessions/`
-- `.user/`
-
-这些目录分别存放：
-
-- 本地模型
-- Qdrant Server 持久化数据
-- Redis 持久化数据
-- 本地词汇索引缓存
-- 上传原始文件
-- MinerU 输出图片/表格截图
-- 文档解析缓存
-- 会话与 agent memory 持久化数据
-- 用户数据
-
-## 9. 运行方式
-
-### 9.1 本地最小模式
-
-适用于先验证：
-
-- 后端可启动
-- 前端可启动
-- 本地 local Qdrant 可工作
-- 上传、入库、问答链路可跑通
-
-后端：
-
-```bash
-cd /home/ubuntu/rag_project/rag
-source .venv/bin/activate
-python backend/run.py --host 0.0.0.0 --port 8000
-```
-
-前端：
-
-```bash
-cd /home/ubuntu/rag_project/rag/frontend
-npm run dev -- --host 0.0.0.0 --port 3000
-```
-
-访问：
-
-- 前端：`http://127.0.0.1:3000`
-- 后端：`http://127.0.0.1:8000/docs`
-
-### 9.2 本地完整链路模式
-
-适用于验证：
-
-- backend
-- frontend
-- qdrant server
-- redis
-- 完整服务链
-
-典型启动顺序：
-
-1. 启动 `redis`
-2. 启动 `qdrant`
-3. 启动 `backend`
-4. 启动 `frontend`
-
-推荐先把 `.env` 切到服务模式：
-
-```env
-QDRANT_MODE=server
-QDRANT_URL=http://127.0.0.1:6333
-REDIS_URL=redis://127.0.0.1:6379/0
-SHARED_STORAGE_ROOT=data
-```
-
-四个终端分别执行：
-
-终端 1，启动 `redis`：
-
-```bash
-mkdir -p /home/ubuntu/rag_project/rag/data/redis
-redis-server --port 6379 --appendonly yes --dir /home/ubuntu/rag_project/rag/data/redis
-```
-
-终端 2，启动 `qdrant`：
-
-```bash
-unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY
-export NO_PROXY=127.0.0.1,localhost
-export no_proxy=127.0.0.1,localhost
-mkdir -p /home/ubuntu/rag_project/rag/data/qdrant
-QDRANT__STORAGE__STORAGE_PATH=/home/ubuntu/rag_project/rag/data/qdrant /home/ubuntu/qdrant-src/target/release/qdrant
-```
-
-终端 3，启动 `backend`：
-
-```bash
-cd /home/ubuntu/rag_project/rag
-source .venv/bin/activate
-python backend/run.py --host 0.0.0.0 --port 8000
-```
-
-终端 4，启动 `frontend`：
-
-```bash
-cd /home/ubuntu/rag_project/rag/frontend
-npm install
-npm run dev -- --host 0.0.0.0 --port 3000
-```
-
-验证命令：
-
-```bash
-curl http://127.0.0.1:6333/collections
-redis-cli -p 6379 ping
-curl http://127.0.0.1:8000/health
-```
-
-### 9.3 旧 local Qdrant 数据迁移到 server
-
-如果你之前使用的是：
-
-- `QDRANT_MODE=local`
-- 旧库位于 `data/storages`
-
-而现在切到：
-
-- `QDRANT_MODE=server`
-
-那么需要把旧数据迁移到 Qdrant Server。
-
-项目已提供迁移脚本：
-
-- [`scripts/migrate_qdrant_local_to_server.py`](/home/ubuntu/rag_project/rag/scripts/migrate_qdrant_local_to_server.py)
-
-推荐命令：
-
-```bash
-cd /home/ubuntu/rag_project/rag
-source .venv/bin/activate
-python scripts/migrate_qdrant_local_to_server.py \
-  --local-path data/storages \
-  --server-url http://127.0.0.1:6333 \
-  --collection database \
-  --recreate
-```
-
-说明：
-
-- 迁移直接复制 `id + vector + payload`
-- 不需要重新 embedding
-- 不需要重新导入 PDF
-
-迁移后验证：
-
-```bash
-curl http://127.0.0.1:6333/collections/database
-```
-
-### 9.4 Docker 部署
-
-当前只推荐一种启动方式：使用根目录 `docker-compose.yml` 统一启动 `web + backend + qdrant + redis`。
-
-架构如下：
-
-```text
-浏览器
-  |
-  v
-nginx + frontend 静态资源   (:APP_PORT，默认 8080)
-  |
-  v
-backend (FastAPI, 容器内 :8000)
-  |
-  +--> qdrant (容器内 :6333)
-  +--> redis  (容器内 :6379)
-  |
-  +--> data/     持久化文档、词汇索引、截图、transcript、memory
-  +--> models/   本地模型目录
-  +--> .user/    用户数据
-```
-
-### 9.4.1 部署文件结构
-
-部署相关文件现在只保留这一组：
-
-```text
-rag/
-├── docker-compose.yml              # 唯一启动入口
-├── Dockerfile.backend              # 后端镜像
-├── Dockerfile.frontend             # 前端静态构建 + Nginx 镜像
-└── deploy/nginx/default.conf       # 统一反向代理配置
-```
-
-旧的 `Dockerfile`、`Dockerfile.cuda`、`docker-compose.gpu.yml` 不再保留，避免入口分叉。
-
-### 9.4.2 启动前准备
-
-确认以下目录和文件存在：
-
-- 根目录 `.env`
-- 根目录 `data/`
-- 根目录 `models/`
-- 根目录 `.user/`
-
-最少需要在 `.env` 中提供：
-
-```env
-OPENAI_API_KEY=your-api-key
-url=https://your-openai-compatible-endpoint/v1
-MODEL_NAME=qwq32b
-SECRET_KEY=change-me
-
-MAIN_AGENT_MODEL_NAME=qwq32b
-MAIN_AGENT_TEMPERATURE=0.2
-MAIN_AGENT_TOP_P=0.9
-MAIN_AGENT_MAX_TOKENS=4000
-MAIN_AGENT_SYSTEM_PROMPT_PATH=config/prompts/main_agent_system.txt
-
-conan_path=models/bge-base-zh-v1.5
-reranker_path=models/bge-reranker-base
-TABLE_SUMMARY_MODEL_PATH=models/Qwen2.5-1.5B-Instruct
-MINERU_MODELS_DIR_PIPELINE=models/mineru/OpenDataLab/PDF-Extract-Kit-1___0
-MINERU_MODELS_DIR_VLM=models/mineru/OpenDataLab/mineru2.5/OpenDataLab/MinerU2___5-2509-1___2B
-INITIAL_ADMIN_USERNAME=admin
-INITIAL_ADMIN_PASSWORD=change-this-admin-password
-```
-
-可选覆盖项：
-
-```env
-APP_PORT=8080
-BACKEND_WORKERS=1
-NVIDIA_VISIBLE_DEVICES=all
-NVIDIA_DRIVER_CAPABILITIES=compute,utility
-```
-
-说明：
-
-- `APP_PORT` 是宿主机对外端口，默认 `8080`
-- `BACKEND_WORKERS` 默认固定为 `1`，这是为了避免本地会话状态和本地向量存储在多进程下产生不一致
-- 仅当 `.user/users.json` 不存在时，`INITIAL_ADMIN_USERNAME` / `INITIAL_ADMIN_PASSWORD` 才会用于初始化首个管理员
-- 不再内置默认管理员口令
-- MinerU 的模型目录支持通过 `MINERU_MODELS_DIR_PIPELINE` / `MINERU_MODELS_DIR_VLM` 在 `.env` 中统一覆盖
-- `NVIDIA_DRIVER_CAPABILITIES` 需要包含 `utility`，这样容器内才能执行 `nvidia-smi`
-
-建议在首次 Docker 部署前手动创建持久化目录：
-
-```bash
-mkdir -p \
-  data/qdrant \
-  data/redis \
-  data/lex_index \
-  data/stored_files \
-  data/content_lists \
-  data/exported_chunks \
-  data/agent_memory \
-  data/chat_sessions \
-  models \
-  .user
-```
-
-如果你此前在宿主机本地手动启动过：
-
-- `redis-server`
-- `qdrant`
-- `python backend/run.py`
-- `npm run dev`
-
-建议先停掉这些本地进程，再启动 Docker。  
-原因是 `data/` 会被容器直接挂载，本地进程和容器不要同时占用同一套数据目录。
-
-### 9.4.3 外部挂载约定
-
-当前只需要把下面 3 个顶层目录作为宿主机持久化挂载：
-
-- `./data:/app/data`
-- `./models:/app/models`
-- `./.user:/app/.user`
-
-说明：
-
-- `data/` 已经包含 `qdrant/`、`redis/`、`lex_index/`、`stored_files/`、`content_lists/`、`exported_chunks/`、`agent_memory/`、`chat_sessions/`
-- `models/` 用于本地 embedding、reranker、表格模型以及其他下载模型
-- `.user/` 用于用户数据和鉴权信息
-- `.env` 只通过 `env_file` 注入，不需要作为 volume 挂载
-- 当前 Compose 默认注入 `SHARED_STORAGE_ROOT=data`，所有上传文件、MinerU 输出、transcript、memory 都从这个根目录派生
-
-### 9.4.4 启动命令
-
-最简单的标准命令：
-
-```bash
-docker compose up -d --build
-```
-
-如果你需要在容器里直接使用 GPU 并执行 `nvidia-smi`，启动前请确认宿主机已经安装 NVIDIA Container Toolkit；当前 `backend` 服务已经在 Compose 中申请 `gpus: all`，并默认注入：
-
-```env
-NVIDIA_VISIBLE_DEVICES=all
-NVIDIA_DRIVER_CAPABILITIES=compute,utility
-```
-
-推荐把首次管理员初始化和 GPU 相关变量一起写入 `.env`：
-
-```env
-INITIAL_ADMIN_USERNAME=admin
-INITIAL_ADMIN_PASSWORD=change-this-admin-password
-NVIDIA_VISIBLE_DEVICES=all
-NVIDIA_DRIVER_CAPABILITIES=compute,utility
-```
-
-推荐启动命令：
-
-```bash
-docker compose up -d --build
-```
-
-启动后可直接验证：
-
-```bash
-docker compose exec backend nvidia-smi
-```
-
-如果 `nvidia-smi` 能在 `backend` 容器内正常输出 GPU 信息，说明 GPU 透传已经生效。
-
-当你修改了 [`Dockerfile.backend`](/home/ubuntu/rag_project/rag/Dockerfile.backend)、[`Dockerfile.frontend`](/home/ubuntu/rag_project/rag/Dockerfile.frontend)、[`requirements.txt`](/home/ubuntu/rag_project/rag/requirements.txt)、[`backend/requirements.txt`](/home/ubuntu/rag_project/rag/backend/requirements.txt) 之后，都应继续使用 `--build` 触发镜像重建。
-
-如果你的环境拉取基础镜像或执行 `pip install / npm ci / git clone` 时网络不稳定，推荐使用本项目当前验证过的回退方式：
-
-```bash
-DOCKER_BUILDKIT=0 docker compose up -d --build
-```
-
-如果你只想先构建镜像，再单独启动容器：
-
-```bash
-DOCKER_BUILDKIT=0 docker compose build --no-cache
-docker compose up -d
-```
-
-#### 9.4.4.1 使用宿主机代理构建镜像
-
-如果你宿主机上已经开了 HTTP 代理，例如：
-
-```bash
-export http_proxy=http://127.0.0.1:7897
-export https_proxy=http://127.0.0.1:7897
-```
-
-那么构建 Docker 镜像前，建议同时导出大小写两套变量：
-
-```bash
-export HTTP_PROXY=http://127.0.0.1:7897
-export HTTPS_PROXY=http://127.0.0.1:7897
-export NO_PROXY=localhost,127.0.0.1,qdrant,redis,backend,web
-
-export http_proxy=http://127.0.0.1:7897
-export https_proxy=http://127.0.0.1:7897
-export no_proxy=localhost,127.0.0.1,qdrant,redis,backend,web
-```
-
-本项目当前 Compose 已经做了两件事：
-
-- `build` 阶段会把这些代理变量透传给 `apt-get`、`pip install`、`npm ci`
-- 运行阶段不会再把代理写进 `backend` 容器环境，避免模型请求被错误转发到 `127.0.0.1:7897`
-
-如果你已经构建完成，且后续不再需要 Docker 构建联网，可以在宿主机清掉这些变量：
-
-```bash
-unset HTTP_PROXY HTTPS_PROXY NO_PROXY
-unset http_proxy https_proxy no_proxy
-```
-
-#### 9.4.4.2 按服务重建
-
-如果你只改了前端代码，不需要整套重建，只重建 `web` 即可：
-
-```bash
-DOCKER_BUILDKIT=0 docker compose build --no-cache web
-docker compose up -d web
-```
-
-如果你只改了后端代码或后端依赖，只重建 `backend`：
-
-```bash
-DOCKER_BUILDKIT=0 docker compose build --no-cache backend
-docker compose up -d --force-recreate backend
-```
-
-如果你同时改了前后端：
-
-```bash
-DOCKER_BUILDKIT=0 docker compose build --no-cache backend web
-docker compose up -d --force-recreate backend web
-```
-
-查看状态：
-
-```bash
-docker compose ps
-docker compose logs -f redis
-docker compose logs -f qdrant
-docker compose logs -f backend
-docker compose logs -f web
-```
-
-停止服务：
-
-```bash
-docker compose down
-```
-
-如果只是想重启容器但保留数据目录：
-
-```bash
-docker compose restart
-```
-
-### 9.4.5 访问地址
-
-- 主应用：`http://localhost:8080`
-- 后端健康检查：`http://localhost:8080/health`
-- Swagger：`http://localhost:8080/docs`
-- ReDoc：`http://localhost:8080/redoc`
-
-如果你设置了 `APP_PORT`，把上面的 `8080` 替换掉即可。
-
-### 9.4.6 Windows 部署
-
-Windows 可以部署这套多容器架构，但建议区分两种方式理解：
-
-- 推荐方式：`Windows + Docker Desktop + WSL2`
-- 可运行但不推荐：`Windows 原生目录 + Docker Desktop`
-
-#### 9.4.6.1 推荐方式：Docker Desktop + WSL2
-
-更稳的做法是：
-
-1. 安装 Docker Desktop
-2. 打开 WSL2 backend
-3. 安装一个 Linux 发行版，例如 Ubuntu
-4. 在 Docker Desktop 里开启该 WSL 发行版的集成
-5. 把项目放在 WSL 的 Linux 文件系统中，例如：
-
-```bash
-/home/<your-user>/rag
-```
-
-为什么推荐 WSL2：
-
-- 当前项目依赖 Linux 风格路径和工具链
-- `data/`、`models/`、`.user/` 这些目录在 Linux 文件系统下读写更稳
-- Qdrant、Redis、OCR、PDF 解析、模型文件加载都更适合 Linux 文件系统
-- 如果项目直接放在 `C:\Users\...` 这类 Windows 路径下，挂载性能和兼容性通常更差
-
-WSL2 下的推荐命令流程：
-
-进入 WSL 终端后执行：
-
-```bash
-cd /home/<your-user>/rag
-mkdir -p \
-  data/qdrant \
-  data/redis \
-  data/lex_index \
-  data/stored_files \
-  data/content_lists \
-  data/exported_chunks \
-  data/agent_memory \
-  data/chat_sessions \
-  models \
-  .user
-```
-
-确认根目录 `.env` 已配置好模型地址、密钥和模型路径后，执行：
-
-```bash
-DOCKER_BUILDKIT=0 docker compose up -d --build
-```
-
-查看状态：
-
-```bash
-docker compose ps
-docker compose logs -f backend
-docker compose logs -f web
-```
-
-访问地址仍然是：
-
-- `http://localhost:8080`
-
-这里的 `localhost` 指 Windows 宿主机浏览器访问 Docker Desktop 暴露出来的端口。
-
-WSL2 下的目录建议：
-
-建议把以下目录长期保存在 WSL Linux 文件系统里：
-
-- `data/`
-- `models/`
-- `.user/`
-
-尤其是 `models/` 和 `data/qdrant/`，文件多且体积大，放在 WSL 内部磁盘通常更稳。
-
-WSL2 下的注意事项：
-
-- 不建议一边在 Windows 原生 Python 环境里手动跑后端，一边再用 Docker Desktop 跑同一套 `data/`
-- 如果宿主机需要代理，优先先确认 Docker Desktop 本身能正常拉镜像
-- 如果你已经在 WSL 中验证过 `DOCKER_BUILDKIT=0 docker compose up -d --build` 能成功，就继续沿用这一条
-- 如果修改了前端代码，只重建 `web`
-- 如果修改了后端代码或依赖，只重建 `backend`
-
-#### 9.4.6.2 可运行但不推荐：Windows 原生目录部署
-
-如果你不想用 WSL2，也可以直接在 Windows 上这样做：
-
-1. 安装 Docker Desktop
-2. 把项目放在 Windows 路径，例如：
-
-```text
-D:\rag
-```
-
-3. 用 PowerShell 进入项目目录
-4. 准备 `data/`、`models/`、`.user/`
-5. 执行：
-
-```powershell
-docker compose up -d --build
-```
-
-这种方式可以跑，但要明确它的局限：
-
-- `data/qdrant/`、`data/redis/`、`models/` 在 Windows 文件系统上的 IO 性能通常更差
-- 大量小文件、模型目录和向量库目录更容易拖慢容器
-- Windows 路径、权限和换行细节更容易引入兼容性问题
-- 如果后续涉及代理、镜像构建、OCR 或模型依赖排查，Windows 原生路径通常更难处理
-
-因此：
-
-- 临时验证功能，可以这样跑
-- 长期使用、多人共用、模型较大或数据量较大时，不建议这样部署
-
-### 9.4.7 方案特性
-
-- 前端静态资源由 Nginx 托管，启动更稳定，资源占用低
-- 外部只暴露一个端口，后端不直接对公网开放
-- `/api` 反向代理已关闭缓冲，兼容 SSE 流式输出
-- 向量库已切换为独立 `qdrant` 服务，不再依赖 backend 容器内的本地 embedded storage
-- 会话索引、标题、消息数和最近活跃时间已切到独立 `redis` 服务
-- Redis 容器当前默认使用 `redis:8-alpine`，与现有 `data/redis/` 持久化数据格式兼容性更稳
-- `data/`、`models/`、`.user/` 全部通过 bind mount 持久化
-- redis、backend 和 web 都带健康检查；backend 会在启动时自动等待 redis 并重试连接 qdrant
-- `init: true` 和 `restart: unless-stopped` 已开启，降低僵尸进程和意外退出影响
-
-### 9.4.8 为什么不推荐多进程后端
-
-当前后端包含：
-
-- 进程内会话缓存
-- 本地 agent memory 持久化恢复
-- 本地 chat transcript 持久化文件
-
-虽然向量库和会话索引已经切到独立服务，但 `ChatAgent` 实例本身、memory 快照恢复和 transcript 文件仍然是单实例语义，所以 Docker 部署默认采用单 worker。如果后续把会话执行态也进一步外置，再考虑多 backend 横向扩展。
-
-如果后续要走多人共享和后端多副本部署，参考 [`docs/scalable_docker_architecture.md`](/home/ubuntu/rag_project/rag/docs/scalable_docker_architecture.md)。
-
-## 10. 文档入库流程
-
-文档入库大致流程如下：
-
-```text
-上传 PDF
-  -> MinerU 解析
-  -> 图片重命名
-  -> 提取文本 / 表格 / 图片内容
-  -> 表格独立切块
-  -> 可选表格摘要
-  -> embedding
-  -> 写入 Qdrant
-```
-
-关键实现：
-
-- `tools/load_files.py`
-- `tools/mineru_toolkit.py`
-- `tools/qdrant.py`
-
-## 11. 检索与回答流程
-
-回答链路大致如下：
-
-```text
-用户提问
-  -> Chat Agent 调用 search_database
-  -> Qdrant 混合检索
-  -> rerank
-  -> 动态阈值筛选
-  -> 返回完整原文 chunk
-  -> 生成最终回答
-  -> 前端渲染正文 / 表格 / 附件图片
-```
-
-当前项目对表格类问题做了额外保护：
-
-- 表格类 query 会自动放宽证据预算
-- 表格和图片证据路径要求尽量原样保留
-- 前端将图片与正文分离，放到附件图片区
-
-## 12. 会话与状态架构
-
-### 12.1 会话索引
-
-会话索引和元数据目前保存在 Redis 中，包括：
-
-- `session_id`
-- `username`
-- `title`
-- `created_at`
-- `updated_at`
-- `last_activity`
-- `message_count`
-- `memory_enabled`
-
-### 12.2 transcript 与 memory
-
-会话全文和 memory 快照目前仍然通过文件持久化：
-
-- `data/chat_sessions/<username>/`
-- `data/agent_memory/<username>/`
-
-这意味着：
-
-- 会话列表可以跨 backend 共享
-- 但具体 `ChatAgent` 执行态仍然不是完全无状态
-
-### 12.3 文件路径统一入口
-
-当前所有文件类路径统一收口在：
-
-- [`storage_paths.py`](/home/ubuntu/rag_project/rag/storage_paths.py)
-
-后端、工具链、脚本都会从 `SHARED_STORAGE_ROOT` 派生：
-
-- `stored_files`
-- `mineru_output`
-- `content_lists`
-- `exported_chunks`
-- `agent_memory`
-- `chat_sessions`
-
-## 13. API 简述
-
-### 13.1 鉴权
-
-- `POST /api/v1/auth/login`
-- `GET /api/v1/auth/me`
-- `POST /api/v1/auth/logout`
-
-### 13.2 聊天
-
-- `POST /api/v1/chat/stream`
-- `DELETE /api/v1/chat/session/{session_id}`
-- `GET /api/v1/chat/sessions`
-- `GET /api/v1/chat/session/{session_id}`
-
-### 13.3 文件
-
-- `GET /api/v1/files`
-- `POST /api/v1/files/upload`
-- `POST /api/v1/files/import`
-- `GET /api/v1/files/content/{file_tag}`
-- `DELETE /api/v1/files`
-
-### 13.4 用户
-
-- `GET /api/v1/users`
-- `POST /api/v1/users`
-- `POST /api/v1/users/change-password`
-- `POST /api/v1/users/reset-password`
-
-更多细节见：
-
-- `backend/README.md`
-- `http://localhost:8000/docs`
-
-## 14. Scripts 工具脚本
-
-`scripts/` 目录下收录了所有日常运维、测试和调试用的命令行工具。激活虚拟环境后在项目根目录执行。
-| 脚本 | 用途 | 典型触发场景 |
-|---|---|---|
-| chat_model_interactive.py | 裸模型对话 | 刚改完 .env 想确认模型 API 通了 |
-| chat_agent_interactive.py | 完整 RAG Agent 对话 | 想端到端验证检索+回答链路 |
-| import_file.py | 单文件入库 | 手动补录某个 PDF |
-| search_qdrant.py | 检索验证 | 入库后确认某个词能不能被检出 |
-| migrate_qdrant_local_to_server.py | 数据迁移 | 从 local 模式切换到 server 模式 |
-| download_table_summary_model.py | 下载模型 | 首次部署，Qwen 模型还没下载 |
-| eval_retrieval.py | 策略评测 | 调参时对比四种检索策略优劣 |
-| smoke_hybrid_retrieval.py | 检索接口 smoke | 改了 qdrant.py 后快速回归 |
-| smoke_mineru_ingest_retrieve.py | 入库链路 smoke | 改了 load_files.py 后验证 |
-| smoke_e2e_pdf_hybrid_rerank.py | E2E smoke | 改了 rerank 逻辑后跑真实 PDF |
-| smoke_mineru_embedding_qdrant.py | 三合一 smoke | 换了 embedding 模型后验证 |
-| smoke_pdf_ingest_query.py | 业务 query smoke | 回归四类核心业务 PDF 的问答 |
-| test_mineru_modes.py | MinerU 模式对比 | 评估 pipeline vs VLM 提取质量 |
-| inspect_agent_response.py | Agent 响应诊断 | 升级 CAMEL 版本后排查响应结构 |
-
-### 14.1 chat_model_interactive.py - 裸模型交互式对话
-
-直接使用 `stream_model()` 构建 ChatAgent，不加载任何 RAG 工具。用途：验证模型 API 连通性与流式输出。
-
-```bash
-python scripts/chat_model_interactive.py
-```
-
-### 14.2 chat_agent_interactive.py - RAG Agent 交互式对话
-
-使用 `chat_agent_factory()` 创建带完整 RAG 工具链的 ChatAgent。用途：端到端验证 Agent + DatabaseToolkit + 向量检索。
-
-```bash
-python scripts/chat_agent_interactive.py
-```
-
-### 14.3 import_file.py - 单文件入库
-
-将指定 PDF 解析并写入 Qdrant 知识库，支持指定 collection 和 DPI。
-
-```bash
-python scripts/import_file.py data/stored_files/example.pdf
-python scripts/import_file.py data/stored_files/example.pdf --collection database --dpi 200
-```
-
-### 14.4 search_qdrant.py - Qdrant 检索测试
-
-对指定 collection 执行向量检索并打印结果，验证入库是否成功。
-
-```bash
-python scripts/search_qdrant.py 供电营业规则
-python scripts/search_qdrant.py 供电营业规则 --collection database --top-k 5
-```
-
-### 14.5 migrate_qdrant_local_to_server.py - 本地 Qdrant 迁移到 Server
-
-将本地 Qdrant 数据迁移到远端 Qdrant Server，直接复制 id + vector + payload，无需重新 embedding。
-
-```bash
-python scripts/migrate_qdrant_local_to_server.py \
-  --local-path data/storages \
-  --server-url http://127.0.0.1:6333 \
-  --collection database \
-  --recreate
-```
-
-### 14.6 download_table_summary_model.py - 下载表格摘要模型
-
-下载 `Qwen2.5-1.5B-Instruct`（约 3GB），支持 ModelScope、HuggingFace、HF 镜像三种来源。
-
-```bash
-python scripts/download_table_summary_model.py
-python scripts/download_table_summary_model.py --source modelscope
-python scripts/download_table_summary_model.py --test-only
-python scripts/download_table_summary_model.py --source hf-mirror
-```
-
-### 14.7 smoke_hybrid_retrieval.py - Hybrid 检索接口 Smoke Test
-
-用可控文本验证 `keyword_search`、`hybrid_search`、dynamic topk、rerank 接口正确性。写入临时 collection，测试后自动清理。
-
-```bash
-python scripts/smoke_hybrid_retrieval.py
-```
-
-### 14.8 smoke_mineru_ingest_retrieve.py - MinerU + 入库 + 检索 Smoke Test
-
-验证：MinerU 解析取证 -> 真实入库 -> 检索断言。
-
-```bash
-python scripts/smoke_mineru_ingest_retrieve.py data/stored_files/example.pdf
-```
-
-### 14.9 smoke_e2e_pdf_hybrid_rerank.py - E2E Hybrid + Rerank Smoke Test
-
-真实 PDF 入库 -> MinerU 提取锚点 -> hybrid 检索断言 -> rerank 验证（需配置 `reranker_path`）。
-
-```bash
-python scripts/smoke_e2e_pdf_hybrid_rerank.py data/stored_files/example.pdf
-```
-
-### 14.10 smoke_mineru_embedding_qdrant.py - MinerU + Embedding + Qdrant 三合一 Smoke Test
-
-依次验证：MinerU 解析 -> embedding 模型加载与向量检查 -> Qdrant 入库与检索。支持 `SMOKE_PDF` 环境变量。
-
-```bash
-python scripts/smoke_mineru_embedding_qdrant.py
-SMOKE_PDF=data/stored_files/your.pdf python scripts/smoke_mineru_embedding_qdrant.py
-```
-
-### 14.11 smoke_pdf_ingest_query.py - PDF 入库 + 业务 Query 检索 Smoke Test
-
-针对四类业务 PDF 设计精确原文短语断言，根据文件名自动匹配测试计划，使用临时 collection。
-
-```bash
-python scripts/smoke_pdf_ingest_query.py data/stored_files/电网运行规则.pdf
-```
-
-### 14.12 eval_retrieval.py - 检索策略评测
-
-对比 `vector_only` / `hybrid` / `hybrid_dynamic` / `hybrid_rerank_dynamic` 四种策略的命中率、MRR 和延迟。可在 `DEFAULT_CASES` 中添加业务真实 query。
-
-```bash
-python scripts/eval_retrieval.py
-EVAL_TOP_K=10 EVAL_ALPHA=0.75 python scripts/eval_retrieval.py
-```
-
-### 14.13 test_mineru_modes.py - MinerU 解析模式测试
-
-测试 pipeline / VLM 两种解析模式，分析元素类型分布，可对比两种模式差异。
-
-```bash
-python scripts/test_mineru_modes.py data/stored_files/example.pdf
-python scripts/test_mineru_modes.py data/stored_files/example.pdf --compare
-```
-
-### 14.14 inspect_agent_response.py - ChatAgent 响应结构诊断
-
-检查 CAMEL 框架流式模式下 response 对象结构，确认 `reasoning_content` 等字段传递情况。结果同时输出到终端和 `logs/` 目录。
-
-```bash
-python scripts/inspect_agent_response.py
-python scripts/inspect_agent_response.py --query "你好"
-```
-
-## 15. 测试、检查与联调
-
-### 15.1 Python 语法检查
+### 启动后端
 
 ```bash
 source .venv/bin/activate
-python -m py_compile backend/app/config.py
-python -m py_compile backend/app/services/chat_service.py
-python -m py_compile tools/qdrant.py
+python backend/run.py --host 0.0.0.0 --port 8000 --reload
 ```
 
-### 15.2 Python 测试
+后端地址：
 
-```bash
-source .venv/bin/activate
-python3 -m pytest backend/tests -v
+```text
+http://127.0.0.1:8000
+http://127.0.0.1:8000/docs
 ```
 
-### 15.3 前端构建检查
+### 启动前端
 
 ```bash
 cd frontend
+npm run dev
+```
+
+前端开发地址通常是：
+
+```text
+http://127.0.0.1:5173
+```
+
+前端通过 Vite 配置或 API client 访问后端 `/api`。
+
+## 首次使用流程
+
+1. 准备 `.env` 和模型目录。
+2. 启动 Docker 服务。
+3. 打开 `http://127.0.0.1:8080`。
+4. 使用 `INITIAL_ADMIN_USERNAME` / `INITIAL_ADMIN_PASSWORD` 登录。
+5. 进入文件管理页上传文档。
+6. 勾选文件并触发导入。
+7. 等待导入任务完成。
+8. 回到聊天页提问。
+9. 在回答中查看来源、图片、表格和引用信息。
+10. 需要时进入知识图谱页查看已抽取的图谱。
+
+## 前端功能
+
+### 页面
+
+| 路径 | 页面 | 说明 |
+| --- | --- | --- |
+| `/login` | 登录页 | 用户登录 |
+| `/` | 聊天页 | RAG 问答、多轮会话、SSE 流式渲染 |
+| `/files` | 文件管理 | 上传、导入、删除、搜索、状态筛选 |
+| `/users` | 用户管理 | 管理员创建/删除用户、改角色、重置密码 |
+| `/change-password` | 修改密码 | 当前用户修改密码 |
+| `/knowledge-graph` | 知识图谱 | G6 图谱展示、统计和子图浏览 |
+
+### 聊天渲染
+
+前端支持：
+
+- Markdown
+- GFM 表格
+- 代码块高亮
+- 数学公式
+- 图片附件
+- 来源引用
+- reasoning 折叠块
+- 长会话虚拟列表
+
+### 文件管理状态
+
+文件列表中有三类状态：
+
+- `imported`：本地文件存在，且 Qdrant 中有对应 chunk。
+- `not_imported`：本地文件存在，但尚未入库。
+- `ghost`：Qdrant 中有数据，但本地原始文件不存在。
+
+## 后端 API
+
+后端根地址：
+
+```text
+http://127.0.0.1:8080/api/v1
+```
+
+Docker 里由 Nginx 转发 `/api/*` 到 backend。
+
+### 鉴权
+
+除登录和健康检查外，多数接口需要：
+
+```http
+Authorization: Bearer <JWT>
+```
+
+登录：
+
+```http
+POST /api/v1/auth/login
+```
+
+请求体：
+
+```json
+{
+  "username": "admin",
+  "password": "password"
+}
+```
+
+返回：
+
+```json
+{
+  "access_token": "...",
+  "token_type": "bearer",
+  "expires_in": 86400
+}
+```
+
+### API 清单
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/health` | 无 | 后端健康检查 |
+| `POST` | `/api/v1/auth/login` | 无 | 登录获取 JWT |
+| `GET` | `/api/v1/auth/me` | 登录 | 当前用户信息 |
+| `POST` | `/api/v1/auth/logout` | 登录 | 客户端丢弃 token |
+| `POST` | `/api/v1/chat/stream` | 登录 | SSE 流式聊天 |
+| `GET` | `/api/v1/chat/sessions` | 登录 | 会话列表 |
+| `GET` | `/api/v1/chat/session/{session_id}` | 登录 | 会话详情 |
+| `DELETE` | `/api/v1/chat/session/{session_id}` | 登录 | 删除会话 |
+| `GET` | `/api/v1/files` | 登录 | 文件列表 |
+| `POST` | `/api/v1/files/upload` | 管理员 | 上传文件 |
+| `GET` | `/api/v1/files/content` | 登录或 query token | 文件/图片预览 |
+| `POST` | `/api/v1/files/import` | 管理员 | 创建导入任务 |
+| `GET` | `/api/v1/files/import-jobs/active` | 管理员 | 当前导入任务 |
+| `GET` | `/api/v1/files/import-jobs/{job_id}` | 管理员 | 导入任务详情 |
+| `DELETE` | `/api/v1/files` | 管理员 | 批量删除文件 |
+| `DELETE` | `/api/v1/files/{file_tag}` | 管理员 | 删除单个文件 |
+| `GET` | `/api/v1/users` | 管理员 | 用户列表 |
+| `POST` | `/api/v1/users` | 管理员 | 创建用户 |
+| `GET` | `/api/v1/users/{username}` | 管理员 | 用户详情 |
+| `DELETE` | `/api/v1/users/{username}` | 管理员 | 删除用户 |
+| `POST` | `/api/v1/users/change-password` | 登录 | 修改自己的密码 |
+| `POST` | `/api/v1/users/reset-password` | 管理员 | 重置用户密码 |
+| `POST` | `/api/v1/users/change-role` | 管理员 | 修改用户角色 |
+| `POST` | `/api/v1/rag/query` | `RAG_API_KEY` | 外部 RAG 问答 |
+| `POST` | `/api/v1/rag/search` | `RAG_API_KEY` | 外部纯检索 |
+| `GET` | `/api/v1/knowledge-graph` | 登录 | 完整图谱 JSON |
+| `GET` | `/api/v1/knowledge-graph/stats` | 登录 | 图谱统计 |
+| `GET` | `/api/v1/knowledge-graph/preview` | 登录 | 图谱预览图 |
+| `GET` | `/api/v1/knowledge-graph/subgraph` | 登录 | 节点子图 |
+
+### SSE 事件
+
+`POST /api/v1/chat/stream` 返回 `text/event-stream`。前端消费的事件包括：
+
+- `session`：返回或创建 `session_id`。
+- `reasoning`：模型 reasoning 内容。
+- `content`：回答正文增量。
+- `done`：完整回答结束。
+- `error`：异常。
+
+### 外部 RAG API
+
+外部系统调用 `/api/v1/rag/query` 和 `/api/v1/rag/search` 时使用 `RAG_API_KEY`。代码中的 `verify_rag_api_key` 支持两种鉴权头：
+
+- `X-API-Key: <key>`
+- `Authorization: ApiKey <key>`
+
+纯检索示例：
+
+```bash
+curl --noproxy '*' -X POST http://127.0.0.1:8080/api/v1/rag/search \
+  -H "X-API-Key: $RAG_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"变电站防雷接地要求", "top_k":5}'
+```
+
+问答示例：
+
+```bash
+curl --noproxy '*' -X POST http://127.0.0.1:8080/api/v1/rag/query \
+  -H "X-API-Key: $RAG_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"110kV变电站接地设计需要关注哪些规范要求？"}'
+```
+
+## 知识库入库与检索流程
+
+### 入库流程
+
+```text
+上传文件
+  -> data/stored_files/
+  -> MinerU 解析
+  -> data/content_lists/
+  -> data/stored_files/mineru_output/
+  -> chunk 切分
+  -> 表格独立处理和摘要
+  -> embedding
+  -> Qdrant 写入
+  -> data/lex_index/database_file_stats.json 更新
+```
+
+### 检索流程
+
+```text
+用户问题
+  -> 可选 query rewrite / intent router
+  -> Qdrant 向量召回
+  -> 词汇索引召回
+  -> hybrid 融合
+  -> reranker 重排
+  -> 动态裁剪
+  -> Agent 生成答案
+  -> SSE 返回正文、reasoning、来源和附件信息
+```
+
+### Qdrant payload
+
+写入 Qdrant 的 payload 主要包含：
+
+- `Original_file`：源文件 tag。
+- `Content`：chunk 正文，可能包含 Markdown 图片引用。
+- `metadata`：chunk 类型、页码、表格信息等扩展数据。
+
+## 知识图谱
+
+知识图谱相关数据位于：
+
+```text
+data/knowledge_graph/
+```
+
+主要文件：
+
+```text
+database_kg.json
+database_kg_main.json
+kg_preview.png
+```
+
+### 抽取图谱
+
+需要 Qdrant 正常运行，并且 collection 中已有知识库数据。
+
+```bash
+python tools/kg_extractor.py \
+  --collection database \
+  --qdrant-url http://127.0.0.1:6333 \
+  --batch-size 5 \
+  --max-chunks 500 \
+  --output data/knowledge_graph/
+```
+
+该脚本会调用 OpenAI-compatible LLM 抽取实体关系三元组。
+
+### 预计算布局
+
+```bash
+python tools/kg_layout.py --input data/knowledge_graph/database_kg.json --iterations 100 --scale 2000
+```
+
+### 前端查看
+
+启动服务后访问：
+
+```text
+http://127.0.0.1:8080/knowledge-graph
+```
+
+如果接口返回 `Knowledge graph data not found`，说明还没有生成 `data/knowledge_graph/database_kg.json` 或 `database_kg_main.json`。
+
+## 常用脚本
+
+| 脚本 | 用途 |
+| --- | --- |
+| `scripts/import_file.py` | 命令行导入单个文件到 Qdrant |
+| `scripts/search_qdrant.py` | 命令行检索 Qdrant |
+| `scripts/migrate_qdrant_local_to_server.py` | local Qdrant 到 server Qdrant 迁移 |
+| `scripts/smoke_mineru_embedding_qdrant.py` | MinerU、embedding、Qdrant 三合一 smoke |
+| `scripts/smoke_hybrid_retrieval.py` | 混合检索 smoke |
+| `scripts/smoke_e2e_pdf_hybrid_rerank.py` | PDF 入库、混合检索、rerank 端到端 smoke |
+| `scripts/example_rag_api_client.py` | 外部 RAG API 调用示例 |
+| `scripts/download_table_summary_model.py` | 下载/测试表格摘要模型 |
+| `scripts/audit_public_search.py` | 根据 content list 文件名审计公开可检索性 |
+| `scripts/classify_knowledge_domains.py` | 按文件名做知识领域分类 |
+| `tools/kg_extractor.py` | 从 Qdrant chunk 抽取知识图谱 |
+| `tools/kg_layout.py` | 给知识图谱预计算布局坐标 |
+
+### 搜索 Qdrant
+
+```bash
+python scripts/search_qdrant.py "供电营业规则" --collection database --top-k 5
+```
+
+### 导入文件
+
+```bash
+python scripts/import_file.py data/stored_files/example.pdf --collection database --dpi 200
+```
+
+### 公开可检索性审计
+
+```bash
+python scripts/audit_public_search.py --delay 0.2 --timeout 25 --max-queries 3 --prefix public_search_audit
+```
+
+输出在：
+
+```text
+reports/
+```
+
+`reports/` 是本地生成物，默认不提交。
+
+## 测试和验证
+
+### Python 编译检查
+
+```bash
+python -m py_compile \
+  backend/app/main.py \
+  backend/app/config.py \
+  tools/qdrant.py \
+  tools/load_files.py
+```
+
+### 后端测试
+
+```bash
+pytest backend/tests
+```
+
+### 前端检查
+
+```bash
+cd frontend
+npm run lint
 npm run build
 ```
 
-### 15.4 后端启动检查
+### Docker 健康检查
 
 ```bash
-cd backend
-python3 run.py
+docker compose ps
+curl --noproxy '*' -sSI http://127.0.0.1:8080
+curl --noproxy '*' -sS http://127.0.0.1:6333
 ```
 
-### 15.5 完整链路自检顺序
+期望：
 
-推荐按这个顺序检查：
+- 前端返回 `200 OK`。
+- Qdrant 返回 JSON，包含 `qdrant - vector search engine`。
+- `rag-backend` health 为 healthy。
+- `rag-redis` health 为 healthy。
 
-1. `qdrant` 是否可访问
-2. `redis` 是否可访问
-3. 后端 `/health` 是否正常
-4. 前端能否登录
-5. 文件列表是否正常显示
-6. 文件入库后 `database` collection 点数是否增加
-7. 聊天是否返回检索结果
+## 运维和排障
 
-## 16. 常见问题
+### 端口
 
-### 16.1 前端页面一直 loading
+| 服务 | 容器端口 | 宿主机端口 |
+| --- | --- | --- |
+| web | 80 | `${APP_PORT:-8080}` |
+| backend | 8000 | 不直接暴露，由 web 代理 |
+| qdrant | 6333 | 6333 |
+| redis | 6379 | 不直接暴露 |
 
-优先检查：
-
-- 前端是否跑在 `3000`
-- 后端是否跑在 `8000`
-- 浏览器是否拿到旧 bundle
-- `/api/v1/auth/me` 是否异常
-
-### 16.2 Docker 构建时基础镜像或依赖拉取失败
-
-优先检查：
-
-- 是否直接使用了 `DOCKER_BUILDKIT=0 docker compose up -d --build`
-- 宿主机是否已经配置代理
-- `HTTP_PROXY/HTTPS_PROXY/http_proxy/https_proxy` 是否已导出
-- Docker 构建日志里失败的是哪一层：
-  - `FROM python/node/nginx`：通常是镜像源或 Docker daemon 网络问题
-  - `apt-get / pip install / npm ci / git clone`：通常是构建阶段代理问题
-
-推荐命令：
+### 常用日志
 
 ```bash
-DOCKER_BUILDKIT=0 docker compose build --no-cache
+docker logs -f rag-web
+docker logs -f rag-backend
+docker logs -f rag-qdrant
+docker logs -f rag-redis
 ```
 
-### 16.3 Docker 运行中模型请求报 `Connection error`
-
-如果后端日志里出现：
-
-- `httpx.ConnectError`
-- `openai.APIConnectionError`
-- 或者显式显示正在连接 `127.0.0.1:7897`
-
-优先检查：
-
-- `docker compose exec backend env | grep -i proxy`
-- `backend` 运行时是否还带着宿主机代理变量
-- `.env` 中的 `url=` 是否是可从容器访问的模型地址
-
-当前项目的正确行为是：
-
-- 代理只用于 Docker `build`
-- `backend` 运行时不再注入 `HTTP_PROXY/http_proxy`
-
-如果你刚改过 Dockerfile 或 Compose，记得重建 `backend`：
+### 重启单个服务
 
 ```bash
-DOCKER_BUILDKIT=0 docker compose build --no-cache backend
-docker compose up -d --force-recreate backend
+docker compose restart backend
+docker compose restart web
+docker compose restart qdrant
+docker compose restart redis
 ```
 
-### 16.4 文件存在但显示“未建库”
-
-优先检查：
-
-- 当前后端使用的是 `QDRANT_MODE=local` 还是 `server`
-- `QDRANT_MODE=server` 时，`http://127.0.0.1:6333/collections/database` 的 `points_count` 是否大于 0
-- 旧库是否还停留在 `data/storages`
-- 是否已经执行迁移脚本 `scripts/migrate_qdrant_local_to_server.py`
-
-### 16.5 Redis 容器启动失败，提示 `Can't handle RDB format version`
-
-这通常不是 Compose 配置错误，而是：
-
-- 你挂载的 `data/redis/` 里已有旧持久化数据
-- 当前 Redis 镜像版本太低，读不了已有数据格式
-
-当前仓库已经默认使用：
-
-- `redis:8-alpine`
-
-如果你本地仍然遇到这个问题，优先检查：
-
-- 是否已经重新 `docker compose up -d`
-- `docker compose logs --tail=100 redis`
-
-如果 Redis 中只是会话索引缓存，并且你接受重建，也可以清空 `data/redis/` 后再启动。
-
-### 16.6 图片或表格不显示
-
-优先检查：
-
-- `data/stored_files/mineru_output/` 中是否存在对应图片
-- 文件服务接口 `/api/v1/files/content/...` 是否可访问
-- 回答中的图片路径是否被模型改写
-- 浏览器是否仍在使用旧前端代码
-
-### 16.7 聊天页底部出现大块黑色空白
-
-这通常是前端旧 bundle 仍在运行，或者 `web` 容器还没重建。
-
-优先处理：
+### 重新构建镜像
 
 ```bash
-DOCKER_BUILDKIT=0 docker compose build --no-cache web
-docker compose up -d web
+docker compose build backend
+docker compose build web
+docker compose up -d
 ```
 
-然后浏览器强刷页面。
+### 前端 502
 
-### 16.8 表格检索内容被截断
+排查顺序：
 
-当前项目已对表格/议程/清单类 query 自动放宽检索预算。如果仍然截断，优先检查：
+1. `docker compose ps` 看 `rag-backend` 是否 healthy。
+2. `docker logs -f rag-backend` 看是否模型加载失败、环境变量缺失、Qdrant 连接失败。
+3. `curl --noproxy '*' http://127.0.0.1:8080/health` 看 Nginx 到 backend 转发是否正常。
+4. 检查 `.env` 中 `conan_path`、`OPENAI_API_KEY`、`url`、`MODEL_NAME`。
 
-- `tools/database_toolkit.py` 中预算参数
-- 表格切块是否正常
-- 原始文档在 MinerU 输出中是否已被截断
+### 登录失败
 
-### 16.9 Streamlit 和 FastAPI 是否能同时跑
+检查：
 
-可以，但不建议长期作为主运行方式。因为两套入口已经分化，后续维护更推荐以前后端分离架构为主。
+1. `.user/users.json` 是否存在。
+2. 首次启动时是否设置了 `INITIAL_ADMIN_USERNAME` 和 `INITIAL_ADMIN_PASSWORD`。
+3. 如果 `.user/users.json` 是空用户文件，可停止服务后备份/删除该文件，再设置初始管理员重启。
 
-## 17. 仓库提交建议
+```bash
+docker compose down
+mv .user/users.json .user/users.json.bak
+docker compose up -d
+```
 
-建议提交：
+### Qdrant 无数据
 
-- 代码
-- 配置模板
+检查：
+
+```bash
+curl --noproxy '*' http://127.0.0.1:6333/collections
+curl --noproxy '*' http://127.0.0.1:6333/collections/database
+```
+
+如果 collection 不存在，需要先导入文件。
+
+### 文件显示 ghost
+
+`ghost` 表示 Qdrant 中有对应文件的 chunk，但本地 `data/stored_files/` 中找不到原始文件。处理方式：
+
+- 如果仍需要该资料，重新上传同名文件。
+- 如果不需要，在文件管理页删除该 ghost 数据。
+- 或使用删除接口删除对应 `Original_file`。
+
+### 模型加载失败
+
+常见原因：
+
+- `conan_path` 未设置。
+- 模型目录不存在或不完整。
+- GPU 不可用但设备强制设为 `cuda`。
+- Docker 未安装 NVIDIA runtime。
+- `models/` 未挂载到容器。
+
+检查容器内模型目录：
+
+```bash
+docker exec -it rag-backend ls -lh /app/models
+```
+
+### 代理导致本地 curl 返回 502
+
+如果宿主机设置了 `HTTP_PROXY` / `HTTPS_PROXY`，访问本机服务时要绕过代理：
+
+```bash
+curl --noproxy '*' http://127.0.0.1:8080
+curl --noproxy '*' http://127.0.0.1:6333
+```
+
+也可以设置：
+
+```bash
+export NO_PROXY=localhost,127.0.0.1,qdrant,redis,backend,web
+export no_proxy=localhost,127.0.0.1,qdrant,redis,backend,web
+```
+
+### 不要提交运行数据
+
+提交前检查：
+
+```bash
+git status --short
+git status --short --ignored
+```
+
+正常情况下，以下目录应处于 ignored：
+
+```text
+data/qdrant/
+data/redis/
+data/stored_files/
+data/content_lists/
+data/lex_index/
+models/
+reports/
+.user/
+frontend/node_modules/
+frontend/dist/
+```
+
+## 安全注意事项
+
+- 生产环境必须替换 `SECRET_KEY`。
+- 生产环境必须设置强密码的初始管理员。
+- `.env`、`.user/`、`models/`、`data/` 不应提交到 GitHub。
+- `RAG_API_KEY` 应使用高强度随机值。
+- Nginx 当前 `client_max_body_size` 为 `200m`，如允许更大文件，需要同步评估磁盘、解析耗时和超时。
+- 后端 CORS 当前允许 `*`，对公网部署时应收紧。
+- Redis 当前只在 Compose 内部网络暴露，不建议直接映射公网。
+- Qdrant 当前映射到宿主机 `6333`，公网部署时应放在内网或加访问控制。
+- 用户密码当前使用 SHA256 文件哈希保存，适合内部系统快速部署；如果面向公网，应升级为带盐 KDF，如 bcrypt/argon2。
+
+## 推荐提交前检查清单
+
+```bash
+python -m py_compile backend/app/main.py tools/qdrant.py tools/load_files.py
+cd frontend && npm run build
+cd ..
+git status --short
+```
+
+确认只提交：
+
+- 源码
+- 配置模板或非敏感配置
+- Docker 和部署脚本
 - 文档
-- 轻量测试
+- 必要的测试脚本
 
 不要提交：
 
 - `.env`
 - `.user/`
+- `data/`
 - `models/`
-- `data/stored_files/`
-- `data/qdrant/`
-- `data/redis/`
-- `data/lex_index/`
+- `reports/`
 - `frontend/node_modules/`
 - `frontend/dist/`
-- 大日志与压缩包
-
-推送前建议执行：
-
-```bash
-git status
-git diff --cached --stat
-git check-ignore -v .env models data/stored_files data/qdrant data/redis data/lex_index frontend/node_modules frontend/dist
-```
-
-## 18. 当前仓库状态说明
-
-- 主线：前后端分离
-- Runtime 依赖：`backend + frontend + qdrant + redis`
-- Streamlit：旧入口已移除
-- 当前状态：Qdrant 服务化、Redis 会话索引化、共享存储根目录统一化均已完成
-- 仍未完成：`ChatAgent` 执行态彻底无状态化
-- 仓库适合提交为代码仓，不适合直接提交运行数据仓

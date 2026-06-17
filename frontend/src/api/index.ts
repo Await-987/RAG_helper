@@ -3,3 +3,4 @@ export { authApi } from './auth';
 export { chatApi } from './chat';
 export { fileApi } from './files';
 export { userApi } from './users';
+export { knowledgeGraphApi } from './knowledgeGraph';

@@ -970,7 +970,8 @@ def load_and_store_file(
     search_keyword: str = None,  # 搜索关键词（用于调试）
     split_tables: bool = True,  # 表格独立成chunk
     use_llm_summary: bool = True,  # 使用 LLM 生成表格摘要
-    context_size: int = 500  # 表格上下文大小（字符数）
+    context_size: int = 500,  # 表格上下文大小（字符数）
+    db_instance=None,  # 复用已有的 QdrantDB 实例
 ) -> bool:
 
     print(f"\n{'='*60}")
@@ -1046,7 +1047,7 @@ def load_and_store_file(
     )
     print(f"[DEBUG] preprocess 返回，生成了 {len(chunks)} 个子chunk")
 
-    db = QdrantDB(input=qdrant_init)
+    db = db_instance if db_instance is not None else QdrantDB(input=qdrant_init)
     # @shengwanying：20260306修改：使用相对路径，确保跨平台兼容
     # 相对于项目根目录的路径，便于在不同平台间迁移数据
     file_relative_path = project_relative_path(file_path)

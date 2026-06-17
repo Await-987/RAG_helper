@@ -1,5 +1,7 @@
 import { useState, useCallback } from 'react';
-import { Send, FileText, Calculator, HelpCircle, Search } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { Send, FileText, Calculator, HelpCircle } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 interface WelcomeScreenProps {
   onSend: (message: string) => void;
@@ -12,7 +14,6 @@ const SUGGESTION_CATEGORIES = [
     color: 'text-blue-400',
     bg: 'bg-blue-500/10',
     border: 'border-blue-500/10',
-    hoverBorder: 'group-hover:border-blue-500/25',
     suggestions: ['变压器短路阻抗标准值是多少？', '电力线路保护配置有哪些要求？'],
   },
   {
@@ -21,7 +22,6 @@ const SUGGESTION_CATEGORIES = [
     color: 'text-emerald-400',
     bg: 'bg-emerald-500/10',
     border: 'border-emerald-500/10',
-    hoverBorder: 'group-hover:border-emerald-500/25',
     suggestions: ['绝缘配合的基本原则是什么？', '计算导线载流量的方法'],
   },
   {
@@ -30,7 +30,6 @@ const SUGGESTION_CATEGORIES = [
     color: 'text-purple-400',
     bg: 'bg-purple-500/10',
     border: 'border-purple-500/10',
-    hoverBorder: 'group-hover:border-purple-500/25',
     suggestions: ['什么是短路电流？', '解释无功补偿的作用'],
   },
 ];
@@ -48,7 +47,12 @@ export function WelcomeScreen({ onSend }: WelcomeScreenProps) {
       {/* Main content area */}
       <div className="flex-1 flex flex-col items-center justify-center px-4 pt-8 pb-4">
         {/* Brand and greeting */}
-        <div className="text-center mb-10">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+          className="text-center mb-10"
+        >
           <div className="inline-flex items-center gap-2 mb-4 px-3 py-1.5 rounded-full bg-primary-500/10 border border-primary-500/15">
             <span className="text-xs font-medium text-primary-400">RAG Knowledge Base</span>
           </div>
@@ -58,12 +62,19 @@ export function WelcomeScreen({ onSend }: WelcomeScreenProps) {
           <p className="text-zinc-400">
             基于知识库文档的智能问答，支持 PDF、表格、公式
           </p>
-        </div>
+        </motion.div>
 
         {/* Suggestion cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 max-w-2xl w-full mb-8">
-          {SUGGESTION_CATEGORIES.map((category) => (
-            <div key={category.title} className={`group suggestion-card ${category.border} ${category.hoverBorder}`}>
+          {SUGGESTION_CATEGORIES.map((category, i) => (
+            <motion.div
+              key={category.title}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, delay: i * 0.1 }}
+              whileHover={{ y: -4, transition: { duration: 0.15 } }}
+              className={`suggestion-card ${category.border} group-hover:border-blue-500/25`}
+            >
               <div className={`inline-flex items-center gap-2 mb-3 ${category.color}`}>
                 <div className={`p-1.5 rounded-lg ${category.bg}`}>
                   <category.icon size={16} />
@@ -81,7 +92,7 @@ export function WelcomeScreen({ onSend }: WelcomeScreenProps) {
                   </button>
                 ))}
               </div>
-            </div>
+            </motion.div>
           ))}
         </div>
       </div>
@@ -89,7 +100,7 @@ export function WelcomeScreen({ onSend }: WelcomeScreenProps) {
       {/* Bottom input area */}
       <div className="px-4 pb-4">
         <div className="max-w-2xl mx-auto">
-          <div className="relative">
+          <div className="input-chat flex items-center gap-2 pr-3">
             <textarea
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -100,18 +111,19 @@ export function WelcomeScreen({ onSend }: WelcomeScreenProps) {
                 }
               }}
               placeholder="向知识库提问..."
-              className="input-chat pr-12 resize-none"
+              className="flex-1 bg-transparent outline-none resize-none text-base text-zinc-100 placeholder-zinc-500"
               rows={1}
-              style={{ minHeight: '52px', maxHeight: '200px' }}
+              style={{ maxHeight: '200px', overflowY: 'hidden' }}
               autoFocus
             />
-            <button
+            <Button
+              size="icon"
               onClick={handleSubmit}
               disabled={!input.trim()}
-              className="absolute right-3 bottom-3 w-9 h-9 rounded-xl bg-primary-600 hover:bg-primary-700 disabled:bg-zinc-600 disabled:opacity-50 flex items-center justify-center transition-all duration-150 hover:shadow-lg hover:shadow-primary-600/30 hover:translate-y-[-1px] active:scale-95"
+              className="shrink-0"
             >
               <Send size={18} className="text-white" />
-            </button>
+            </Button>
           </div>
           <p className="text-center text-xs text-zinc-500 mt-2">
             智能知识库助手可能出错，请核实重要信息

@@ -70,66 +70,16 @@ def _get_file_tag(file_path: Path) -> str:
 
 def _get_database_stats_impl(collection_name: str) -> Tuple[Dict[str, int], int]:
     try:
-        from tools.qdrant import QdrantDB, QdrantDB_Init
+        from tools.file_stats import load_file_stats, reconcile_file_stats
 
-        db = QdrantDB(input=QdrantDB_Init(collection_name=collection_name))
-        lex_index = None
+        stats_data = load_file_stats(collection_name)
+        if stats_data:
+            logger.debug(f"从 file_stats.json 获取统计: {len(stats_data['files'])} 个文件")
+            return stats_data["files"], stats_data["total_chunks"]
 
-        # 文件管理只需要按 Original_file 统计切片数，不值得因为点数变化就
-        # 在这里触发整库 BM25 词汇索引重建。优先复用磁盘缓存；如果缓存与
-        # 当前点数不一致，则直接走 scroll 统计，避免导入后刷新文件列表时
-        # 卡在全量重建上。
-        if db._load_lex_index_from_disk():
-            current_cnt = db._get_collection_point_count()
-            cached_cnt = db._lex_index_point_count
-            if current_cnt is not None and current_cnt == cached_cnt:
-                lex_index = db._lex_index
-            else:
-                logger.info(
-                    "词汇索引点数已变化，跳过文件管理场景下的全量重建 | "
-                    f"collection={collection_name} cached={cached_cnt} current={current_cnt}"
-                )
-
-        if lex_index and lex_index.get("N", 0) > 0:
-            stats: Dict[str, int] = {}
-            for payload in lex_index.get("payloads", []):
-                tag = payload.get("Original_file", "未知文件")
-                stats[tag] = stats.get(tag, 0) + 1
-            total_chunks = lex_index.get("N", 0)
-            logger.debug(f"从词汇索引获取文件统计: {len(stats)} 个文件, {total_chunks} 个切片")
-            return stats, total_chunks
-
-        logger.info("词汇索引不可用，使用 scroll 获取文件统计...")
-        client = db.storage_instance._client
-        total_chunks = client.count(collection_name=collection_name).count
-
-        stats: Dict[str, int] = {}
-        if total_chunks > 0:
-            batch_size = 1000
-            offset = None
-            total_scrolled = 0
-            max_scroll = 100000
-
-            while total_scrolled < max_scroll:
-                points, offset = client.scroll(
-                    collection_name=collection_name,
-                    limit=batch_size,
-                    offset=offset,
-                    with_payload=True,
-                    with_vectors=False,
-                )
-                if not points:
-                    break
-
-                for point in points:
-                    tag = point.payload.get("Original_file", "未知文件")
-                    stats[tag] = stats.get(tag, 0) + 1
-
-                total_scrolled += len(points)
-                if offset is None:
-                    break
-
-        return stats, total_chunks
+        logger.info("file_stats.json 不存在，执行 reconcile...")
+        stats_data = reconcile_file_stats(collection_name)
+        return stats_data["files"], stats_data["total_chunks"]
     except Exception as exc:
         logger.error(f"获取数据库统计失败: {exc}")
         return {}, 0
@@ -163,6 +113,7 @@ def import_file_to_database(
     collection_name: str = "database",
     dpi: int = 200,
     debug: bool = False,
+    db_instance=None,
 ) -> Tuple[bool, str, int]:
     try:
         from tools.load_files import load_and_store_file
@@ -172,13 +123,16 @@ def import_file_to_database(
             collection_name=collection_name,
             dpi=dpi,
             debug=debug,
+            db_instance=db_instance,
         )
         if result:
             clear_database_stats_cache()
             return True, "文件导入成功", 0
+        clear_database_stats_cache()
         return False, "文件导入失败", 0
     except Exception as exc:
         logger.error(f"导入文件失败: {exc}")
+        clear_database_stats_cache()
         return False, f"导入失败: {exc}", 0
 
 
@@ -266,6 +220,9 @@ def delete_local_file(file_path: Path, delete_images: bool = False) -> bool:
         return False
 
 
+_ALLOWED_EXTENSIONS = {".pdf", ".doc", ".docx", ".txt", ".md"}
+
+
 def get_local_files_with_db_status(
     storage_dir: Path,
     cache_ttl_seconds: int = 60,
@@ -284,7 +241,11 @@ def get_local_files_with_db_status(
 
     local_files = []
     if storage_dir.exists():
-        local_files = [name for name in os.listdir(storage_dir) if os.path.isfile(storage_dir / name)]
+        local_files = [
+            name for name in os.listdir(storage_dir)
+            if os.path.isfile(storage_dir / name)
+            and Path(name).suffix.lower() in _ALLOWED_EXTENSIONS
+        ]
 
     matched_db_tags = set()
     for name in local_files:

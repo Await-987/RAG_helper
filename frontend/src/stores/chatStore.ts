@@ -74,6 +74,46 @@ function toSessionKey(sessionId: string | null): string {
   return sessionId ?? NULL_SESSION_KEY;
 }
 
+function mergeStreamText(current: string, incoming: string): string {
+  if (!incoming) return current;
+  if (!current) return incoming;
+  if (incoming.startsWith(current)) return incoming;
+  if (current.startsWith(incoming)) return current;
+  if (current.endsWith(incoming)) return current;
+  if (looksLikeCumulativeRestart(current, incoming)) return incoming;
+  return current + incoming;
+}
+
+function normalizeStreamPrefix(text: string, maxChars = 120): string {
+  return text
+    .replace(/<!-- SOURCE_REFS_START -->[\s\S]*?<!-- SOURCE_REFS_END -->/g, '')
+    .replace(/\s+/g, '')
+    .slice(0, maxChars);
+}
+
+function looksLikeCumulativeRestart(current: string, incoming: string): boolean {
+  const currentPrefix = normalizeStreamPrefix(current);
+  const incomingPrefix = normalizeStreamPrefix(incoming);
+  if (currentPrefix.length < 24 || incomingPrefix.length < 24) return false;
+
+  const prefixLength = Math.min(currentPrefix.length, incomingPrefix.length, 80);
+  const currentSample = currentPrefix.slice(0, prefixLength);
+  const incomingSample = incomingPrefix.slice(0, prefixLength);
+
+  let commonPrefixLength = 0;
+  for (let i = 0; i < prefixLength; i += 1) {
+    if (currentSample[i] !== incomingSample[i]) break;
+    commonPrefixLength += 1;
+  }
+  if (commonPrefixLength >= 16) return true;
+
+  let samePositionMatches = 0;
+  for (let i = 0; i < prefixLength; i += 1) {
+    if (currentSample[i] === incomingSample[i]) samePositionMatches += 1;
+  }
+  return samePositionMatches / prefixLength >= 0.88;
+}
+
 function getEmptySessionState(): SessionState {
   return {
     messages: [],
@@ -185,20 +225,23 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
           case 'reasoning':
             if (event.content) {
-              fullReasoning = (fullReasoning ?? '') + event.content;
+              fullReasoning = mergeStreamText(fullReasoning ?? '', event.content);
               updateStreamingSession({ streamingReasoning: fullReasoning });
             }
             break;
 
           case 'content':
             if (event.content) {
-              fullContent += event.content;
+              fullContent = mergeStreamText(fullContent, event.content);
               updateStreamingSession({ streamingContent: fullContent });
             }
             break;
 
           case 'done':
             {
+              if (event.content) {
+                fullContent = event.content;
+              }
               // 从 done 事件中提取 sources block
               let sourcesBlock = '';
               if (event.content) {

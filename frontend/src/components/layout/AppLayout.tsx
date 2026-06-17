@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { Menu, X } from 'lucide-react';
 
 const ADMIN_ONLY_PATHS = ['/users'];
+const APP_NAME = '基于大模型的电网工程系统设计智能助手';
 
 export function AppLayout() {
   const { sidebarOpen, toggleSidebar, setSidebarOpen } = useUIStore();
@@ -46,7 +47,7 @@ export function AppLayout() {
           >
             {sidebarOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
-          <span className="ml-3 text-sm font-medium">知识库助手</span>
+          <span className="ml-3 min-w-0 text-xs font-medium leading-tight">{APP_NAME}</span>
         </header>
 
         {/* Content */}

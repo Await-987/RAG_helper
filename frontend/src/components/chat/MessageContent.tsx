@@ -16,7 +16,7 @@ interface MessageContentProps {
 }
 
 // 解析 sources 区块
-const SOURCE_REFS_REGEX = /<!-- SOURCE_REFS_START -->\n([\s\S]*?)\n<!-- SOURCE_REFS_END -->/;
+const SOURCE_REFS_REGEX = /<!-- SOURCE_REFS_START -->\s*([\s\S]*?)\s*<!-- SOURCE_REFS_END -->/;
 
 function extractSourcesBlock(content: string): { mainContent: string; sourcesContent: string | null } {
   const match = content.match(SOURCE_REFS_REGEX);
@@ -30,11 +30,16 @@ function extractSourcesBlock(content: string): { mainContent: string; sourcesCon
 export const MessageContent = memo(function MessageContent({ content }: MessageContentProps) {
   // 解析 sources 区块
   const { mainContent, sourcesContent } = extractSourcesBlock(content);
+  const hasVisibleContent = mainContent.trim().length > 0;
 
   // 用 MarkdownRenderer 渲染内容（包含图片），SourcesBlock 渲染超链接
   return (
     <div className="markdown-content">
-      <MarkdownRenderer content={mainContent} />
+      {hasVisibleContent ? (
+        <MarkdownRenderer content={mainContent} />
+      ) : sourcesContent ? (
+        <p className="text-zinc-300">已找到相关文档来源，见下方参考来源。</p>
+      ) : null}
       {sourcesContent && <SourcesBlock content={sourcesContent} />}
     </div>
   );
@@ -47,29 +52,43 @@ function SourcesBlock({ content }: { content: string }) {
   // 按行解析，支持多种 markdown 链接格式
   const lines = content.split('\n').filter(line => line.trim());
   const sources: { label: string; url: string }[] = [];
+  const seenUrls = new Set<string>();
+  const pushSource = (label: string, url: string) => {
+    if (!url || seenUrls.has(url)) return;
+    sources.push({ label, url });
+    seenUrls.add(url);
+  };
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
+    const linkMatches = [...trimmed.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g)];
+    if (linkMatches.length > 0) {
+      for (const match of linkMatches) {
+        pushSource(match[1], match[2]);
+      }
+      continue;
+    }
+
     // 模式1: - [label](url)
     const match1 = trimmed.match(/^-\s*\[([^\]]+)\]\(([^)]+)\)$/);
     if (match1) {
-      sources.push({ label: match1[1], url: match1[2] });
+      pushSource(match1[1], match1[2]);
       continue;
     }
 
     // 模式2: [label](url) (没有 - 前缀)
     const match2 = trimmed.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
     if (match2) {
-      sources.push({ label: match2[1], url: match2[2] });
+      pushSource(match2[1], match2[2]);
       continue;
     }
 
     // 模式3: 行内包含 markdown 链接
     const match3 = trimmed.match(/\[([^\]]+)\]\(([^)]+)\)/);
     if (match3) {
-      sources.push({ label: match3[1], url: match3[2] });
+      pushSource(match3[1], match3[2]);
       continue;
     }
 
@@ -78,7 +97,7 @@ function SourcesBlock({ content }: { content: string }) {
       const urlMatch = trimmed.match(/(\/api\/v1\/files\/content\?[^\s]+)/);
       if (urlMatch) {
         const fileName = decodeURIComponent(urlMatch[1].split('file_tag=').pop() || '').split('/').pop() || '来源文件';
-        sources.push({ label: fileName, url: urlMatch[1] });
+        pushSource(fileName, urlMatch[1]);
       }
     }
   }

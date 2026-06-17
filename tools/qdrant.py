@@ -156,6 +156,7 @@ class QdrantDB:
                         attempt,
                         retries,
                     )
+                    self._ensure_payload_index(storage)
                     return storage
 
                 storage = QdrantStorage(
@@ -169,6 +170,7 @@ class QdrantDB:
                     self.storage_path,
                     self.collection_name,
                 )
+                self._ensure_payload_index(storage)
                 return storage
             except Exception as exc:
                 last_error = exc
@@ -197,6 +199,17 @@ class QdrantDB:
                 self.storage_instance._client.close()
         except Exception as e:
             logger.warning(f"Error closing Qdrant client: {e}")
+
+    def _ensure_payload_index(self, storage: QdrantStorage):
+        """Ensure payload index on Original_file for fast filter/count."""
+        try:
+            storage._client.create_payload_index(
+                collection_name=self.collection_name,
+                field_name="Original_file",
+                field_schema="keyword",
+            )
+        except Exception:
+            pass
 
     def __enter__(self):
         """support context manager"""
@@ -246,15 +259,17 @@ class QdrantDB:
         new_points: List[Tuple[str, Dict]] = []
         if records:
             self.storage_instance.add(records)
-            # 记录新增的 point_id 和 payload
             new_points = [(str(record.id), record.payload) for record in records]
 
-            # 增量更新词汇索引
             if self._lex_index_cache:
                 self._update_lex_index_for_new_points(new_points)
-            else:
-                # 如果索引不存在，更新 point_count 以便下次构建时知道数据变化
-                pass
+
+        if new_points and input.origin_file:
+            try:
+                from tools.file_stats import increment_file_stats
+                increment_file_stats(self.collection_name, input.origin_file, len(new_points))
+            except Exception as e:
+                logger.debug(f"file_stats increment failed: {e}")
 
         return new_points
 
@@ -894,7 +909,6 @@ class QdrantDB:
 
         deleted_ids: List[str] = []
         try:
-            # 1. 先获取要删除的 point_ids
             points_to_delete = client.scroll(
                 collection_name=self.collection_name,
                 scroll_filter=models.Filter(
@@ -910,7 +924,6 @@ class QdrantDB:
             deleted_ids = [str(p.id) for p in points_to_delete]
             logger.info(f"找到 {len(deleted_ids)} 个待删除点")
 
-            # 2. 执行删除
             client.delete(
                 collection_name=self.collection_name,
                 points_selector=models.FilterSelector(
@@ -925,9 +938,15 @@ class QdrantDB:
                 ),
             )
 
-            # 3. 增量更新词汇索引
-            if deleted_ids and self._lex_index_cache:
+            if self._lex_index_cache and deleted_ids:
                 self._update_lex_index_for_deleted_points(deleted_ids)
+
+            if deleted_ids:
+                try:
+                    from tools.file_stats import decrement_file_stats
+                    decrement_file_stats(self.collection_name, file_tag, len(deleted_ids))
+                except Exception as e:
+                    logger.debug(f"file_stats decrement failed: {e}")
 
             logger.info("数据库切块清理完毕。")
         except Exception as e:

@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, type KeyboardEvent } from 'react';
 import { Send, Square } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 interface ChatInputProps {
   onSend: (message: string) => void;
@@ -36,12 +37,14 @@ export function ChatInput({ onSend, onStop, isLoading, disabled }: ChatInputProp
     const textarea = textareaRef.current;
     if (textarea) {
       textarea.style.height = 'auto';
-      textarea.style.height = Math.min(textarea.scrollHeight, 200) + 'px';
+      const scrollH = textarea.scrollHeight;
+      textarea.style.height = Math.min(scrollH, 200) + 'px';
+      textarea.style.overflowY = scrollH > 200 ? 'auto' : 'hidden';
     }
   }, []);
 
   return (
-    <div className="relative">
+    <div className="input-chat flex items-end gap-2 pr-3">
       <textarea
         ref={textareaRef}
         value={input}
@@ -51,24 +54,27 @@ export function ChatInput({ onSend, onStop, isLoading, disabled }: ChatInputProp
         placeholder="发送消息..."
         disabled={disabled}
         rows={1}
-        className="input-chat pr-12 resize-none"
-        style={{ minHeight: '52px', maxHeight: '200px' }}
+        className="flex-1 bg-transparent outline-none resize-none text-base text-zinc-100 placeholder-zinc-500"
+        style={{ maxHeight: '200px', overflowY: 'hidden' }}
       />
       {isLoading ? (
-        <button
+        <Button
+          variant="secondary"
+          size="icon"
           onClick={onStop}
-          className="absolute right-3 bottom-3 w-9 h-9 rounded-xl bg-zinc-600 hover:bg-zinc-500 flex items-center justify-center transition-colors"
+          className="shrink-0 mb-0.5"
         >
           <Square size={18} className="text-white" />
-        </button>
+        </Button>
       ) : (
-        <button
+        <Button
+          size="icon"
           onClick={handleSend}
           disabled={!input.trim() || disabled}
-          className="absolute right-3 bottom-3 w-9 h-9 rounded-xl bg-primary-600 hover:bg-primary-700 disabled:bg-zinc-700 disabled:opacity-60 flex items-center justify-center transition-colors"
+          className="shrink-0 mb-0.5"
         >
           <Send size={18} className="text-white" />
-        </button>
+        </Button>
       )}
     </div>
   );

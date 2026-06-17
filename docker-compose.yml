@@ -41,6 +41,8 @@ services:
     expose:
       # Qdrant HTTP API 端口。
       - "6333"
+    ports:
+      - "6333:6333"
     # 挂载宿主机目录，持久化向量库。
     volumes:
       # 把宿主机 data/qdrant 映射到容器 /qdrant/storage。
@@ -200,7 +202,7 @@ services:
     # 健康检查：请求 /healthz 成功即视为健康。
     healthcheck:
       # 使用 wget 检查 Nginx 健康接口。
-      test: ["CMD-SHELL", "wget -q -O- http://localhost/healthz >/dev/null 2>&1 || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1/healthz >/dev/null 2>&1 || exit 1"]
       # 每 30 秒检查一次。
       interval: 30s
       # 单次检查 5 秒超时。

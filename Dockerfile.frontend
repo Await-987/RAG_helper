@@ -30,7 +30,7 @@ COPY frontend ./
 RUN npm run build
 
 # 使用官方 Nginx 镜像承载构建好的静态文件。
-FROM nginx:1.27
+FROM nginx:alpine
 
 # 复制自定义 Nginx 配置。
 COPY deploy/nginx/default.conf /etc/nginx/conf.d/default.conf
